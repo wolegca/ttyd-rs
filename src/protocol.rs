@@ -37,6 +37,9 @@ pub enum Message {
 
     /// Terminal ready
     Ready(ReadyData),
+
+    /// Client requests to join an existing session
+    Join(JoinData),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,7 +66,7 @@ pub struct PingData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthOkData {
-    pub session_id: String,
+    pub client_id: String,
     pub readonly: bool,
 }
 
@@ -101,6 +104,11 @@ pub struct ReadyData {
     pub cols: u16,
     pub rows: u16,
     pub readonly: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinData {
+    pub session_id: String,
 }
 
 impl Message {
@@ -161,7 +169,7 @@ mod tests {
                 credentials: "dXNlcjpwYXNz".to_string(),
             }),
             Message::AuthOk(AuthOkData {
-                session_id: "sess-1".to_string(),
+                client_id: "client-1".to_string(),
                 readonly: false,
             }),
             Message::AuthFail(AuthFailData {
@@ -186,6 +194,9 @@ mod tests {
                 cols: 80,
                 rows: 24,
                 readonly: false,
+            }),
+            Message::Join(JoinData {
+                session_id: "sess-2".to_string(),
             }),
         ];
 
@@ -264,6 +275,22 @@ mod tests {
                 assert_eq!(data.code, "FATAL_ERR");
             }
             _ => panic!("Expected Error message"),
+        }
+    }
+
+    #[test]
+    fn test_join_message_roundtrip() {
+        let msg = Message::Join(JoinData {
+            session_id: "abc-123".to_string(),
+        });
+        let json = msg.to_json().unwrap();
+        assert!(json.contains(r#""type":"join""#));
+        assert!(json.contains(r#""session_id":"abc-123""#));
+
+        let parsed = Message::from_json(&json).unwrap();
+        match parsed {
+            Message::Join(data) => assert_eq!(data.session_id, "abc-123"),
+            _ => panic!("Expected Join message"),
         }
     }
 }

@@ -82,6 +82,7 @@ Options:
   
   --session-mode <MODE>          Session mode: isolated|shared-ro|shared-rw
   --session-timeout <SECS>       Session timeout in seconds [default: 3600]
+  --reconnect-window <SECS>      Reconnect window in seconds [default: 60]
   --max-connections <NUM>        Max connections [default: 100]
   
   --auth                         Enable authentication

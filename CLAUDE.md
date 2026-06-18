@@ -154,10 +154,12 @@ src/
 
 All security features are implemented:
 
-- **Authentication**: Basic Auth and Token Auth with constant-time comparison via `subtle` crate
+- **Authentication**: Basic Auth and Token Auth with constant-time comparison via `subtle` crate. Passwords are stored as SHA-256 hashes.
 - **Input validation**: Terminal size bounds, payload size limits, credential length limits
 - **Rate limiting**: Sliding window algorithm, per-IP tracking
 - **Audit logging**: Connection events, authentication attempts, session lifecycle
+- **Proxy support**: Reads real client IP from `X-Real-IP` / `X-Forwarded-For` headers by default (`trust_proxy = false`). Use `--no-trust-proxy` to disable when not behind a reverse proxy.
+- **Reconnection**: Clients can reconnect within a configurable window (default 60s) without losing session state. Controlled by `--reconnect-window` / `session.reconnect_window`.
 
 ## WebSocket Protocol
 
@@ -168,6 +170,7 @@ The WebSocket protocol uses JSON messages with the following types:
 - `ping` / `pong` - Keepalive
 - `error` / `disconnect` - Error handling
 - `ready` - Session ready notification
+- `join` - Join an existing session by ID
 
 ## REST API Endpoints
 

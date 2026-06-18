@@ -1,4 +1,5 @@
 /// REST API endpoints for session management
+use crate::config::Config;
 use crate::session::SessionManager;
 use axum::{
     Json,
@@ -12,6 +13,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct ApiState {
     pub session_manager: Arc<SessionManager>,
+    pub config: Arc<Config>,
 }
 
 /// Response for session list
@@ -181,6 +183,19 @@ pub async fn health_check() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+    })
+}
+
+/// Client config response
+#[derive(Debug, Serialize)]
+pub struct ConfigResponse {
+    pub auth_method: Option<String>,
+}
+
+/// Get client-facing configuration
+pub async fn get_config(State(state): State<ApiState>) -> Json<ConfigResponse> {
+    Json(ConfigResponse {
+        auth_method: state.config.auth.as_ref().map(|a| a.method.clone()),
     })
 }
 

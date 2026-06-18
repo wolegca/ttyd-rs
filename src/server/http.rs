@@ -33,10 +33,10 @@ pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Erro
     let session_mode: SessionMode = config.session.mode.parse()?;
 
     // Create session manager
-    let session_manager = Arc::new(SessionManager::new(
-        Duration::from_secs(config.session.timeout),
-        session_mode,
-    ));
+    let session_manager = Arc::new(
+        SessionManager::new(Duration::from_secs(config.session.timeout), session_mode)
+            .with_reconnect_window(Duration::from_secs(config.session.reconnect_window)),
+    );
 
     let shutdown_token = CancellationToken::new();
 
@@ -51,6 +51,7 @@ pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Erro
 
     let api_state = ApiState {
         session_manager: session_manager.clone(),
+        config: Arc::new(config.clone()),
     };
 
     // Spawn cleanup task for rate limiter
@@ -66,7 +67,7 @@ pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Erro
     // Spawn cleanup task for sessions
     let cleanup_manager = session_manager.clone();
     let session_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60)); // Check every minute
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
         loop {
             interval.tick().await;
             let cleaned = cleanup_manager.cleanup_inactive().await;
@@ -172,6 +173,10 @@ fn create_router(_config: &Config, app_state: AppState, api_state: ApiState) -> 
         // API routes
         .route("/api/health", get(super::api::health_check))
         .route(
+            "/api/config",
+            get(super::api::get_config).with_state(api_state.clone()),
+        )
+        .route(
             "/api/sessions",
             get(super::api::list_sessions).with_state(api_state.clone()),
         )
@@ -248,9 +253,10 @@ mod tests {
             Duration::from_secs(3600),
             SessionMode::Isolated,
         ));
+        let config_arc = Arc::new(config);
 
         let app_state = AppState {
-            config: Arc::new(config),
+            config: config_arc.clone(),
             audit_logger: Arc::new(AuditLogger::new(None, false)),
             validation: Arc::new(ValidationConfig::default()),
             rate_limiter: Arc::new(RateLimiter::default()),
@@ -258,7 +264,10 @@ mod tests {
             shutdown_token: CancellationToken::new(),
         };
 
-        let api_state = ApiState { session_manager };
+        let api_state = ApiState {
+            session_manager,
+            config: config_arc,
+        };
         (app_state, api_state)
     }
 
@@ -375,6 +384,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_no_cors_headers_by_default() {
+        let config = Config::default();
+        let (app_state, api_state) = test_state();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .method("OPTIONS")
+            .uri("/api/health")
+            .header("origin", "https://example.com")
+            .header("access-control-request-method", "GET")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        // Without a CORS layer, no access-control-allow-origin header is set
+        assert!(!resp.headers().contains_key("access-control-allow-origin"));
+    }
+
+    #[tokio::test]
+    async fn test_api_config_no_auth() {
+        let config = Config::default();
+        let (app_state, api_state) = test_state();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/api/config")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["auth_method"].is_null());
+    }
+
+    #[tokio::test]
+    async fn test_api_config_with_auth() {
+        let mut config = Config::default();
+        config.auth = Some(crate::config::AuthConfig {
+            method: "basic".to_string(),
+            username: Some("admin".to_string()),
+            password: Some("secret".to_string()),
+            token: None,
+            audit_enabled: false,
+        });
+        let session_manager = Arc::new(SessionManager::new(
+            Duration::from_secs(3600),
+            SessionMode::Isolated,
+        ));
+        let config_arc = Arc::new(config.clone());
+        let app_state = AppState {
+            config: config_arc.clone(),
+            audit_logger: Arc::new(AuditLogger::new(None, false)),
+            validation: Arc::new(ValidationConfig::default()),
+            rate_limiter: Arc::new(RateLimiter::default()),
+            session_manager: session_manager.clone(),
+            shutdown_token: CancellationToken::new(),
+        };
+        let api_state = ApiState {
+            session_manager,
+            config: config_arc,
+        };
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/api/config")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["auth_method"], "basic");
+    }
+
+    #[tokio::test]
     async fn test_static_not_found() {
         let config = Config::default();
         let (app_state, api_state) = test_state();
@@ -414,7 +507,10 @@ mod tests {
             session_manager: session_manager.clone(),
             shutdown_token: shutdown_token.clone(),
         };
-        let api_state = ApiState { session_manager };
+        let api_state = ApiState {
+            session_manager,
+            config: Arc::new(config.clone()),
+        };
 
         let app = create_router(&config, app_state, api_state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

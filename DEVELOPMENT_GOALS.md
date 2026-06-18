@@ -35,6 +35,7 @@ ttyd-rs is a Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd), a terminal
 - `--log-level` - Log level (trace/debug/info/warn/error)
 - `--session-mode` - Session mode (isolated/shared-ro/shared-rw)
 - `--session-timeout` - Session timeout in seconds
+- `--reconnect-window` - Reconnect window in seconds (default: 60)
 - `--max-connections` - Max concurrent connections
 - `--auth` - Enable authentication
 - `--username` / `--password` - Basic auth credentials

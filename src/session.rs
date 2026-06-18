@@ -56,23 +56,26 @@ impl std::fmt::Display for SessionMode {
 
 /// Client information within a session
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Client {
     pub client_id: String,
+    #[allow(dead_code)]
     pub remote_addr: String,
+    #[allow(dead_code)]
     pub username: Option<String>,
+    #[allow(dead_code)]
     pub connected_at: Instant,
     pub readonly: bool,
 }
 
 /// Session metadata
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SessionMetadata {
     pub session_id: String,
     pub mode: SessionMode,
     pub created_at: Instant,
+    #[allow(dead_code)]
     pub command: Vec<String>,
+    #[allow(dead_code)]
     pub working_dir: Option<String>,
 }
 
@@ -83,13 +86,11 @@ pub struct Session {
     clients: Arc<RwLock<HashMap<String, Client>>>,
     last_activity: Arc<Mutex<Instant>>,
     /// Broadcast channel for terminal output
-    #[allow(dead_code)]
     output_tx: broadcast::Sender<Vec<u8>>,
 }
 
 impl Session {
     /// Create a new session
-    #[allow(dead_code)]
     pub fn new(
         session_id: String,
         mode: SessionMode,
@@ -118,7 +119,6 @@ impl Session {
     }
 
     /// Add a client to this session
-    #[allow(dead_code)]
     pub async fn add_client(&self, client: Client) -> Result<(), SessionError> {
         let mut clients = self.clients.write().await;
 
@@ -134,7 +134,6 @@ impl Session {
     }
 
     /// Remove a client from this session
-    #[allow(dead_code)]
     pub async fn remove_client(&self, client_id: &str) -> bool {
         let mut clients = self.clients.write().await;
         let removed = clients.remove(client_id).is_some();
@@ -167,13 +166,11 @@ impl Session {
     }
 
     /// Subscribe to terminal output
-    #[allow(dead_code)]
     pub fn subscribe_output(&self) -> broadcast::Receiver<Vec<u8>> {
         self.output_tx.subscribe()
     }
 
     /// Broadcast output to all clients
-    #[allow(dead_code)]
     pub fn broadcast_output(&self, data: Vec<u8>) {
         // Ignore send errors (no receivers)
         let _ = self.output_tx.send(data);
@@ -185,7 +182,6 @@ impl Session {
     }
 
     /// Check if the client can write to this session
-    #[allow(dead_code)]
     pub async fn can_write(&self, client_id: &str) -> bool {
         match self.metadata.mode {
             SessionMode::Isolated => true,
@@ -208,11 +204,14 @@ impl Session {
     }
 }
 
+/// Time to keep an empty session alive for client reconnection
+pub const RECONNECT_WINDOW: Duration = Duration::from_secs(60);
+
 /// Session manager for managing all active sessions
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     session_timeout: Duration,
-    #[allow(dead_code)]
+    reconnect_window: Duration,
     default_mode: SessionMode,
 }
 
@@ -222,12 +221,18 @@ impl SessionManager {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             session_timeout,
+            reconnect_window: RECONNECT_WINDOW,
             default_mode,
         }
     }
 
+    /// Set the reconnect window duration
+    pub fn with_reconnect_window(mut self, window: Duration) -> Self {
+        self.reconnect_window = window;
+        self
+    }
+
     /// Create a new session
-    #[allow(dead_code)]
     pub async fn create_session(
         &self,
         session_id: String,
@@ -283,12 +288,13 @@ impl SessionManager {
             Some(s) => Arc::clone(s),
             None => return false,
         };
-        // Hold the clients *write* lock so that no concurrent add_client can
-        // insert a client between the emptiness check and the removal.
+        // Hold the clients *write* lock through the removal so that no
+        // concurrent add_client can insert a client between the emptiness
+        // check and the removal from the sessions map.
         let clients = session.clients.write().await;
         if clients.is_empty() {
-            drop(clients);
             sessions.remove(session_id);
+            // clients guard is dropped here, after removal is complete
             info!("Removed empty session {}", session_id);
             return true;
         }
@@ -305,9 +311,15 @@ impl SessionManager {
     /// lock, then each removal goes through `remove_if_empty` which atomically
     /// re-verifies emptiness under the sessions write lock — closing the
     /// TOCTOU window that a two-phase read-then-write approach would leave.
+    ///
+    /// Empty sessions are kept alive for `reconnect_window` to allow clients
+    /// to reconnect without losing session state.  Non-empty sessions whose
+    /// idle time exceeds `session_timeout` are forcefully removed (clients
+    /// are disconnected and the session is dropped).
     pub async fn cleanup_inactive(&self) -> usize {
         let now = Instant::now();
-        let mut candidates = Vec::new();
+        let mut empty_candidates = Vec::new();
+        let mut stale_candidates = Vec::new();
 
         {
             let sessions = self.sessions.read().await;
@@ -315,18 +327,43 @@ impl SessionManager {
                 let last_activity = session.last_activity().await;
                 let idle_time = now.duration_since(last_activity);
 
-                if session.is_empty().await && idle_time > self.session_timeout {
-                    candidates.push(session_id.clone());
+                if session.is_empty().await {
+                    // Empty sessions: remove after reconnect window
+                    if idle_time > self.reconnect_window {
+                        empty_candidates.push(session_id.clone());
+                    }
+                } else {
+                    // Non-empty sessions: remove after session timeout
+                    if idle_time > self.session_timeout {
+                        stale_candidates.push(session_id.clone());
+                    }
                 }
             }
         }
 
         let mut count = 0;
-        for session_id in candidates {
-            // Delegate to remove_if_empty which atomically re-checks
-            // emptiness under the write lock before removing.
+
+        // Remove empty sessions via the atomic check
+        for session_id in empty_candidates {
             if self.remove_if_empty(&session_id).await {
                 warn!("Cleaned up inactive session: {}", session_id);
+                count += 1;
+            }
+        }
+
+        // Force-remove stale non-empty sessions
+        for session_id in stale_candidates {
+            let mut sessions = self.sessions.write().await;
+            if let Some(session) = sessions.remove(&session_id) {
+                // Clear clients to disconnect them; the session's PtyProcess
+                // will be dropped when the last Arc reference is released.
+                let mut clients = session.clients.write().await;
+                let n = clients.len();
+                clients.clear();
+                warn!(
+                    "Force-removed stale session {} (had {} clients)",
+                    session_id, n
+                );
                 count += 1;
             }
         }
@@ -797,7 +834,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_manager_cleanup_inactive() {
-        let manager = SessionManager::new(Duration::from_millis(500), SessionMode::Isolated);
+        let mut manager = SessionManager::new(Duration::from_millis(500), SessionMode::Isolated);
+        manager.reconnect_window = Duration::from_millis(200);
 
         manager
             .create_session(

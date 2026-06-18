@@ -51,6 +51,10 @@ struct Args {
     #[arg(long, default_value = "3600")]
     session_timeout: u64,
 
+    /// Reconnect window in seconds — how long to keep empty sessions alive
+    #[arg(long, default_value = "60")]
+    reconnect_window: u64,
+
     /// Maximum number of concurrent connections
     #[arg(long, default_value = "100")]
     max_connections: usize,
@@ -74,6 +78,10 @@ struct Args {
     /// Audit log file path
     #[arg(long)]
     audit_file: Option<PathBuf>,
+
+    /// Disable trusting proxy headers (X-Real-IP / X-Forwarded-For) for client IP
+    #[arg(long)]
+    no_trust_proxy: bool,
 }
 
 #[tokio::main]
@@ -138,6 +146,12 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
     // Session configuration
     config.session.mode = args.session_mode.clone();
     config.session.timeout = args.session_timeout;
+    config.session.reconnect_window = args.reconnect_window;
+
+    // Proxy configuration
+    if args.no_trust_proxy {
+        config.trust_proxy = false;
+    }
 
     // Audit configuration
     if args.audit {
@@ -181,12 +195,14 @@ mod tests {
             log_level: "info".to_string(),
             session_mode: "isolated".to_string(),
             session_timeout: 3600,
+            reconnect_window: 60,
             max_connections: 100,
             auth: false,
             username: None,
             password: None,
             audit: false,
             audit_file: None,
+            no_trust_proxy: false,
         };
 
         let config = load_config(&args).unwrap();
@@ -194,6 +210,7 @@ mod tests {
         assert_eq!(config.session.mode, "isolated");
         assert_eq!(config.session.timeout, 3600);
         assert!(config.auth.is_none());
+        assert!(!config.trust_proxy);
     }
 
     #[test]
@@ -207,12 +224,14 @@ mod tests {
             log_level: "debug".to_string(),
             session_mode: "shared_readwrite".to_string(),
             session_timeout: 7200,
+            reconnect_window: 60,
             max_connections: 50,
             auth: true,
             username: Some("admin".to_string()),
             password: Some("secret".to_string()),
             audit: false,
             audit_file: None,
+            no_trust_proxy: false,
         };
 
         let config = load_config(&args).unwrap();
@@ -240,12 +259,14 @@ mod tests {
             log_level: "info".to_string(),
             session_mode: "isolated".to_string(),
             session_timeout: 3600,
+            reconnect_window: 60,
             max_connections: 100,
             auth: false,
             username: None,
             password: None,
             audit: true,
             audit_file: Some(PathBuf::from("/tmp/audit.log")),
+            no_trust_proxy: false,
         };
 
         let config = load_config(&args).unwrap();
@@ -298,12 +319,14 @@ enabled = false
             log_level: "info".to_string(),
             session_mode: "isolated".to_string(),
             session_timeout: 3600,
+            reconnect_window: 60,
             max_connections: 100,
             auth: false,
             username: None,
             password: None,
             audit: false,
             audit_file: None,
+            no_trust_proxy: false,
         };
 
         let config = load_config(&args).unwrap();

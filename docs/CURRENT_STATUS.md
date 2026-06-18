@@ -149,10 +149,10 @@ server {
 
 ### 功能限制
 1. ❌ **无内置 TLS**：需要 Nginx 反向代理
-2. ⚠️ **认证未集成**：框架已就绪，需集成到 WebSocket
-3. ❌ **单客户端**：暂不支持多会话管理
-4. ❌ **无持久化**：断线后无法重连
-5. ❌ **无 Rate limiting**：无连接速率限制
+2. ✅ **认证已集成**：支持 Basic Auth 和 Token Auth
+3. ✅ **多会话管理**：支持 isolated/shared-readonly/shared-readwrite 模式
+4. ✅ **断线重连**：客户端可在配置窗口内（默认 60s）重连，保留 session 状态
+5. ✅ **Rate limiting**：滑动窗口算法，按 IP 限流
 
 ### 平台限制
 - ✅ **Linux**: 完全支持

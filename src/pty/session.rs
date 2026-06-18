@@ -42,7 +42,6 @@ impl PtySession {
     }
 
     /// Get current terminal dimensions
-    #[allow(dead_code)]
     pub fn dimensions(&self) -> (u16, u16) {
         (self.cols, self.rows)
     }

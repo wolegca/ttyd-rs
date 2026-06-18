@@ -24,6 +24,10 @@ mode = "isolated"
 # Session timeout in seconds (0 = no timeout)
 timeout = 3600
 
+# Reconnect window in seconds — how long to keep empty sessions alive
+# for client reconnection (default: 60)
+# reconnect_window = 60
+
 # Authentication configuration (optional)
 [auth]
 method = "basic"  # "basic" or "token"
@@ -49,3 +53,9 @@ max_credentials_length = 1024
 [rate_limit]
 max_requests = 10
 window_seconds = 60
+
+# Proxy configuration (default: true)
+# Reads real client IP from X-Real-IP / X-Forwarded-For headers
+# when behind a reverse proxy (nginx, Caddy, etc.).
+# Set to false if not behind a proxy or if you don't trust proxy headers.
+# trust_proxy = true

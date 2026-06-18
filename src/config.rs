@@ -57,6 +57,10 @@ pub struct Config {
 
     /// Rate limiting configuration
     pub rate_limit: RateLimitConfig,
+
+    /// Trust proxy headers (X-Real-IP / X-Forwarded-For) for client IP
+    #[serde(default)]
+    pub trust_proxy: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +97,15 @@ pub struct SessionConfig {
 
     /// Session timeout in seconds (0 = no timeout)
     pub timeout: u64,
+
+    /// Reconnect window in seconds — how long to keep empty sessions alive
+    /// for client reconnection (default: 60)
+    #[serde(default = "default_reconnect_window")]
+    pub reconnect_window: u64,
+}
+
+fn default_reconnect_window() -> u64 {
+    60
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +154,7 @@ impl Default for Config {
             session: SessionConfig::default(),
             validation: ValidationConfig::default(),
             rate_limit: RateLimitConfig::default(),
+            trust_proxy: false,
         }
     }
 }
@@ -162,6 +176,7 @@ impl Default for SessionConfig {
         Self {
             mode: "isolated".to_string(),
             timeout: 3600, // 1 hour
+            reconnect_window: 60,
         }
     }
 }

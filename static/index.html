@@ -74,6 +74,94 @@
         .xterm-viewport {
             overflow-y: auto;
         }
+
+        /* Style scrollbar to match terminal dark theme */
+        .xterm-viewport::-webkit-scrollbar {
+            width: 8px;
+        }
+        .xterm-viewport::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .xterm-viewport::-webkit-scrollbar-thumb {
+            background-color: rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
+        }
+        .xterm-viewport::-webkit-scrollbar-thumb:hover {
+            background-color: rgba(255, 255, 255, 0.3);
+        }
+        /* Firefox */
+        .xterm-viewport {
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+        }
+
+        /* Login form overlay */
+        #login-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+        #login-overlay.hidden { display: none; }
+        #login-box {
+            background: #2d2d2d;
+            border: 1px solid #3e3e42;
+            border-radius: 8px;
+            padding: 30px;
+            min-width: 320px;
+        }
+        #login-box h2 {
+            font-size: 16px;
+            font-weight: normal;
+            color: #cccccc;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        #login-box label {
+            display: block;
+            font-size: 12px;
+            color: #858585;
+            margin-bottom: 4px;
+        }
+        #login-box input {
+            width: 100%;
+            padding: 8px 10px;
+            margin-bottom: 14px;
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            color: #d4d4d4;
+            font-family: inherit;
+            font-size: 14px;
+            outline: none;
+        }
+        #login-box input:focus {
+            border-color: #4ec9b0;
+        }
+        #login-box button {
+            width: 100%;
+            padding: 10px;
+            background: #0e639c;
+            border: none;
+            border-radius: 4px;
+            color: #fff;
+            font-family: inherit;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        #login-box button:hover {
+            background: #1177bb;
+        }
+        #login-error {
+            color: #f48771;
+            font-size: 12px;
+            margin-bottom: 10px;
+            display: none;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -87,6 +175,23 @@
     </div>
     <div id="terminal-container">
         <div id="terminal"></div>
+    </div>
+    <div id="login-overlay" class="hidden">
+        <div id="login-box">
+            <h2>Authentication Required</h2>
+            <div id="login-error"></div>
+            <div id="basic-auth-fields">
+                <label for="login-username">Username</label>
+                <input type="text" id="login-username" autocomplete="username" />
+                <label for="login-password">Password</label>
+                <input type="password" id="login-password" autocomplete="current-password" />
+            </div>
+            <div id="token-auth-fields" style="display:none">
+                <label for="login-token">Token</label>
+                <input type="password" id="login-token" />
+            </div>
+            <button id="login-submit" type="button">Login</button>
+        </div>
     </div>
 
     <script src="/vendor/xterm.js"></script>
@@ -139,6 +244,7 @@
         const sessionInfo = document.getElementById('session-info');
         let currentSessionId = null;
 
+        /** @param {boolean} connected */
         function setStatus(connected) {
             if (connected) {
                 statusIndicator.classList.remove('disconnected');
@@ -149,6 +255,7 @@
             }
         }
 
+        /** @param {string} sessionId */
         function updateSessionInfo(sessionId) {
             currentSessionId = sessionId;
             if (sessionId) {
@@ -156,74 +263,294 @@
             }
         }
 
-        // WebSocket connection
+        function clearSessionInfo() {
+            currentSessionId = null;
+            sessionInfo.textContent = '';
+        }
+
+        // WebSocket connection with reconnection support
+        /** @type {WebSocket | null} */
+        let ws = null;
+        /** @type {number | null} */
+        let reconnectTimer = null;
+        /** @type {number | null} */
+        let heartbeatTimer = null;
+        let retryCount = 0;
+        let serverDisconnected = false;
+        let authFailed = false;
+        let authRequired = false;
+        /** @type {{ method: string, credentials: string } | null} */
+        let authCredentials = null;
+        const MAX_RETRIES = 10;
+        const BASE_DELAY = 1000;
+        const MAX_DELAY = 30000;
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/ws`;
-        const ws = new WebSocket(wsUrl);
 
-        ws.onopen = () => {
-            console.log('WebSocket connected');
-            setStatus(true);
+        // Check for session join query parameter
+        const urlParams = new URLSearchParams(window.location.search);
+        const joinSessionId = urlParams.get('session');
+
+        function connect() {
+            // [Fix #1+#2] Cancel any pending reconnect timer and close old WebSocket
+            if (reconnectTimer !== null) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+            authFailed = false;
+            if (ws) {
+                ws.onopen = null;
+                ws.onmessage = null;
+                ws.onerror = null;
+                ws.onclose = null;
+                if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                    ws.close();
+                }
+                ws = null;
+            }
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                retryCount = 0;
+                serverDisconnected = false;
+
+                // Start heartbeat
+                if (heartbeatTimer === null) {
+                    heartbeatTimer = setInterval(() => {
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            const pingMsg = {
+                                type: 'ping',
+                                data: { timestamp: Date.now() }
+                            };
+                            ws.send(JSON.stringify(pingMsg));
+                        }
+                    }, 30000);
+                }
+
+                // Send auth first if required
+                if (authRequired && authCredentials) {
+                    const authMsg = {
+                        type: 'auth',
+                        data: authCredentials
+                    };
+                    ws.send(JSON.stringify(authMsg));
+                } else {
+                    // No auth needed, proceed directly
+                    onAuthenticated();
+                }
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+
+                    switch (msg.type) {
+                        case 'auth_ok':
+                            console.log('Auth OK');
+                            onAuthenticated();
+                            break;
+                        case 'auth_fail':
+                            console.error('Auth failed:', msg.data.reason);
+                            // Show error on login form and stop reconnecting
+                            authFailed = true;
+                            retryCount = MAX_RETRIES;
+                            showLoginError(msg.data.reason);
+                            if (ws) ws.close();
+                            break;
+                        case 'ready':
+                            console.log('Terminal ready:', msg.data);
+                            setStatus(true);
+                            updateSessionInfo(msg.data.session_id);
+                            break;
+                        case 'output':
+                            term.write(msg.data.payload);
+                            break;
+                        case 'pong':
+                            // Heartbeat acknowledged, no action needed
+                            break;
+                        case 'disconnect':
+                            console.log('Disconnected:', msg.data.reason);
+                            term.write(`\r\n[Disconnected: ${msg.data.reason}]\r\n`);
+                            setStatus(false);
+                            clearSessionInfo();
+                            // Server-initiated disconnect — don't reconnect
+                            serverDisconnected = true;
+                            break;
+                        case 'error':
+                            console.error('Error:', msg.data);
+                            term.write(`\r\n[Error: ${msg.data.message}]\r\n`);
+                            break;
+                        default:
+                            console.warn('Unknown message type:', msg.type);
+                            break;
+                    }
+                } catch (e) {
+                    console.error('Failed to parse message:', e);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket closed');
+
+                // Auth failed: login overlay is visible, don't write to the
+                // terminal canvas behind it (causes a visible flash).
+                if (authFailed) {
+                    stopHeartbeat();
+                    return;
+                }
+
+                setStatus(false);
+
+                // Don't retry if server disconnected
+                if (serverDisconnected || retryCount >= MAX_RETRIES) {
+                    stopHeartbeat();
+                    return;
+                }
+
+                if (retryCount < MAX_RETRIES) {
+                    retryCount++;
+                    const delay = Math.min(BASE_DELAY * Math.pow(2, retryCount - 1), MAX_DELAY);
+                    statusText.textContent = `Reconnecting (${retryCount}/${MAX_RETRIES})...`;
+                    console.log(`Reconnecting in ${delay}ms (attempt ${retryCount}/${MAX_RETRIES})`);
+                    // [Fix #3] Don't clear terminal — just write a separator
+                    term.write(`\r\n[Reconnecting...]\r\n`);
+                    reconnectTimer = setTimeout(connect, delay);
+                } else {
+                    term.write('\r\n[Connection lost. Refresh page to retry.]\r\n');
+                    statusText.textContent = 'Connection lost';
+                    stopHeartbeat();
+                }
+            };
+        }
+
+        function stopHeartbeat() {
+            if (heartbeatTimer !== null) {
+                clearInterval(heartbeatTimer);
+                heartbeatTimer = null;
+            }
+        }
+
+        // Called after auth succeeds (or if no auth needed)
+        function onAuthenticated() {
+            // Try to rejoin previous session on reconnect, otherwise use URL param
+            const rejoinId = currentSessionId || joinSessionId;
+            if (rejoinId) {
+                const joinMsg = {
+                    type: 'join',
+                    data: { session_id: rejoinId }
+                };
+                ws.send(JSON.stringify(joinMsg));
+            }
 
             // Send initial resize message
             const dims = fitAddon.proposeDimensions();
-            const resizeMsg = {
-                type: 'resize',
-                data: {
-                    cols: dims.cols,
-                    rows: dims.rows
+            if (dims) {
+                const resizeMsg = {
+                    type: 'resize',
+                    data: {
+                        cols: dims.cols,
+                        rows: dims.rows
+                    }
+                };
+                ws.send(JSON.stringify(resizeMsg));
+            }
+        }
+
+        // Login form handling
+        const loginOverlay = document.getElementById('login-overlay');
+        const loginUsername = document.getElementById('login-username');
+        const loginPassword = document.getElementById('login-password');
+        const loginToken = document.getElementById('login-token');
+        const loginSubmit = document.getElementById('login-submit');
+        const loginError = document.getElementById('login-error');
+        const basicFields = document.getElementById('basic-auth-fields');
+        const tokenFields = document.getElementById('token-auth-fields');
+
+        /** @param {string} msg */
+        function showLoginError(msg) {
+            loginError.textContent = msg;
+            loginError.style.display = 'block';
+            loginOverlay.classList.remove('hidden');
+        }
+
+        loginSubmit.addEventListener('click', () => {
+            loginError.style.display = 'none';
+            if (authRequired && authCredentials) {
+                // Build credentials based on method
+                if (authCredentials.method === 'basic') {
+                    const username = loginUsername.value;
+                    const password = loginPassword.value;
+                    if (!username || !password) {
+                        showLoginError('Please enter username and password');
+                        return;
+                    }
+                    authCredentials.credentials = btoa(username + ':' + password);
+                } else if (authCredentials.method === 'token') {
+                    // [Fix #4] Validate token is not empty before attempting login
+                    if (!authCredentials.credentials) {
+                        showLoginError('Please enter a token');
+                        return;
+                    }
                 }
-            };
-            ws.send(JSON.stringify(resizeMsg));
-        };
+                loginOverlay.classList.add('hidden');
+                retryCount = 0;
+                connect();
+            }
+        });
 
-        ws.onmessage = (event) => {
+        // Allow Enter key to submit
+        [loginUsername, loginPassword, loginToken].forEach(el => {
+            el.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') loginSubmit.click();
+            });
+        });
+
+        // Check auth config on page load
+        async function checkAuth() {
             try {
-                const msg = JSON.parse(event.data);
-
-                switch (msg.type) {
-                    case 'ready':
-                        console.log('Terminal ready:', msg.data);
-                        updateSessionInfo(msg.data.session_id);
-                        break;
-                    case 'output':
-                        term.write(msg.data.payload);
-                        break;
-                    case 'disconnect':
-                        console.log('Disconnected:', msg.data.reason);
-                        term.write(`\r\n[Disconnected: ${msg.data.reason}]\r\n`);
-                        setStatus(false);
-                        break;
-                    case 'error':
-                        console.error('Error:', msg.data);
-                        term.write(`\r\n[Error: ${msg.data.message}]\r\n`);
-                        break;
+                const resp = await fetch('/api/config');
+                const config = await resp.json();
+                if (config.auth_method) {
+                    authRequired = true;
+                    if (config.auth_method === 'token') {
+                        basicFields.style.display = 'none';
+                        tokenFields.style.display = 'block';
+                        authCredentials = { method: 'token', credentials: '' };
+                        // Listen for token input changes
+                        loginToken.addEventListener('input', () => {
+                            authCredentials.credentials = loginToken.value;
+                        });
+                    } else {
+                        authCredentials = { method: 'basic', credentials: '' };
+                    }
+                    loginOverlay.classList.remove('hidden');
+                    statusText.textContent = 'Login required';
+                } else {
+                    // No auth needed, connect directly
+                    connect();
                 }
             } catch (e) {
-                console.error('Failed to parse message:', e);
+                console.error('Failed to check auth config:', e);
+                // If config endpoint fails, try connecting anyway
+                connect();
             }
-        };
+        }
 
-        ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-            term.write('\r\n[Connection error]\r\n');
-            setStatus(false);
-        };
-
-        ws.onclose = () => {
-            console.log('WebSocket closed');
-            term.write('\r\n[Connection closed]\r\n');
-            setStatus(false);
-        };
+        // Start
+        checkAuth();
 
         // Send user input to server
         term.onData((data) => {
-            if (ws.readyState === WebSocket.OPEN) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
                 const inputMsg = {
                     type: 'input',
-                    data: {
-                        payload: data
-                    }
+                    data: { payload: data }
                 };
                 ws.send(JSON.stringify(inputMsg));
             }
@@ -233,7 +560,7 @@
         window.addEventListener('resize', () => {
             fitAddon.fit();
             const dims = fitAddon.proposeDimensions();
-            if (ws.readyState === WebSocket.OPEN) {
+            if (dims && ws && ws.readyState === WebSocket.OPEN) {
                 const resizeMsg = {
                     type: 'resize',
                     data: {
@@ -244,19 +571,6 @@
                 ws.send(JSON.stringify(resizeMsg));
             }
         });
-
-        // Heartbeat
-        setInterval(() => {
-            if (ws.readyState === WebSocket.OPEN) {
-                const pingMsg = {
-                    type: 'ping',
-                    data: {
-                        timestamp: Date.now()
-                    }
-                };
-                ws.send(JSON.stringify(pingMsg));
-            }
-        }, 30000);
     </script>
 </body>
 </html>

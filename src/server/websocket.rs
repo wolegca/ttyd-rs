@@ -4,7 +4,7 @@ use crate::auth::{BasicAuth, TokenAuth};
 use crate::config::Config;
 use crate::protocol::*;
 use crate::rate_limit::RateLimiter;
-use crate::session::{Client, SessionManager};
+use crate::session::{Client, SessionManager, SessionMode};
 use crate::validation::ValidationConfig;
 use axum::{
     extract::{
@@ -18,6 +18,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -32,13 +33,58 @@ pub struct AppState {
     pub shutdown_token: CancellationToken,
 }
 
+/// Extract the real client IP from proxy headers.
+///
+/// When `trust_proxy` is enabled, checks (in order):
+/// 1. `X-Real-IP` header — the canonical real IP set by nginx/Caddy
+/// 2. `X-Forwarded-For` header — first entry (client IP) from the chain
+///
+/// Falls back to `connect_addr` if neither header is present or valid.
+/// Only accepts valid IP addresses from headers to prevent spoofing with
+/// arbitrary strings.
+fn extract_real_ip(
+    headers: &axum::http::HeaderMap,
+    connect_addr: std::net::IpAddr,
+    trust_proxy: bool,
+) -> String {
+    if !trust_proxy {
+        return connect_addr.to_string();
+    }
+
+    // Prefer X-Real-IP (single value, set by most reverse proxies)
+    if let Some(val) = headers.get("x-real-ip")
+        && let Ok(s) = val.to_str()
+    {
+        let trimmed = s.trim();
+        if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
+            return ip.to_string();
+        }
+    }
+
+    // Fall back to first entry of X-Forwarded-For
+    if let Some(val) = headers.get("x-forwarded-for")
+        && let Ok(s) = val.to_str()
+    {
+        // X-Forwarded-For: client, proxy1, proxy2
+        if let Some(first) = s.split(',').next() {
+            let trimmed = first.trim();
+            if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
+                return ip.to_string();
+            }
+        }
+    }
+
+    connect_addr.to_string()
+}
+
 /// WebSocket upgrade handler
 pub async fn websocket_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
-    let remote_addr = addr.ip().to_string();
+    let remote_addr = extract_real_ip(&headers, addr.ip(), state.config.trust_proxy);
     ws.on_upgrade(move |socket| handle_socket(socket, state, remote_addr))
 }
 
@@ -171,7 +217,7 @@ async fn handle_terminal_session(
                                 state.rate_limiter.reset(&remote_addr).await;
 
                                 let ok_msg = Message::AuthOk(AuthOkData {
-                                    session_id: client_id.clone(),
+                                    client_id: client_id.clone(),
                                     readonly: false,
                                 });
                                 ws_sender
@@ -307,7 +353,7 @@ async fn handle_terminal_session(
                                 state.rate_limiter.reset(&remote_addr).await;
 
                                 let ok_msg = Message::AuthOk(AuthOkData {
-                                    session_id: client_id.clone(),
+                                    client_id: client_id.clone(),
                                     readonly: false,
                                 });
                                 ws_sender
@@ -358,13 +404,20 @@ async fn handle_terminal_session(
         None
     };
 
-    // Wait for initial resize message
-    let (cols, rows) = match ws_receiver.next().await {
+    // Read initial handshake messages: Resize (required) and optionally Join.
+    // The client may send them in either order, but we must not consume
+    // messages that belong to the main I/O loop (Input, Ping, etc.).
+    let mut cols: u16 = 80;
+    let mut rows: u16 = 24;
+    let mut join_session_id: Option<String> = None;
+    let mut resize_received = false;
+
+    // Read first message
+    match ws_receiver.next().await {
         Some(Ok(WsMessage::Text(text))) => {
             let msg = Message::from_json(&text)?;
             match msg {
                 Message::Resize(data) => {
-                    // Validate terminal size
                     if let Err(e) = state
                         .validation
                         .validate_terminal_size(data.cols, data.rows)
@@ -378,7 +431,6 @@ async fn handle_terminal_session(
                                 &format!("Invalid terminal size: {}", e),
                             )
                             .await;
-
                         let error_msg = Message::Error(ErrorData {
                             code: "INVALID_SIZE".to_string(),
                             message: format!("Invalid terminal size: {}", e),
@@ -391,41 +443,134 @@ async fn handle_terminal_session(
                             .await?;
                         return Ok(());
                     }
-                    debug!("Initial terminal size: {}x{}", data.cols, data.rows);
-                    (data.cols, data.rows)
+                    cols = data.cols;
+                    rows = data.rows;
+                    resize_received = true;
+                }
+                Message::Join(data) => {
+                    join_session_id = Some(data.session_id);
                 }
                 _ => {
-                    warn!("Expected resize message, got other message type");
-                    (80, 24) // default size
+                    warn!("Expected resize or join, got other message type");
                 }
             }
         }
-        _ => (80, 24), // default size
-    };
+        _ => {
+            warn!("No handshake message received");
+        }
+    }
 
-    // Create or get session using SessionManager
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let session = state
-        .session_manager
-        .create_session(
-            session_id.clone(),
-            &state.config.command,
+    // If we got Join first but haven't received Resize yet, read the next
+    // message expecting Resize.
+    if join_session_id.is_some()
+        && !resize_received
+        && let Some(Ok(WsMessage::Text(text))) = ws_receiver.next().await
+        && let Ok(Message::Resize(data)) = Message::from_json(&text)
+    {
+        if let Err(e) = state
+            .validation
+            .validate_terminal_size(data.cols, data.rows)
+        {
+            error!("Invalid terminal size: {}", e);
             state
-                .config
-                .working_dir
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string()),
-            cols,
-            rows,
-            None, // Use default mode from config
-        )
-        .await?;
+                .audit_logger
+                .log_error(
+                    &remote_addr,
+                    &client_id,
+                    &format!("Invalid terminal size: {}", e),
+                )
+                .await;
+            let error_msg = Message::Error(ErrorData {
+                code: "INVALID_SIZE".to_string(),
+                message: format!("Invalid terminal size: {}", e),
+                fatal: true,
+            });
+            ws_sender
+                .lock()
+                .await
+                .send(WsMessage::Text(error_msg.to_json()?.into()))
+                .await?;
+            return Ok(());
+        }
+        cols = data.cols;
+        rows = data.rows;
+    }
 
-    info!(
-        "Session created: id={}, mode={}",
-        session_id,
-        session.metadata().mode
-    );
+    // Create or join session based on whether a Join message was received
+    let (session, session_id, is_readonly) = if let Some(target_id) = join_session_id {
+        // Try to join an existing session
+        match state.session_manager.get_session(&target_id).await {
+            Some(existing_session) => {
+                let mode = existing_session.metadata().mode;
+                if mode == SessionMode::Isolated {
+                    let error_msg = Message::Error(ErrorData {
+                        code: "CANNOT_JOIN".to_string(),
+                        message: "Cannot join an isolated session".to_string(),
+                        fatal: true,
+                    });
+                    ws_sender
+                        .lock()
+                        .await
+                        .send(WsMessage::Text(error_msg.to_json()?.into()))
+                        .await?;
+                    return Ok(());
+                }
+                let readonly = mode == SessionMode::SharedReadOnly;
+                info!(
+                    "Client joining session {} (mode={}, readonly={})",
+                    target_id, mode, readonly
+                );
+                (existing_session, target_id, readonly)
+            }
+            None => {
+                // Session expired or not found — create a new one instead of erroring.
+                // This handles reconnection gracefully: the client's old session may
+                // have been cleaned up, so we silently create a fresh session.
+                info!(
+                    "Session '{}' not found, creating new session for rejoining client",
+                    target_id
+                );
+                let new_id = uuid::Uuid::new_v4().to_string();
+                let new_session = state
+                    .session_manager
+                    .create_session(
+                        new_id.clone(),
+                        &state.config.command,
+                        state
+                            .config
+                            .working_dir
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().to_string()),
+                        cols,
+                        rows,
+                        None,
+                    )
+                    .await?;
+                info!("Session created: id={}", new_id);
+                (new_session, new_id, false)
+            }
+        }
+    } else {
+        // Create a new session
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let new_session = state
+            .session_manager
+            .create_session(
+                session_id.clone(),
+                &state.config.command,
+                state
+                    .config
+                    .working_dir
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string()),
+                cols,
+                rows,
+                None,
+            )
+            .await?;
+        info!("Session created: id={}", session_id);
+        (new_session, session_id, false)
+    };
 
     // Add this client to the session
     let client = Client {
@@ -433,7 +578,7 @@ async fn handle_terminal_session(
         remote_addr: remote_addr.to_string(),
         username,
         connected_at: Instant::now(),
-        readonly: false,
+        readonly: is_readonly,
     };
 
     session.add_client(client).await?;
@@ -457,7 +602,7 @@ async fn handle_terminal_session(
         session_id: session_id.clone(),
         cols,
         rows,
-        readonly: false,
+        readonly: is_readonly,
     });
 
     ws_sender
@@ -469,9 +614,23 @@ async fn handle_terminal_session(
     // Get PTY session for I/O
     let pty_session_arc = session.pty_session();
 
-    // Spawn task to read from PTY and send to WebSocket
-    let ws_sender_clone = ws_sender.clone();
+    // Duplicate the PTY master fd once for writing, so we don't need to
+    // dup/close on every keystroke.  The read task does its own dup.
+    let mut pty_writer = {
+        use std::os::fd::BorrowedFd;
+        let pty_guard = pty_session_arc.lock().await;
+        let master_fd = pty_guard.master_fd();
+        let borrowed_fd = unsafe { BorrowedFd::borrow_raw(master_fd) };
+        let dup_fd = nix::unistd::dup(borrowed_fd)
+            .map_err(|e| format!("Failed to duplicate PTY fd for write: {}", e))?;
+        let pty_file = std::fs::File::from(dup_fd);
+        tokio::fs::File::from_std(pty_file)
+    };
+
+    // Spawn task to read from PTY and broadcast to all subscribers
     let pty_session_for_read = pty_session_arc.clone();
+    let session_for_broadcast = session.clone();
+    let ws_sender_for_pty = ws_sender.clone();
     let pty_to_ws = tokio::spawn(async move {
         use std::os::fd::BorrowedFd;
 
@@ -535,28 +694,64 @@ async fn handle_terminal_session(
                     break;
                 }
                 Ok(Ok(n)) => {
-                    let output = String::from_utf8_lossy(&buffer[..n]).to_string();
-                    let msg = Message::Output(OutputData { payload: output });
+                    // Broadcast PTY output to all connected clients
+                    session_for_broadcast.broadcast_output(buffer[..n].to_vec());
+                }
+                Ok(Err(e)) => {
+                    // EIO is expected when the shell exits (Ctrl-D closes the
+                    // slave side of the PTY). Treat it as a normal EOF.
+                    if e.raw_os_error() == Some(libc::EIO) {
+                        debug!("PTY EIO (shell exited)");
+                    } else {
+                        error!("Error reading from PTY: {}", e);
+                    }
+                    break;
+                }
+                Err(_would_block) => continue,
+            }
+        }
 
+        // Notify clients that the shell has exited
+        let disconnect = Message::Disconnect(DisconnectData {
+            reason: "Shell exited".to_string(),
+            code: 0,
+        });
+        if let Ok(json) = disconnect.to_json() {
+            let _ = ws_sender_for_pty
+                .lock()
+                .await
+                .send(WsMessage::Text(json.into()))
+                .await;
+        }
+    });
+
+    // Spawn task to receive broadcast output and forward to this client's WebSocket
+    let ws_sender_for_sub = ws_sender.clone();
+    let mut output_rx = session.subscribe_output();
+    let subscriber_task = tokio::spawn(async move {
+        loop {
+            match output_rx.recv().await {
+                Ok(data) => {
+                    let output = String::from_utf8_lossy(&data).to_string();
+                    let msg = Message::Output(OutputData { payload: output });
                     if let Ok(json) = msg.to_json()
-                        && ws_sender_clone
+                        && ws_sender_for_sub
                             .lock()
                             .await
                             .send(WsMessage::Text(json.into()))
                             .await
-                            .is_ok()
+                            .is_err()
                     {
-                        // Message sent successfully
-                    } else {
-                        error!("Failed to send to WebSocket");
                         break;
                     }
                 }
-                Ok(Err(e)) => {
-                    error!("Error reading from PTY: {}", e);
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    // Skip lagged messages
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => {
                     break;
                 }
-                Err(_would_block) => continue,
             }
         }
     });
@@ -575,6 +770,23 @@ async fn handle_terminal_session(
             Ok(WsMessage::Text(text)) => {
                 match Message::from_json(&text) {
                     Ok(Message::Input(data)) => {
+                        // Check if client can write (read-only enforcement)
+                        if !session.can_write(&client_id).await {
+                            let error_msg = Message::Error(ErrorData {
+                                code: "READONLY".to_string(),
+                                message: "This session is read-only".to_string(),
+                                fatal: false,
+                            });
+                            if let Ok(json) = error_msg.to_json() {
+                                let _ = ws_sender
+                                    .lock()
+                                    .await
+                                    .send(WsMessage::Text(json.into()))
+                                    .await;
+                            }
+                            continue;
+                        }
+
                         // Validate input payload
                         if let Err(e) = state.validation.validate_input_payload(&data.payload) {
                             warn!("Invalid input payload: {}", e);
@@ -603,34 +815,9 @@ async fn handle_terminal_session(
                         }
 
                         // Write user input to PTY
-                        let pty_session_for_write = pty_session_arc.clone();
-                        let payload = data.payload.clone();
-
-                        tokio::spawn(async move {
-                            use std::os::fd::BorrowedFd;
-
-                            let pty_guard = pty_session_for_write.lock().await;
-                            let master_fd = pty_guard.master_fd();
-
-                            // Duplicate the file descriptor so we have our own independent fd
-                            let borrowed_fd = unsafe { BorrowedFd::borrow_raw(master_fd) };
-                            let dup_fd = match nix::unistd::dup(borrowed_fd) {
-                                Ok(fd) => fd,
-                                Err(e) => {
-                                    error!("Failed to duplicate PTY fd for write: {}", e);
-                                    return;
-                                }
-                            };
-
-                            drop(pty_guard);
-
-                            // Convert OwnedFd to File (transfers ownership, no double-close)
-                            let pty_file = std::fs::File::from(dup_fd);
-                            let mut pty_writer = tokio::fs::File::from_std(pty_file);
-                            if let Err(e) = pty_writer.write_all(payload.as_bytes()).await {
-                                error!("Failed to write to PTY: {}", e);
-                            }
-                        });
+                        if let Err(e) = pty_writer.write_all(data.payload.as_bytes()).await {
+                            error!("Failed to write to PTY: {}", e);
+                        }
                     }
                     Ok(Message::Resize(data)) => {
                         // Validate terminal size
@@ -706,15 +893,28 @@ async fn handle_terminal_session(
 
     // Cleanup
     pty_to_ws.abort();
+    subscriber_task.abort();
 
-    // Remove client from session
+    // Remove client from session.
     session.remove_client(&client_id).await;
 
-    // If this was the last client, remove the session entirely.
-    // Use atomic remove_if_empty to avoid the TOCTOU race between
-    // checking is_empty and calling remove_session.
-    if state.session_manager.remove_if_empty(&session_id).await {
-        info!("Session {} removed (no remaining clients)", session_id);
+    // For isolated sessions, immediately reclaim resources when the last
+    // client disconnects — there is no benefit to keeping the session alive
+    // for reconnection since no other client can join.
+    // For shared sessions, keep the session alive so clients can reconnect
+    // within the reconnection window.
+    if session.metadata().mode == SessionMode::Isolated {
+        if state.session_manager.remove_if_empty(&session_id).await {
+            info!(
+                "Client {} removed, isolated session {} cleaned up immediately",
+                client_id, session_id
+            );
+        }
+    } else {
+        info!(
+            "Client {} removed from session {} (session kept alive for reconnection)",
+            client_id, session_id
+        );
     }
 
     // Log disconnection
@@ -739,4 +939,104 @@ async fn handle_terminal_session(
     let _ = ws_sender.lock().await.close().await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn make_headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for (k, v) in pairs {
+            headers.insert(
+                k.parse::<axum::http::header::HeaderName>().unwrap(),
+                v.parse().unwrap(),
+            );
+        }
+        headers
+    }
+
+    #[test]
+    fn test_extract_real_ip_no_proxy() {
+        let headers = HeaderMap::new();
+        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        assert_eq!(extract_real_ip(&headers, addr, false), "192.168.1.100");
+    }
+
+    #[test]
+    fn test_extract_real_ip_trust_disabled_ignores_headers() {
+        let headers = make_headers(&[("x-real-ip", "10.0.0.1")]);
+        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        // trust_proxy = false → header ignored
+        assert_eq!(extract_real_ip(&headers, addr, false), "192.168.1.100");
+    }
+
+    #[test]
+    fn test_extract_real_ip_x_real_ip() {
+        let headers = make_headers(&[("x-real-ip", "10.0.0.1")]);
+        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        assert_eq!(extract_real_ip(&headers, addr, true), "10.0.0.1");
+    }
+
+    #[test]
+    fn test_extract_real_ip_x_forwarded_for() {
+        let headers = make_headers(&[("x-forwarded-for", "10.0.0.1, 10.0.0.2, 10.0.0.3")]);
+        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        assert_eq!(extract_real_ip(&headers, addr, true), "10.0.0.1");
+    }
+
+    #[test]
+    fn test_extract_real_ip_x_real_ip_takes_priority() {
+        let headers = make_headers(&[("x-real-ip", "10.0.0.1"), ("x-forwarded-for", "10.0.0.99")]);
+        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        assert_eq!(extract_real_ip(&headers, addr, true), "10.0.0.1");
+    }
+
+    #[test]
+    fn test_extract_real_ip_fallback_to_connect_addr() {
+        let headers = HeaderMap::new();
+        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        // trust_proxy = true but no headers → fallback
+        assert_eq!(extract_real_ip(&headers, addr, true), "192.168.1.100");
+    }
+
+    #[test]
+    fn test_extract_real_ip_empty_x_real_ip_falls_back() {
+        let headers = make_headers(&[("x-real-ip", ""), ("x-forwarded-for", "10.0.0.5")]);
+        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        // Empty X-Real-IP → try X-Forwarded-For
+        assert_eq!(extract_real_ip(&headers, addr, true), "10.0.0.5");
+    }
+
+    #[test]
+    fn test_extract_real_ip_whitespace_trimmed() {
+        let headers = make_headers(&[("x-real-ip", "  10.0.0.1  ")]);
+        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        assert_eq!(extract_real_ip(&headers, addr, true), "10.0.0.1");
+    }
+
+    #[test]
+    fn test_extract_real_ip_ipv6() {
+        let headers = make_headers(&[("x-real-ip", "2001:db8::1")]);
+        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        assert_eq!(extract_real_ip(&headers, addr, true), "2001:db8::1");
+    }
+
+    #[test]
+    fn test_extract_real_ip_rejects_non_ip_values() {
+        // A non-IP string in the header should be rejected
+        let headers = make_headers(&[("x-real-ip", "not-an-ip-address")]);
+        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        assert_eq!(extract_real_ip(&headers, addr, true), "192.168.1.100");
+    }
+
+    #[test]
+    fn test_extract_real_ip_rejects_hostname() {
+        // A hostname is not a valid IP
+        let headers = make_headers(&[("x-forwarded-for", "attacker.example.com")]);
+        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        assert_eq!(extract_real_ip(&headers, addr, true), "192.168.1.100");
+    }
 }

@@ -6,14 +6,12 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
 
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct AuditLogger {
     log_file: Option<PathBuf>,
     enabled: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuditEvent {
     pub timestamp: DateTime<Utc>,
@@ -24,7 +22,6 @@ pub struct AuditEvent {
     pub details: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuditEventType {
@@ -32,19 +29,21 @@ pub enum AuditEventType {
     ConnectionClosed,
     AuthSuccess,
     AuthFailure,
+    #[allow(dead_code)]
     CommandExecuted,
     SessionStarted,
+    #[allow(dead_code)]
     SessionEnded,
     ErrorOccurred,
 }
 
-#[allow(dead_code)]
 impl AuditLogger {
     pub fn new(log_file: Option<PathBuf>, enabled: bool) -> Self {
         Self { log_file, enabled }
     }
 
     /// Log a connection event
+    #[allow(dead_code)]
     pub async fn log_connection(&self, remote_addr: &str, session_id: &str) {
         self.log_event(AuditEvent {
             timestamp: Utc::now(),
