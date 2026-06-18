@@ -77,22 +77,32 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
     let args = Args::parse();
 
     // Initialize tracing/logging
-    init_logging(&args.log_level)?;
+    if let Err(e) = init_logging(&args.log_level) {
+        eprintln!("Failed to initialize logging: {}", e);
+        std::process::exit(1);
+    }
 
     // Load configuration
-    let config = load_config(&args)?;
+    let config = match load_config(&args) {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::error!("Failed to load configuration: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     tracing::info!("Starting ttyd-rs v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Configuration: {:?}", config);
 
     // Start the server
-    server::start_server(config).await?;
-
-    Ok(())
+    if let Err(e) = server::start_server(config).await {
+        tracing::error!("Server error: {}", e);
+        std::process::exit(1);
+    }
 }
 
 /// Initialize the tracing subscriber for logging
@@ -154,4 +164,157 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
     config.validate()?;
 
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_load_config_defaults() {
+        let args = Args {
+            port: 7681,
+            bind: "127.0.0.1".to_string(),
+            config: None,
+            shell: "bash".to_string(),
+            working_dir: None,
+            log_level: "info".to_string(),
+            session_mode: "isolated".to_string(),
+            session_timeout: 3600,
+            max_connections: 100,
+            auth: false,
+            username: None,
+            password: None,
+            audit: false,
+            audit_file: None,
+        };
+
+        let config = load_config(&args).unwrap();
+        assert_eq!(config.command, vec!["bash"]);
+        assert_eq!(config.session.mode, "isolated");
+        assert_eq!(config.session.timeout, 3600);
+        assert!(config.auth.is_none());
+    }
+
+    #[test]
+    fn test_load_config_with_auth() {
+        let args = Args {
+            port: 8080,
+            bind: "0.0.0.0".to_string(),
+            config: None,
+            shell: "/bin/zsh".to_string(),
+            working_dir: Some(PathBuf::from("/tmp")),
+            log_level: "debug".to_string(),
+            session_mode: "shared_readwrite".to_string(),
+            session_timeout: 7200,
+            max_connections: 50,
+            auth: true,
+            username: Some("admin".to_string()),
+            password: Some("secret".to_string()),
+            audit: false,
+            audit_file: None,
+        };
+
+        let config = load_config(&args).unwrap();
+        assert_eq!(config.command, vec!["/bin/zsh"]);
+        assert_eq!(config.working_dir, Some(PathBuf::from("/tmp")));
+        assert_eq!(config.log_level, "debug");
+        assert_eq!(config.max_connections, 50);
+        assert_eq!(config.session.mode, "shared_readwrite");
+        assert_eq!(config.session.timeout, 7200);
+
+        let auth = config.auth.unwrap();
+        assert_eq!(auth.method, "basic");
+        assert_eq!(auth.username, Some("admin".to_string()));
+        assert_eq!(auth.password, Some("secret".to_string()));
+    }
+
+    #[test]
+    fn test_load_config_with_audit() {
+        let args = Args {
+            port: 7681,
+            bind: "127.0.0.1".to_string(),
+            config: None,
+            shell: "bash".to_string(),
+            working_dir: None,
+            log_level: "info".to_string(),
+            session_mode: "isolated".to_string(),
+            session_timeout: 3600,
+            max_connections: 100,
+            auth: false,
+            username: None,
+            password: None,
+            audit: true,
+            audit_file: Some(PathBuf::from("/tmp/audit.log")),
+        };
+
+        let config = load_config(&args).unwrap();
+        assert!(config.audit.enabled);
+        assert_eq!(config.audit.log_file, Some(PathBuf::from("/tmp/audit.log")));
+    }
+
+    #[test]
+    fn test_load_config_from_file() {
+        let dir = std::env::temp_dir().join("ttyd-rs-main-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("config.toml");
+
+        std::fs::write(
+            &config_path,
+            r#"
+bind = "0.0.0.0:3000"
+command = ["/bin/sh"]
+log_level = "warn"
+max_connections = 200
+
+[session]
+mode = "shared_readonly"
+timeout = 1800
+
+[validation]
+max_cols = 500
+min_cols = 10
+max_rows = 200
+min_rows = 5
+max_input_size = 16384
+max_credentials_length = 1024
+
+[rate_limit]
+max_requests = 10
+window_seconds = 60
+
+[audit]
+enabled = false
+"#,
+        )
+        .unwrap();
+
+        let args = Args {
+            port: 9999,
+            bind: "127.0.0.1".to_string(),
+            config: Some(config_path),
+            shell: "bash".to_string(),
+            working_dir: None,
+            log_level: "info".to_string(),
+            session_mode: "isolated".to_string(),
+            session_timeout: 3600,
+            max_connections: 100,
+            auth: false,
+            username: None,
+            password: None,
+            audit: false,
+            audit_file: None,
+        };
+
+        let config = load_config(&args).unwrap();
+        // CLI overrides file values for these fields
+        assert_eq!(config.command, vec!["bash"]);
+        assert_eq!(config.log_level, "info");
+        assert_eq!(config.max_connections, 100);
+        // File values that are NOT overridden by CLI
+        assert_eq!(config.session.mode, "isolated"); // CLI overrides
+        assert!(config.validate().is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

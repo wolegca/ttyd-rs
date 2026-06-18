@@ -2,6 +2,26 @@
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use thiserror::Error;
+
+/// Errors that can occur during configuration loading and validation
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("Failed to read config file: {0}")]
+    FileRead(#[from] std::io::Error),
+
+    #[error("Failed to parse config file: {0}")]
+    Parse(#[from] toml::de::Error),
+
+    #[error("Invalid session mode: {0}")]
+    InvalidSessionMode(String),
+
+    #[error("Invalid terminal size range: {0}")]
+    InvalidTerminalSize(String),
+
+    #[error("Invalid rate limit: {0}")]
+    InvalidRateLimit(String),
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -105,16 +125,10 @@ pub struct RateLimitConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            bind: "127.0.0.1:7681"
-                .parse()
-                .map_err(|e| format!("Failed to parse default address: {}", e))
-                .ok()
-                .unwrap_or_else(|| {
-                    "0.0.0.0:7681".parse().ok().unwrap_or_else(|| {
-                        // This should never happen with valid IP addresses
-                        panic!("Invalid default socket address");
-                    })
-                }),
+            bind: SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                7681,
+            ),
             command: vec!["bash".to_string()],
             working_dir: None,
             auth: None,
@@ -173,37 +187,45 @@ impl Default for RateLimitConfig {
 
 impl Config {
     /// Load configuration from a TOML file
-    pub fn from_file(path: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_file(path: &PathBuf) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(path)?;
         let config: Config = toml::from_str(&content)?;
         Ok(config)
     }
 
     /// Validate configuration
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), ConfigError> {
         // Validate session mode
         if !["isolated", "shared_readonly", "shared_readwrite"]
             .contains(&self.session.mode.as_str())
         {
-            return Err(format!("Invalid session mode: {}", self.session.mode));
+            return Err(ConfigError::InvalidSessionMode(self.session.mode.clone()));
         }
 
         // Validate terminal size ranges
         if self.validation.min_cols >= self.validation.max_cols {
-            return Err("min_cols must be less than max_cols".to_string());
+            return Err(ConfigError::InvalidTerminalSize(
+                "min_cols must be less than max_cols".to_string(),
+            ));
         }
 
         if self.validation.min_rows >= self.validation.max_rows {
-            return Err("min_rows must be less than max_rows".to_string());
+            return Err(ConfigError::InvalidTerminalSize(
+                "min_rows must be less than max_rows".to_string(),
+            ));
         }
 
         // Validate rate limit
         if self.rate_limit.max_requests == 0 {
-            return Err("max_requests must be greater than 0".to_string());
+            return Err(ConfigError::InvalidRateLimit(
+                "max_requests must be greater than 0".to_string(),
+            ));
         }
 
         if self.rate_limit.window_seconds == 0 {
-            return Err("window_seconds must be greater than 0".to_string());
+            return Err(ConfigError::InvalidRateLimit(
+                "window_seconds must be greater than 0".to_string(),
+            ));
         }
 
         Ok(())
@@ -241,5 +263,98 @@ mod tests {
         config.validation.min_cols = 100;
         config.validation.max_cols = 50;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_validation_equal_min_max_rows() {
+        let mut config = Config::default();
+        config.validation.min_rows = 24;
+        config.validation.max_rows = 24;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_validation_zero_rate_limit() {
+        let mut config = Config::default();
+        config.rate_limit.max_requests = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_validation_zero_window() {
+        let mut config = Config::default();
+        config.rate_limit.window_seconds = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_from_file() {
+        let dir = std::env::temp_dir().join("ttyd-rs-config-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("test.toml");
+
+        std::fs::write(
+            &config_path,
+            r#"
+bind = "0.0.0.0:9090"
+command = ["/bin/zsh"]
+log_level = "debug"
+max_connections = 50
+
+[session]
+mode = "shared_readwrite"
+timeout = 7200
+
+[validation]
+max_cols = 300
+min_cols = 20
+max_rows = 150
+min_rows = 10
+max_input_size = 8192
+max_credentials_length = 512
+
+[rate_limit]
+max_requests = 20
+window_seconds = 120
+
+[audit]
+enabled = true
+"#,
+        )
+        .unwrap();
+
+        let config = Config::from_file(&config_path).unwrap();
+        assert_eq!(config.command, vec!["/bin/zsh"]);
+        assert_eq!(config.log_level, "debug");
+        assert_eq!(config.max_connections, 50);
+        assert_eq!(config.session.mode, "shared_readwrite");
+        assert_eq!(config.session.timeout, 7200);
+        assert_eq!(config.validation.max_cols, 300);
+        assert_eq!(config.validation.min_cols, 20);
+        assert_eq!(config.rate_limit.max_requests, 20);
+        assert!(config.audit.enabled);
+        assert!(config.validate().is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_config_from_file_not_found() {
+        let result = Config::from_file(&std::path::PathBuf::from("/nonexistent/path.toml"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_from_file_invalid_toml() {
+        let dir = std::env::temp_dir().join("ttyd-rs-config-test-invalid");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("bad.toml");
+
+        std::fs::write(&config_path, "this is not valid toml [[[[").unwrap();
+
+        let result = Config::from_file(&config_path);
+        assert!(result.is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -116,6 +116,7 @@ impl Message {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -149,6 +150,120 @@ mod tests {
                 assert_eq!(data.rows, 24);
             }
             _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_all_message_types_roundtrip() {
+        let messages = vec![
+            Message::Auth(AuthData {
+                method: "basic".to_string(),
+                credentials: "dXNlcjpwYXNz".to_string(),
+            }),
+            Message::AuthOk(AuthOkData {
+                session_id: "sess-1".to_string(),
+                readonly: false,
+            }),
+            Message::AuthFail(AuthFailData {
+                reason: "bad creds".to_string(),
+            }),
+            Message::Output(OutputData {
+                payload: "hello\n".to_string(),
+            }),
+            Message::Ping(PingData { timestamp: 12345 }),
+            Message::Pong(PongData { timestamp: 12345 }),
+            Message::Error(ErrorData {
+                code: "ERR".to_string(),
+                message: "something broke".to_string(),
+                fatal: true,
+            }),
+            Message::Disconnect(DisconnectData {
+                reason: "bye".to_string(),
+                code: 0,
+            }),
+            Message::Ready(ReadyData {
+                session_id: "sess-2".to_string(),
+                cols: 80,
+                rows: 24,
+                readonly: false,
+            }),
+        ];
+
+        for msg in messages {
+            let json = msg.to_json().unwrap();
+            let parsed = Message::from_json(&json).unwrap();
+            // Re-serialize to verify lossless roundtrip
+            let json2 = parsed.to_json().unwrap();
+            assert_eq!(json, json2);
+        }
+    }
+
+    #[test]
+    fn test_invalid_json_returns_error() {
+        let result = Message::from_json("not valid json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unknown_message_type_returns_error() {
+        let result = Message::from_json(r#"{"type":"unknown","data":{}}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_missing_type_field_returns_error() {
+        let result = Message::from_json(r#"{"payload":"hello"}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_auth_message_json_structure() {
+        let msg = Message::Auth(AuthData {
+            method: "token".to_string(),
+            credentials: "abc123".to_string(),
+        });
+        let json = msg.to_json().unwrap();
+        assert!(json.contains(r#""type":"auth""#));
+        assert!(json.contains(r#""method":"token""#));
+        assert!(json.contains(r#""credentials":"abc123""#));
+    }
+
+    #[test]
+    fn test_ready_message_fields() {
+        let msg = Message::Ready(ReadyData {
+            session_id: "s1".to_string(),
+            cols: 120,
+            rows: 40,
+            readonly: true,
+        });
+        let json = msg.to_json().unwrap();
+        let parsed = Message::from_json(&json).unwrap();
+        match parsed {
+            Message::Ready(data) => {
+                assert_eq!(data.session_id, "s1");
+                assert_eq!(data.cols, 120);
+                assert_eq!(data.rows, 40);
+                assert!(data.readonly);
+            }
+            _ => panic!("Expected Ready message"),
+        }
+    }
+
+    #[test]
+    fn test_error_message_fatal_flag() {
+        let msg = Message::Error(ErrorData {
+            code: "FATAL_ERR".to_string(),
+            message: "critical failure".to_string(),
+            fatal: true,
+        });
+        let json = msg.to_json().unwrap();
+        let parsed = Message::from_json(&json).unwrap();
+        match parsed {
+            Message::Error(data) => {
+                assert!(data.fatal);
+                assert_eq!(data.code, "FATAL_ERR");
+            }
+            _ => panic!("Expected Error message"),
         }
     }
 }

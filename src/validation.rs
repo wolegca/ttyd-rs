@@ -196,4 +196,50 @@ mod tests {
         assert!(config.validate_auth_method("token").is_ok());
         assert!(config.validate_auth_method("invalid").is_err());
     }
+
+    #[test]
+    fn test_terminal_size_boundary_min() {
+        let config = ValidationConfig::default();
+        // Exactly at min boundary should pass
+        assert!(config.validate_terminal_size(10, 5).is_ok());
+        // One below min should fail
+        assert!(config.validate_terminal_size(9, 5).is_err());
+        assert!(config.validate_terminal_size(10, 4).is_err());
+    }
+
+    #[test]
+    fn test_terminal_size_boundary_max() {
+        let config = ValidationConfig::default();
+        // Exactly at max boundary should pass
+        assert!(config.validate_terminal_size(500, 200).is_ok());
+        // One above max should fail
+        assert!(config.validate_terminal_size(501, 200).is_err());
+        assert!(config.validate_terminal_size(500, 201).is_err());
+    }
+
+    #[test]
+    fn test_input_payload_with_null_bytes() {
+        let config = ValidationConfig::default();
+        let payload = "hello\0world";
+        assert!(config.validate_input_payload(payload).is_err());
+    }
+
+    #[test]
+    fn test_validation_config_from_config() {
+        let mut cfg = crate::config::Config::default();
+        cfg.validation.max_cols = 999;
+        cfg.validation.min_cols = 1;
+        cfg.validation.max_rows = 500;
+        cfg.validation.min_rows = 1;
+        cfg.validation.max_input_size = 32768;
+        cfg.validation.max_credentials_length = 2048;
+
+        let vc = ValidationConfig::from_config(&cfg);
+        assert_eq!(vc.max_cols, 999);
+        assert_eq!(vc.min_cols, 1);
+        assert_eq!(vc.max_rows, 500);
+        assert_eq!(vc.min_rows, 1);
+        assert_eq!(vc.max_input_size, 32768);
+        assert_eq!(vc.max_credentials_length, 2048);
+    }
 }

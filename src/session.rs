@@ -3,8 +3,22 @@ use crate::pty::PtySession;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use thiserror::Error;
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tracing::{info, warn};
+
+/// Errors that can occur during session operations
+#[derive(Debug, Error)]
+pub enum SessionError {
+    #[error("Failed to create PTY: {0}")]
+    PtyCreation(#[from] crate::pty::PtyError),
+
+    #[error("Invalid session mode: {0}")]
+    InvalidMode(String),
+
+    #[error("Cannot add multiple clients to an isolated session")]
+    IsolatedSessionFull,
+}
 
 /// Session mode determines how clients interact with the session
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,14 +32,14 @@ pub enum SessionMode {
 }
 
 impl std::str::FromStr for SessionMode {
-    type Err = String;
+    type Err = SessionError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "isolated" => Ok(SessionMode::Isolated),
             "shared-ro" | "shared_readonly" => Ok(SessionMode::SharedReadOnly),
             "shared-rw" | "shared_readwrite" => Ok(SessionMode::SharedReadWrite),
-            _ => Err(format!("Invalid session mode: {}", s)),
+            _ => Err(SessionError::InvalidMode(s.to_string())),
         }
     }
 }
@@ -83,9 +97,8 @@ impl Session {
         working_dir: Option<String>,
         cols: u16,
         rows: u16,
-    ) -> Result<Self, String> {
-        let pty_session = PtySession::new(command, cols, rows)
-            .map_err(|e| format!("Failed to create PTY: {}", e))?;
+    ) -> Result<Self, SessionError> {
+        let pty_session = PtySession::new(command, cols, rows)?;
 
         let (output_tx, _) = broadcast::channel(100);
 
@@ -106,12 +119,12 @@ impl Session {
 
     /// Add a client to this session
     #[allow(dead_code)]
-    pub async fn add_client(&self, client: Client) -> Result<(), String> {
+    pub async fn add_client(&self, client: Client) -> Result<(), SessionError> {
         let mut clients = self.clients.write().await;
 
         // Check if this is a shared session and enforce read-only for SharedReadOnly mode
         if self.metadata.mode == SessionMode::Isolated && !clients.is_empty() {
-            return Err("Cannot add multiple clients to an isolated session".to_string());
+            return Err(SessionError::IsolatedSessionFull);
         }
 
         clients.insert(client.client_id.clone(), client);
@@ -223,7 +236,7 @@ impl SessionManager {
         cols: u16,
         rows: u16,
         mode: Option<SessionMode>,
-    ) -> Result<Arc<Session>, String> {
+    ) -> Result<Arc<Session>, SessionError> {
         let mode = mode.unwrap_or(self.default_mode);
 
         let session = Session::new(session_id.clone(), mode, command, working_dir, cols, rows)?;
@@ -293,6 +306,17 @@ impl SessionManager {
         count
     }
 
+    /// Shut down all sessions. Called during graceful server shutdown.
+    /// Drops all sessions, which triggers PtyProcess::drop() to kill child processes.
+    pub async fn shutdown(&self) {
+        let mut sessions = self.sessions.write().await;
+        let count = sessions.len();
+        sessions.clear();
+        if count > 0 {
+            info!("Shutdown: removed {} active sessions", count);
+        }
+    }
+
     /// Get statistics
     pub async fn stats(&self) -> SessionStats {
         let sessions = self.sessions.read().await;
@@ -326,8 +350,10 @@ pub struct SessionStats {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use tokio::time::{sleep, timeout};
 
     #[tokio::test]
     async fn test_session_creation() {
@@ -452,5 +478,328 @@ mod tests {
             SessionMode::SharedReadWrite
         );
         assert!("invalid".parse::<SessionMode>().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_session_remove_client() {
+        let session = Session::new(
+            "test-rm".to_string(),
+            SessionMode::SharedReadWrite,
+            &["bash".to_string()],
+            None,
+            80,
+            24,
+        )
+        .unwrap();
+
+        let client = Client {
+            client_id: "c1".to_string(),
+            remote_addr: "127.0.0.1".to_string(),
+            username: None,
+            connected_at: Instant::now(),
+            readonly: false,
+        };
+        session.add_client(client).await.unwrap();
+        assert_eq!(session.client_count().await, 1);
+
+        assert!(session.remove_client("c1").await);
+        assert_eq!(session.client_count().await, 0);
+
+        // Removing non-existent client returns false
+        assert!(!session.remove_client("c1").await);
+    }
+
+    #[tokio::test]
+    async fn test_session_is_empty() {
+        let session = Session::new(
+            "test-empty".to_string(),
+            SessionMode::SharedReadWrite,
+            &["bash".to_string()],
+            None,
+            80,
+            24,
+        )
+        .unwrap();
+
+        assert!(session.is_empty().await);
+
+        let client = Client {
+            client_id: "c1".to_string(),
+            remote_addr: "127.0.0.1".to_string(),
+            username: None,
+            connected_at: Instant::now(),
+            readonly: false,
+        };
+        session.add_client(client).await.unwrap();
+        assert!(!session.is_empty().await);
+
+        session.remove_client("c1").await;
+        assert!(session.is_empty().await);
+    }
+
+    #[tokio::test]
+    async fn test_session_can_write_modes() {
+        // Isolated: always writable
+        let isolated = Session::new(
+            "iso".to_string(),
+            SessionMode::Isolated,
+            &["bash".to_string()],
+            None,
+            80,
+            24,
+        )
+        .unwrap();
+        assert!(isolated.can_write("anyone").await);
+
+        // SharedReadOnly: never writable
+        let sro = Session::new(
+            "sro".to_string(),
+            SessionMode::SharedReadOnly,
+            &["bash".to_string()],
+            None,
+            80,
+            24,
+        )
+        .unwrap();
+        assert!(!sro.can_write("anyone").await);
+
+        // SharedReadWrite: writable for non-readonly clients
+        let srw = Session::new(
+            "srw".to_string(),
+            SessionMode::SharedReadWrite,
+            &["bash".to_string()],
+            None,
+            80,
+            24,
+        )
+        .unwrap();
+        // Unknown client
+        assert!(!srw.can_write("unknown").await);
+
+        let client = Client {
+            client_id: "writer".to_string(),
+            remote_addr: "127.0.0.1".to_string(),
+            username: None,
+            connected_at: Instant::now(),
+            readonly: false,
+        };
+        srw.add_client(client).await.unwrap();
+        assert!(srw.can_write("writer").await);
+
+        let ro_client = Client {
+            client_id: "reader".to_string(),
+            remote_addr: "127.0.0.1".to_string(),
+            username: None,
+            connected_at: Instant::now(),
+            readonly: true,
+        };
+        srw.add_client(ro_client).await.unwrap();
+        assert!(!srw.can_write("reader").await);
+    }
+
+    #[tokio::test]
+    async fn test_session_list_clients() {
+        let session = Session::new(
+            "test-list".to_string(),
+            SessionMode::SharedReadWrite,
+            &["bash".to_string()],
+            None,
+            80,
+            24,
+        )
+        .unwrap();
+
+        assert!(session.list_clients().await.is_empty());
+
+        session
+            .add_client(Client {
+                client_id: "c1".to_string(),
+                remote_addr: "127.0.0.1".to_string(),
+                username: Some("alice".to_string()),
+                connected_at: Instant::now(),
+                readonly: false,
+            })
+            .await
+            .unwrap();
+
+        session
+            .add_client(Client {
+                client_id: "c2".to_string(),
+                remote_addr: "127.0.0.2".to_string(),
+                username: None,
+                connected_at: Instant::now(),
+                readonly: true,
+            })
+            .await
+            .unwrap();
+
+        let clients = session.list_clients().await;
+        assert_eq!(clients.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_session_broadcast_output() {
+        let session = Session::new(
+            "test-bcast".to_string(),
+            SessionMode::Isolated,
+            &["bash".to_string()],
+            None,
+            80,
+            24,
+        )
+        .unwrap();
+
+        let mut rx = session.subscribe_output();
+        session.broadcast_output(b"hello".to_vec());
+
+        let received = timeout(Duration::from_millis(500), rx.recv()).await;
+        assert!(received.is_ok());
+        assert_eq!(received.unwrap().unwrap(), b"hello");
+    }
+
+    #[tokio::test]
+    async fn test_session_dimensions() {
+        let session = Session::new(
+            "test-dim".to_string(),
+            SessionMode::Isolated,
+            &["bash".to_string()],
+            None,
+            120,
+            40,
+        )
+        .unwrap();
+
+        assert_eq!(session.pty_session().lock().await.dimensions(), (120, 40));
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_list_sessions() {
+        let manager = SessionManager::new(Duration::from_secs(3600), SessionMode::Isolated);
+
+        assert!(manager.list_sessions().await.is_empty());
+
+        manager
+            .create_session("s1".to_string(), &["bash".to_string()], None, 80, 24, None)
+            .await
+            .unwrap();
+
+        manager
+            .create_session("s2".to_string(), &["bash".to_string()], None, 80, 24, None)
+            .await
+            .unwrap();
+
+        let sessions = manager.list_sessions().await;
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_remove_session() {
+        let manager = SessionManager::new(Duration::from_secs(3600), SessionMode::Isolated);
+
+        manager
+            .create_session(
+                "to-remove".to_string(),
+                &["bash".to_string()],
+                None,
+                80,
+                24,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(manager.session_count().await, 1);
+
+        assert!(manager.remove_session("to-remove").await);
+        assert_eq!(manager.session_count().await, 0);
+
+        // Removing non-existent session returns false
+        assert!(!manager.remove_session("to-remove").await);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_shutdown() {
+        let manager = SessionManager::new(Duration::from_secs(3600), SessionMode::Isolated);
+
+        manager
+            .create_session("s1".to_string(), &["bash".to_string()], None, 80, 24, None)
+            .await
+            .unwrap();
+        manager
+            .create_session("s2".to_string(), &["bash".to_string()], None, 80, 24, None)
+            .await
+            .unwrap();
+
+        manager.shutdown().await;
+        assert_eq!(manager.session_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_stats() {
+        let manager = SessionManager::new(Duration::from_secs(3600), SessionMode::Isolated);
+
+        manager
+            .create_session(
+                "iso1".to_string(),
+                &["bash".to_string()],
+                None,
+                80,
+                24,
+                Some(SessionMode::Isolated),
+            )
+            .await
+            .unwrap();
+
+        manager
+            .create_session(
+                "shared1".to_string(),
+                &["bash".to_string()],
+                None,
+                80,
+                24,
+                Some(SessionMode::SharedReadWrite),
+            )
+            .await
+            .unwrap();
+
+        let stats = manager.stats().await;
+        assert_eq!(stats.total_sessions, 2);
+        assert_eq!(stats.isolated_sessions, 1);
+        assert_eq!(stats.shared_sessions, 1);
+    }
+
+    #[tokio::test]
+    async fn test_session_manager_cleanup_inactive() {
+        let manager = SessionManager::new(Duration::from_millis(500), SessionMode::Isolated);
+
+        manager
+            .create_session(
+                "stale".to_string(),
+                &["bash".to_string()],
+                None,
+                80,
+                24,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Session is fresh, cleanup should not remove it
+        assert_eq!(manager.cleanup_inactive().await, 0);
+        assert_eq!(manager.session_count().await, 1);
+
+        // Wait for session to exceed timeout
+        sleep(Duration::from_millis(600)).await;
+
+        // Now cleanup should remove it (session has no clients)
+        let cleaned = manager.cleanup_inactive().await;
+        assert_eq!(cleaned, 1);
+        assert_eq!(manager.session_count().await, 0);
+    }
+
+    #[test]
+    fn test_session_mode_display() {
+        assert_eq!(SessionMode::Isolated.to_string(), "isolated");
+        assert_eq!(SessionMode::SharedReadOnly.to_string(), "shared_readonly");
+        assert_eq!(SessionMode::SharedReadWrite.to_string(), "shared_readwrite");
     }
 }

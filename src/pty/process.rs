@@ -143,7 +143,24 @@ impl PtyProcess {
 
 impl Drop for PtyProcess {
     fn drop(&mut self) {
-        debug!("Closing PTY master fd: {}", self.master_fd);
+        debug!(
+            "Cleaning up PTY process: pid={}, fd={}",
+            self.child_pid, self.master_fd
+        );
+
+        // Close the master fd first so the child's controlling terminal hangs
+        // up and its foreground process group receives SIGHUP.
         let _ = close(self.master_fd);
+
+        // An interactive shell ignores SIGTERM, so send SIGHUP (which
+        // terminates it) and follow with SIGKILL to guarantee the child exits.
+        // Until the child dies its slave fd stays open and any PTY reader
+        // blocks forever on read(), which previously hung shutdown.
+        let _ = nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGHUP);
+        let _ = nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGKILL);
+
+        // Reap the child process to prevent zombies (blocking; the child has
+        // already been killed so this returns promptly).
+        let _ = nix::sys::wait::waitpid(self.child_pid, None);
     }
 }

@@ -179,6 +179,7 @@ impl Default for AuditLogger {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -204,5 +205,103 @@ mod tests {
         assert!(json.contains("auth_success"));
         assert!(json.contains("127.0.0.1"));
         assert!(json.contains("test"));
+    }
+
+    #[tokio::test]
+    async fn test_log_methods_when_disabled() {
+        let logger = AuditLogger::new(None, false);
+
+        // All logging methods should be no-ops when disabled
+        logger.log_connection("127.0.0.1", "s1").await;
+        logger
+            .log_auth_attempt("127.0.0.1", "user", true, "s1")
+            .await;
+        logger
+            .log_auth_attempt("127.0.0.1", "user", false, "s1")
+            .await;
+        logger.log_disconnect("127.0.0.1", "s1", "test").await;
+        logger
+            .log_session_started("127.0.0.1", Some("user"), "s1")
+            .await;
+        logger.log_error("127.0.0.1", "s1", "oops").await;
+        // No panic or error — just no-ops
+    }
+
+    #[tokio::test]
+    async fn test_log_methods_when_enabled_no_file() {
+        let logger = AuditLogger::new(None, true);
+
+        // Should log to tracing but not fail (no file configured)
+        logger.log_connection("10.0.0.1", "s1").await;
+        logger
+            .log_auth_attempt("10.0.0.1", "admin", true, "s1")
+            .await;
+        logger.log_disconnect("10.0.0.1", "s1", "done").await;
+        logger.log_session_started("10.0.0.1", None, "s1").await;
+        logger.log_error("10.0.0.1", "s1", "test error").await;
+    }
+
+    #[tokio::test]
+    async fn test_log_writes_to_file() {
+        let dir = std::env::temp_dir().join("ttyd-rs-audit-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let log_path = dir.join("audit.log");
+
+        let logger = AuditLogger::new(Some(log_path.clone()), true);
+
+        logger.log_connection("192.168.1.1", "session-abc").await;
+        logger
+            .log_auth_attempt("192.168.1.1", "admin", true, "session-abc")
+            .await;
+
+        // Give async writes a moment to flush
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("192.168.1.1"));
+        assert!(content.contains("session-abc"));
+        assert!(content.contains("connection_opened"));
+        assert!(content.contains("auth_success"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_default_audit_logger() {
+        let logger = AuditLogger::default();
+        assert!(!logger.enabled);
+        assert!(logger.log_file.is_none());
+    }
+
+    #[test]
+    fn test_audit_event_type_serialization() {
+        let types = vec![
+            (AuditEventType::ConnectionOpened, "connection_opened"),
+            (AuditEventType::ConnectionClosed, "connection_closed"),
+            (AuditEventType::AuthSuccess, "auth_success"),
+            (AuditEventType::AuthFailure, "auth_failure"),
+            (AuditEventType::CommandExecuted, "command_executed"),
+            (AuditEventType::SessionStarted, "session_started"),
+            (AuditEventType::SessionEnded, "session_ended"),
+            (AuditEventType::ErrorOccurred, "error_occurred"),
+        ];
+
+        for (event_type, expected) in types {
+            let event = AuditEvent {
+                timestamp: Utc::now(),
+                event_type,
+                remote_addr: "127.0.0.1".to_string(),
+                username: None,
+                session_id: None,
+                details: "test".to_string(),
+            };
+            let json = serde_json::to_string(&event).unwrap();
+            assert!(
+                json.contains(expected),
+                "Expected '{}' in {}",
+                expected,
+                json
+            );
+        }
     }
 }

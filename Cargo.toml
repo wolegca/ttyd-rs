@@ -7,7 +7,6 @@ description = "A Rust rewrite of ttyd - Share your terminal over the web"
 license = "MIT"
 
 [dependencies]
-anyhow = "1.0.102"
 axum = { version = "0.8.9", features = ["ws"] }
 base64 = "0.22.1"
 bytes = "1.11.1"
@@ -24,6 +23,7 @@ serde_json = "1.0.150"
 sha2 = "0.11.0"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["fs", "full", "io-util"] }
+tokio-util = { version = "0.7.18", features = ["rt"] }
 toml = "1.1.2"
 tower = "0.5.3"
 tower-http = { version = "0.7.0", features = ["fs", "cors", "trace"] }
@@ -40,3 +40,6 @@ default = []
 unwrap-used = "deny"
 expect-used = "deny"
 panic = "deny"
+
+[dev-dependencies]
+tokio-tungstenite = "0.29.0"
