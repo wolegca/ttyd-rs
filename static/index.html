@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ttyd-rs - Web Terminal</title>
+    <link rel="stylesheet" href="/vendor/xterm.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            overflow: hidden;
+        }
+
+        #header {
+            background-color: #252526;
+            padding: 10px 20px;
+            border-bottom: 1px solid #3e3e42;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        #header h1 {
+            font-size: 18px;
+            font-weight: normal;
+            color: #cccccc;
+        }
+
+        #status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #4ec9b0;
+        }
+
+        .status-indicator.disconnected {
+            background-color: #f48771;
+        }
+
+        #status-text {
+            font-size: 12px;
+            color: #858585;
+        }
+
+        #terminal-container {
+            width: 100%;
+            height: calc(100vh - 51px);
+            padding: 10px;
+        }
+
+        #terminal {
+            width: 100%;
+            height: 100%;
+        }
+
+        .xterm {
+            height: 100%;
+        }
+
+        .xterm-viewport {
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>ttyd-rs - Web Terminal</h1>
+        <div id="status">
+            <div class="status-indicator" id="status-indicator"></div>
+            <span id="status-text">Connecting...</span>
+            <span id="session-info" style="margin-left: 15px; color: #858585; font-size: 11px;"></span>
+        </div>
+    </div>
+    <div id="terminal-container">
+        <div id="terminal"></div>
+    </div>
+
+    <script src="/vendor/xterm.js"></script>
+    <script src="/vendor/xterm-addon-fit.js"></script>
+    <script src="/vendor/xterm-addon-web-links.js"></script>
+    <script>
+        // Initialize xterm.js
+        const term = new Terminal({
+            cursorBlink: true,
+            fontSize: 14,
+            fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+            theme: {
+                background: '#1e1e1e',
+                foreground: '#d4d4d4',
+                cursor: '#aeafad',
+                black: '#000000',
+                red: '#cd3131',
+                green: '#0dbc79',
+                yellow: '#e5e510',
+                blue: '#2472c8',
+                magenta: '#bc3fbc',
+                cyan: '#11a8cd',
+                white: '#e5e5e5',
+                brightBlack: '#666666',
+                brightRed: '#f14c4c',
+                brightGreen: '#23d18b',
+                brightYellow: '#f5f543',
+                brightBlue: '#3b8eea',
+                brightMagenta: '#d670d6',
+                brightCyan: '#29b8db',
+                brightWhite: '#e5e5e5'
+            }
+        });
+
+        // Add fit addon
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+
+        // Add web links addon
+        const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+        term.loadAddon(webLinksAddon);
+
+        // Open terminal
+        term.open(document.getElementById('terminal'));
+        fitAddon.fit();
+
+        // Status elements
+        const statusIndicator = document.getElementById('status-indicator');
+        const statusText = document.getElementById('status-text');
+        const sessionInfo = document.getElementById('session-info');
+        let currentSessionId = null;
+
+        function setStatus(connected) {
+            if (connected) {
+                statusIndicator.classList.remove('disconnected');
+                statusText.textContent = 'Connected';
+            } else {
+                statusIndicator.classList.add('disconnected');
+                statusText.textContent = 'Disconnected';
+            }
+        }
+
+        function updateSessionInfo(sessionId) {
+            currentSessionId = sessionId;
+            if (sessionId) {
+                sessionInfo.textContent = `Session: ${sessionId.substring(0, 8)}`;
+            }
+        }
+
+        // WebSocket connection
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            console.log('WebSocket connected');
+            setStatus(true);
+
+            // Send initial resize message
+            const dims = fitAddon.proposeDimensions();
+            const resizeMsg = {
+                type: 'resize',
+                data: {
+                    cols: dims.cols,
+                    rows: dims.rows
+                }
+            };
+            ws.send(JSON.stringify(resizeMsg));
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+
+                switch (msg.type) {
+                    case 'ready':
+                        console.log('Terminal ready:', msg.data);
+                        updateSessionInfo(msg.data.session_id);
+                        break;
+                    case 'output':
+                        term.write(msg.data.payload);
+                        break;
+                    case 'disconnect':
+                        console.log('Disconnected:', msg.data.reason);
+                        term.write(`\r\n[Disconnected: ${msg.data.reason}]\r\n`);
+                        setStatus(false);
+                        break;
+                    case 'error':
+                        console.error('Error:', msg.data);
+                        term.write(`\r\n[Error: ${msg.data.message}]\r\n`);
+                        break;
+                }
+            } catch (e) {
+                console.error('Failed to parse message:', e);
+            }
+        };
+
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            term.write('\r\n[Connection error]\r\n');
+            setStatus(false);
+        };
+
+        ws.onclose = () => {
+            console.log('WebSocket closed');
+            term.write('\r\n[Connection closed]\r\n');
+            setStatus(false);
+        };
+
+        // Send user input to server
+        term.onData((data) => {
+            if (ws.readyState === WebSocket.OPEN) {
+                const inputMsg = {
+                    type: 'input',
+                    data: {
+                        payload: data
+                    }
+                };
+                ws.send(JSON.stringify(inputMsg));
+            }
+        });
+
+        // Handle terminal resize
+        window.addEventListener('resize', () => {
+            fitAddon.fit();
+            const dims = fitAddon.proposeDimensions();
+            if (ws.readyState === WebSocket.OPEN) {
+                const resizeMsg = {
+                    type: 'resize',
+                    data: {
+                        cols: dims.cols,
+                        rows: dims.rows
+                    }
+                };
+                ws.send(JSON.stringify(resizeMsg));
+            }
+        });
+
+        // Heartbeat
+        setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+                const pingMsg = {
+                    type: 'ping',
+                    data: {
+                        timestamp: Date.now()
+                    }
+                };
+                ws.send(JSON.stringify(pingMsg));
+            }
+        }, 30000);
+    </script>
+</body>
+</html>

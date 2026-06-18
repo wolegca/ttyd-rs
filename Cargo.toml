@@ -1,0 +1,42 @@
+[package]
+name = "ttyd-rs"
+version = "0.1.0"
+edition = "2024"
+authors = ["wcx"]
+description = "A Rust rewrite of ttyd - Share your terminal over the web"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.102"
+axum = { version = "0.8.9", features = ["ws"] }
+base64 = "0.22.1"
+bytes = "1.11.1"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.6.1", features = ["derive", "env"] }
+futures = "0.3.32"
+libc = "0.2.186"
+mime_guess = "2.0.5"
+nix = { version = "0.31.3", features = ["process", "signal", "term", "ioctl", "fs"] }
+rand = "0.10.1"
+rust-embed = { version = "8.11.0", features = ["axum"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.11.0"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["fs", "full", "io-util"] }
+toml = "1.1.2"
+tower = "0.5.3"
+tower-http = { version = "0.7.0", features = ["fs", "cors", "trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+uuid = { version = "1.23.3", features = ["v4"] }
+
+[features]
+default = []
+
+[workspace.lints.rust]
+
+[workspace.lints.clippy]
+unwrap-used = "deny"
+expect-used = "deny"
+panic = "deny"

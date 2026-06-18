@@ -1,0 +1,51 @@
+# ttyd-rs Configuration File
+# This is an example configuration file for ttyd-rs
+# Copy this file to config.toml and modify as needed
+
+# Server configuration
+bind = "127.0.0.1:7681"
+max_connections = 100
+log_level = "info"
+
+# Terminal command to execute
+command = ["bash", "-l"]
+
+# Working directory (optional)
+# working_dir = "/home/user"
+
+# Session configuration
+[session]
+# Session mode: "isolated", "shared_readonly", or "shared_readwrite"
+# - isolated: Each client gets its own PTY (default)
+# - shared_readonly: Multiple clients share one PTY, read-only
+# - shared_readwrite: Multiple clients share one PTY, all can write
+mode = "isolated"
+
+# Session timeout in seconds (0 = no timeout)
+timeout = 3600
+
+# Authentication configuration (optional)
+[auth]
+method = "basic"  # "basic" or "token"
+username = "admin"
+password = "changeme"
+audit_enabled = true
+
+# Audit logging configuration
+[audit]
+enabled = true
+log_file = "/var/log/ttyd-rs/audit.log"  # Optional, if not set, logs to stdout only
+
+# Input validation configuration
+[validation]
+max_cols = 500
+min_cols = 10
+max_rows = 200
+min_rows = 5
+max_input_size = 16384           # 16KB
+max_credentials_length = 1024
+
+# Rate limiting configuration
+[rate_limit]
+max_requests = 10
+window_seconds = 60
