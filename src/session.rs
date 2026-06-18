@@ -273,17 +273,24 @@ impl SessionManager {
     /// Atomically check if a session has no clients and remove it if so.
     /// Returns true if the session was removed.  This eliminates the TOCTOU
     /// race between `session.is_empty()` and `remove_session()` by holding
-    /// the sessions write lock across both operations.
+    /// the sessions write lock and the clients write lock simultaneously.
     pub async fn remove_if_empty(&self, session_id: &str) -> bool {
         let mut sessions = self.sessions.write().await;
-        if let Some(session) = sessions.get(session_id) {
-            let clients = session.clients.read().await;
-            if clients.is_empty() {
-                drop(clients);
-                sessions.remove(session_id);
-                info!("Removed empty session {}", session_id);
-                return true;
-            }
+        // Clone the Arc so we can release the borrow on `sessions` before
+        // acquiring the clients lock — otherwise the borrow checker prevents
+        // calling sessions.remove() while the session is still borrowed.
+        let session = match sessions.get(session_id) {
+            Some(s) => Arc::clone(s),
+            None => return false,
+        };
+        // Hold the clients *write* lock so that no concurrent add_client can
+        // insert a client between the emptiness check and the removal.
+        let clients = session.clients.write().await;
+        if clients.is_empty() {
+            drop(clients);
+            sessions.remove(session_id);
+            info!("Removed empty session {}", session_id);
+            return true;
         }
         false
     }
@@ -294,10 +301,13 @@ impl SessionManager {
         self.sessions.read().await.len()
     }
 
-    /// Clean up inactive sessions
+    /// Clean up inactive sessions.  Candidates are identified under a read
+    /// lock, then each removal goes through `remove_if_empty` which atomically
+    /// re-verifies emptiness under the sessions write lock — closing the
+    /// TOCTOU window that a two-phase read-then-write approach would leave.
     pub async fn cleanup_inactive(&self) -> usize {
         let now = Instant::now();
-        let mut to_remove = Vec::new();
+        let mut candidates = Vec::new();
 
         {
             let sessions = self.sessions.read().await;
@@ -305,19 +315,19 @@ impl SessionManager {
                 let last_activity = session.last_activity().await;
                 let idle_time = now.duration_since(last_activity);
 
-                // Remove if session has no clients and has been idle too long
                 if session.is_empty().await && idle_time > self.session_timeout {
-                    to_remove.push(session_id.clone());
+                    candidates.push(session_id.clone());
                 }
             }
         }
 
-        let count = to_remove.len();
-        if count > 0 {
-            let mut sessions = self.sessions.write().await;
-            for session_id in to_remove {
-                sessions.remove(&session_id);
+        let mut count = 0;
+        for session_id in candidates {
+            // Delegate to remove_if_empty which atomically re-checks
+            // emptiness under the write lock before removing.
+            if self.remove_if_empty(&session_id).await {
                 warn!("Cleaned up inactive session: {}", session_id);
+                count += 1;
             }
         }
 

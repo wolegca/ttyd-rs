@@ -158,9 +158,21 @@ impl Drop for PtyProcess {
         let _ = nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGHUP);
         let _ = nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGKILL);
 
-        // Reap the child process to prevent zombies.  Use WNOHANG so we
-        // never block a tokio worker thread — if the child is in D-state
-        // and unreachable by SIGKILL, the OS will clean it up eventually.
-        let _ = nix::sys::wait::waitpid(self.child_pid, Some(nix::sys::wait::WaitPidFlag::WNOHANG));
+        // First try a non-blocking reap in case the child has already exited.
+        match nix::sys::wait::waitpid(self.child_pid, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
+            Ok(_) => return,
+            Err(nix::errno::Errno::ECHILD) => return, // already reaped
+            _ => {}
+        }
+
+        // The child has not exited yet (signal delivery is async).
+        // Spawn a detached thread that does a blocking waitpid so we
+        // never leave a zombie, but also never block a tokio worker.
+        let pid = self.child_pid;
+        let _ = std::thread::Builder::new()
+            .name("pty-reaper".into())
+            .spawn(move || {
+                let _ = nix::sys::wait::waitpid(pid, None);
+            });
     }
 }

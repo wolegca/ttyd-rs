@@ -419,8 +419,7 @@ async fn handle_terminal_session(
             rows,
             None, // Use default mode from config
         )
-        .await
-        .map_err(|e| format!("Failed to create session: {}", e))?;
+        .await?;
 
     info!(
         "Session created: id={}, mode={}",
@@ -437,10 +436,7 @@ async fn handle_terminal_session(
         readonly: false,
     };
 
-    session
-        .add_client(client)
-        .await
-        .map_err(|e| format!("Failed to add client: {}", e))?;
+    session.add_client(client).await?;
 
     // Log session started
     state
