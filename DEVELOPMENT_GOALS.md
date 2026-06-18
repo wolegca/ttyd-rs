@@ -6,7 +6,7 @@ ttyd-rs is a Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd), a terminal
 
 **Target Platforms**: Linux and macOS only (no Windows support)
 
-**Current Status**: All core milestones (M1-M4) completed. 86 tests passing, all clippy lints clean.
+**Current Status**: All core milestones (M1-M6) completed. 104 tests passing, all clippy lints clean.
 
 ---
 
@@ -63,7 +63,6 @@ ttyd-rs is a Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd), a terminal
 axum = { version = "0.8.9", features = ["ws"] }
 tokio = { version = "1.52.3", features = ["full"] }
 tower = "0.5.3"
-tower-http = { version = "0.7.0", features = ["fs", "cors", "trace"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 uuid = { version = "1.23.3", features = ["v4"] }
@@ -113,7 +112,7 @@ libc = "0.2.186"
 - [x] Add Token-based authentication
 - [x] Create rate limiting for brute-force protection
 - [x] Add input validation for all WebSocket messages
-- [x] Implement CORS headers via tower-http
+- [x] CORS not implemented (not needed — frontend is same-origin)
 - [x] Add audit logging for security events
 - [x] Prevent injection attacks via input validation
 
@@ -129,7 +128,7 @@ libc = "0.2.186"
 - Prevents timing side-channel attacks
 
 **Rate Limiting**:
-- Sliding window algorithm (configurable: default 5 attempts per 60 seconds)
+- Sliding window algorithm (configurable: default 10 attempts per 60 seconds)
 - Per-IP tracking with automatic window expiry
 - Returns rate limit exceeded message to client
 
@@ -167,15 +166,16 @@ base64 = "0.22.1"       # Basic auth decoding
 
 #### REST API Endpoints:
 ```
+GET    /api/health            - Health check
+GET    /api/config            - Client-facing configuration (auth method)
 GET    /api/sessions          - List all active sessions
 GET    /api/sessions/:id      - Get session info
 DELETE /api/sessions/:id      - Terminate session
 GET    /api/stats             - Server statistics
-GET    /api/health            - Health check
 ```
 
 #### Session Manager Features:
-- Automatic cleanup of inactive sessions (every 60s)
+- Automatic cleanup of inactive sessions (every 30s)
 - Client tracking with connection metadata
 - Broadcast channel for terminal output distribution
 - Session metadata (mode, command, working dir, timestamps)
@@ -272,7 +272,7 @@ cargo audit
 
 ### Current Test Coverage
 
-- **86 tests passing** across all modules
+- **104 tests passing** across all modules
 - Tests cover: config loading, validation, auth, rate limiting, audit, session management, HTTP server
 - All clippy lints clean with `-D warnings`
 

@@ -213,9 +213,15 @@ impl Config {
 
     /// Validate configuration
     pub fn validate(&self) -> Result<(), ConfigError> {
-        // Validate session mode
-        if !["isolated", "shared_readonly", "shared_readwrite"]
-            .contains(&self.session.mode.as_str())
+        // Validate session mode (accept both hyphenated and underscore forms)
+        if ![
+            "isolated",
+            "shared_readonly",
+            "shared_readwrite",
+            "shared-ro",
+            "shared-rw",
+        ]
+        .contains(&self.session.mode.as_str())
         {
             return Err(ConfigError::InvalidSessionMode(self.session.mode.clone()));
         }

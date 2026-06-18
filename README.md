@@ -2,7 +2,7 @@
 
 A Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd) - Share your terminal over the web using WebSocket.
 
-**Current Version**: v0.4.0  
+**Current Version**: v0.1.0
 **Status**: Production-ready for single-user scenarios
 
 ## Features
@@ -81,6 +81,7 @@ Options:
   -w, --working-dir <DIR>        Working directory
   
   --session-mode <MODE>          Session mode: isolated|shared-ro|shared-rw
+                                 (also accepts: shared_readonly|shared_readwrite)
   --session-timeout <SECS>       Session timeout in seconds [default: 3600]
   --reconnect-window <SECS>      Reconnect window in seconds [default: 60]
   --max-connections <NUM>        Max connections [default: 100]
@@ -124,6 +125,7 @@ log_file = "/var/log/ttyd-rs/audit.log"
 ### Endpoints
 
 - `GET /api/health` - Health check
+- `GET /api/config` - Client-facing configuration (auth method)
 - `GET /api/sessions` - List all active sessions
 - `GET /api/sessions/:id` - Get session details
 - `DELETE /api/sessions/:id` - Terminate a session
@@ -173,7 +175,7 @@ curl http://localhost:7681/api/stats
 
 ### Prerequisites
 
-- Rust 1.70+ (edition 2024)
+- Rust 1.85+ (edition 2024)
 - Linux or macOS (Unix-like system required)
 
 ### Build
@@ -231,21 +233,16 @@ This project maintains strict code quality standards:
 
 ### Completed Milestones
 
-- ✅ **M1: Basic Functionality** - HTTP/WebSocket server, PTY support, frontend
-- ✅ **M2: Security Hardening** - Auth, rate limiting, input validation, audit logs
-- ✅ **M3: Feature Complete** - SessionManager, TOML config, REST API
-- ✅ **M4: Production Ready** - WebSocket integration with SessionManager
+- ✅ **M1: Basic Functionality** - CLI, config, logging, error handling
+- ✅ **M2: Core Server** - HTTP/WebSocket server, routing, static files
+- ✅ **M3: PTY Management** - Process spawning, signals, terminal resize
+- ✅ **M4: Security Layer** - Auth, rate limiting, input validation, audit logs
+- ✅ **M5: Session Management** - SessionManager, shared modes, REST API
+- ✅ **M6: Frontend Integration** - xterm.js, login form, reconnection
 
 ### Roadmap
 
 See [DEVELOPMENT_GOALS.md](DEVELOPMENT_GOALS.md) for detailed roadmap.
-
-**Next Steps (Optional Enhancements)**:
-- Multi-client shared sessions (full implementation)
-- Advanced frontend features (session list UI)
-- Performance optimizations (zero-copy)
-- Docker support
-- Integration test suite
 
 ## Comparison with Original ttyd
 

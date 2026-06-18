@@ -54,8 +54,8 @@ max_credentials_length = 1024
 max_requests = 10
 window_seconds = 60
 
-# Proxy configuration (default: true)
-# Reads real client IP from X-Real-IP / X-Forwarded-For headers
-# when behind a reverse proxy (nginx, Caddy, etc.).
-# Set to false if not behind a proxy or if you don't trust proxy headers.
-# trust_proxy = true
+# Proxy configuration (default: false)
+# Set to true to read real client IP from X-Real-IP / X-Forwarded-For
+# headers when behind a reverse proxy (nginx, Caddy, etc.).
+# Only enable this when you trust the proxy to set these headers correctly.
+# trust_proxy = false

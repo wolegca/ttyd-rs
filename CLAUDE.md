@@ -158,7 +158,7 @@ All security features are implemented:
 - **Input validation**: Terminal size bounds, payload size limits, credential length limits
 - **Rate limiting**: Sliding window algorithm, per-IP tracking
 - **Audit logging**: Connection events, authentication attempts, session lifecycle
-- **Proxy support**: Reads real client IP from `X-Real-IP` / `X-Forwarded-For` headers by default (`trust_proxy = false`). Use `--no-trust-proxy` to disable when not behind a reverse proxy.
+- **Proxy support**: When `trust_proxy = true`, reads real client IP from `X-Real-IP` / `X-Forwarded-For` headers. Disabled by default to prevent IP spoofing when not behind a reverse proxy. Use `--trust-proxy` to enable.
 - **Reconnection**: Clients can reconnect within a configurable window (default 60s) without losing session state. Controlled by `--reconnect-window` / `session.reconnect_window`.
 
 ## WebSocket Protocol
@@ -175,11 +175,12 @@ The WebSocket protocol uses JSON messages with the following types:
 ## REST API Endpoints
 
 ```
+GET    /api/health            - Health check
+GET    /api/config            - Client-facing configuration (auth method)
 GET    /api/sessions          - List all active sessions
 GET    /api/sessions/:id      - Get session info
 DELETE /api/sessions/:id      - Terminate session
 GET    /api/stats             - Server statistics
-GET    /api/health            - Health check
 ```
 
 ## Development Stage
