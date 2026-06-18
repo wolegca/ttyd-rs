@@ -270,6 +270,24 @@ impl SessionManager {
         removed
     }
 
+    /// Atomically check if a session has no clients and remove it if so.
+    /// Returns true if the session was removed.  This eliminates the TOCTOU
+    /// race between `session.is_empty()` and `remove_session()` by holding
+    /// the sessions write lock across both operations.
+    pub async fn remove_if_empty(&self, session_id: &str) -> bool {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get(session_id) {
+            let clients = session.clients.read().await;
+            if clients.is_empty() {
+                drop(clients);
+                sessions.remove(session_id);
+                info!("Removed empty session {}", session_id);
+                return true;
+            }
+        }
+        false
+    }
+
     /// Get the total number of sessions
     #[allow(dead_code)]
     pub async fn session_count(&self) -> usize {

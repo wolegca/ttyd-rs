@@ -338,11 +338,20 @@ async fn handle_terminal_session(
             }
             _ => {
                 // Misconfigured auth: method doesn't match available credentials
-                warn!(
-                    "Auth configured but method '{}' has no credentials",
+                // Reject the connection rather than allowing unauthenticated access
+                error!(
+                    "Auth method '{}' is misconfigured — missing credentials",
                     auth_config.method
                 );
-                None
+                let fail_msg = Message::AuthFail(AuthFailData {
+                    reason: "Server authentication misconfigured".to_string(),
+                });
+                ws_sender
+                    .lock()
+                    .await
+                    .send(WsMessage::Text(fail_msg.to_json()?.into()))
+                    .await?;
+                return Ok(());
             }
         }
     } else {
@@ -410,7 +419,8 @@ async fn handle_terminal_session(
             rows,
             None, // Use default mode from config
         )
-        .await?;
+        .await
+        .map_err(|e| format!("Failed to create session: {}", e))?;
 
     info!(
         "Session created: id={}, mode={}",
@@ -427,7 +437,10 @@ async fn handle_terminal_session(
         readonly: false,
     };
 
-    session.add_client(client).await?;
+    session
+        .add_client(client)
+        .await
+        .map_err(|e| format!("Failed to add client: {}", e))?;
 
     // Log session started
     state
@@ -701,10 +714,10 @@ async fn handle_terminal_session(
     // Remove client from session
     session.remove_client(&client_id).await;
 
-    // If this was the last client, remove the session entirely
-    // This triggers PtyProcess::drop() which kills the child process
-    if session.is_empty().await {
-        state.session_manager.remove_session(&session_id).await;
+    // If this was the last client, remove the session entirely.
+    // Use atomic remove_if_empty to avoid the TOCTOU race between
+    // checking is_empty and calling remove_session.
+    if state.session_manager.remove_if_empty(&session_id).await {
         info!("Session {} removed (no remaining clients)", session_id);
     }
 

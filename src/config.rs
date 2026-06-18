@@ -21,6 +21,9 @@ pub enum ConfigError {
 
     #[error("Invalid rate limit: {0}")]
     InvalidRateLimit(String),
+
+    #[error("Invalid auth configuration: {0}")]
+    InvalidAuth(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,6 +229,32 @@ impl Config {
             return Err(ConfigError::InvalidRateLimit(
                 "window_seconds must be greater than 0".to_string(),
             ));
+        }
+
+        // Validate auth configuration consistency
+        if let Some(auth) = &self.auth {
+            match auth.method.as_str() {
+                "basic" => {
+                    if auth.username.is_none() || auth.password.is_none() {
+                        return Err(ConfigError::InvalidAuth(
+                            "basic auth requires both username and password".to_string(),
+                        ));
+                    }
+                }
+                "token" => {
+                    if auth.token.is_none() {
+                        return Err(ConfigError::InvalidAuth(
+                            "token auth requires a token value".to_string(),
+                        ));
+                    }
+                }
+                other => {
+                    return Err(ConfigError::InvalidAuth(format!(
+                        "unknown auth method: '{}'",
+                        other
+                    )));
+                }
+            }
         }
 
         Ok(())

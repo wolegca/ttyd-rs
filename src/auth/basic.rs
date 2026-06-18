@@ -18,7 +18,15 @@ impl BasicAuth {
                 Ok(decoded_str) => {
                     let parts: Vec<&str> = decoded_str.splitn(2, ':').collect();
                     if parts.len() == 2 {
-                        parts[0] == self.username && parts[1] == self.password
+                        // Use constant-time comparison for both username and
+                        // password to prevent timing side-channel attacks.
+                        super::token::constant_time_eq(
+                            parts[0].as_bytes(),
+                            self.username.as_bytes(),
+                        ) & super::token::constant_time_eq(
+                            parts[1].as_bytes(),
+                            self.password.as_bytes(),
+                        )
                     } else {
                         false
                     }

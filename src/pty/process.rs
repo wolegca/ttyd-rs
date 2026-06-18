@@ -152,15 +152,15 @@ impl Drop for PtyProcess {
         // up and its foreground process group receives SIGHUP.
         let _ = close(self.master_fd);
 
-        // An interactive shell ignores SIGTERM, so send SIGHUP (which
-        // terminates it) and follow with SIGKILL to guarantee the child exits.
-        // Until the child dies its slave fd stays open and any PTY reader
-        // blocks forever on read(), which previously hung shutdown.
+        // Send SIGHUP first — interactive shells use this to run cleanup
+        // (history flush, EXIT trap) before exiting.  SIGKILL follows as
+        // a fallback in case the child ignores SIGHUP.
         let _ = nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGHUP);
         let _ = nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGKILL);
 
-        // Reap the child process to prevent zombies (blocking; the child has
-        // already been killed so this returns promptly).
-        let _ = nix::sys::wait::waitpid(self.child_pid, None);
+        // Reap the child process to prevent zombies.  Use WNOHANG so we
+        // never block a tokio worker thread — if the child is in D-state
+        // and unreachable by SIGKILL, the OS will clean it up eventually.
+        let _ = nix::sys::wait::waitpid(self.child_pid, Some(nix::sys::wait::WaitPidFlag::WNOHANG));
     }
 }
