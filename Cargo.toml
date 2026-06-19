@@ -5,6 +5,7 @@ edition = "2024"
 authors = ["wcx"]
 description = "A Rust rewrite of ttyd - Share your terminal over the web"
 license = "MIT"
+lints.workspace = true
 
 [dependencies]
 axum = { version = "0.8.9", features = ["ws"] }

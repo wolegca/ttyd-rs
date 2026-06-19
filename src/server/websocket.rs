@@ -246,7 +246,7 @@ async fn handle_terminal_session(
                     }
                 }
             }
-            "token" if auth_config.token.is_some() => {
+            "token" if let Some(token) = &auth_config.token => {
                 // Check rate limit before processing auth
                 if let Err(duration) = state.rate_limiter.check(&remote_addr).await {
                     warn!("Rate limit exceeded for {}", remote_addr);
@@ -265,7 +265,7 @@ async fn handle_terminal_session(
                     return Ok(());
                 }
 
-                let token_auth = TokenAuth::new(auth_config.token.clone().unwrap_or_default());
+                let token_auth = TokenAuth::new(token.clone());
 
                 // Wait for auth message
                 match ws_receiver.next().await {

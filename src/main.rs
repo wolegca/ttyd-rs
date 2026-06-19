@@ -87,7 +87,6 @@ struct Args {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-
     // Initialize tracing/logging
     if let Err(e) = init_logging(&args.log_level) {
         eprintln!("Failed to initialize logging: {}", e);
