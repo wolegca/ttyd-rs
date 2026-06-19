@@ -382,10 +382,13 @@
                         case 'disconnect':
                             console.log('Disconnected:', msg.data.reason);
                             term.write(`\r\n[Disconnected: ${msg.data.reason}]\r\n`);
+                            term.write('\r\n[Press Enter or refresh page to reconnect]\r\n');
                             setStatus(false);
                             clearSessionInfo();
-                            // Server-initiated disconnect — don't reconnect
+                            // Server-initiated disconnect — stop heartbeat and close socket
                             serverDisconnected = true;
+                            stopHeartbeat();
+                            if (ws) ws.close();
                             break;
                         case 'error':
                             console.error('Error:', msg.data);
@@ -550,8 +553,16 @@
         // Start
         checkAuth();
 
-        // Send user input to server
+        // Send user input to server (or reconnect on Enter after disconnect)
         term.onData((data) => {
+            if (serverDisconnected) {
+                // After disconnect, Enter triggers reconnection
+                if (data === '\r' || data === '\n') {
+                    term.write('\r\n[Reconnecting...]\r\n');
+                    connect();
+                }
+                return;
+            }
             if (!readOnly) {
                 sendMsg('input', { payload: data });
             }
@@ -566,9 +577,11 @@
             }
             resizeTimer = setTimeout(() => {
                 resizeTimer = null;
-                const dims = fitAddon.proposeDimensions();
-                if (dims) {
-                    sendMsg('resize', { cols: dims.cols, rows: dims.rows });
+                if (!serverDisconnected) {
+                    const dims = fitAddon.proposeDimensions();
+                    if (dims) {
+                        sendMsg('resize', { cols: dims.cols, rows: dims.rows });
+                    }
                 }
             }, 100);
         });
