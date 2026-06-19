@@ -94,6 +94,21 @@ impl PtyProcess {
         // Create a new session
         setsid().map_err(|e| PtyError::ExecFailed(format!("setsid failed: {}", e)))?;
 
+        // Set TERM environment variable so programs know we're a capable terminal.
+        // Without this, systemd-launched processes have no TERM and colors are disabled.
+        // SAFETY: we are in a forked child before exec, so no threads to race.
+        unsafe {
+            libc::setenv(
+                CString::new("TERM")
+                    .map_err(|e| PtyError::ExecFailed(format!("Invalid TERM name: {}", e)))?
+                    .as_ptr(),
+                CString::new("xterm-256color")
+                    .map_err(|e| PtyError::ExecFailed(format!("Invalid TERM value: {}", e)))?
+                    .as_ptr(),
+                1, // overwrite = true
+            );
+        }
+
         // Redirect stdin, stdout, stderr to the slave PTY
         use std::os::unix::io::{FromRawFd, OwnedFd};
         let slave_owned = unsafe { OwnedFd::from_raw_fd(slave_fd) };
