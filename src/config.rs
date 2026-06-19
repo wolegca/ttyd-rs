@@ -289,7 +289,10 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.command, vec!["bash".to_string(), "--login".to_string()]);
+        assert_eq!(
+            config.command,
+            vec!["bash".to_string(), "--login".to_string()]
+        );
         assert_eq!(config.session.mode, "isolated");
         assert_eq!(config.session.timeout, 3600);
     }
