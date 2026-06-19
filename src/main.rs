@@ -131,7 +131,18 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
         tracing::info!("Loading configuration from {:?}", config_path);
         Config::from_file(config_path)?
     } else {
-        Config::default()
+        // Try to load config.toml from executable directory
+        let default_config = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("config.toml")))
+            .filter(|path| path.exists());
+
+        if let Some(config_path) = default_config {
+            tracing::info!("Loading configuration from {:?}", config_path);
+            Config::from_file(&config_path)?
+        } else {
+            Config::default()
+        }
     };
 
     // Override with command line arguments
