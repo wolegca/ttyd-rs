@@ -11,6 +11,7 @@ use axum::{
     Router,
     body::Body,
     http::{StatusCode, Uri, header},
+    middleware,
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -166,16 +167,17 @@ async fn shutdown_signal() {
 }
 
 /// Create the axum router with all routes
-fn create_router(_config: &Config, app_state: AppState, api_state: ApiState) -> Router {
-    Router::new()
-        .route("/", get(index_handler))
-        .route("/ws", get(super::websocket::websocket_handler))
-        // API routes
+fn create_router(config: &Config, app_state: AppState, api_state: ApiState) -> Router {
+    // Public API routes (no auth required)
+    let public_api = Router::new()
         .route("/api/health", get(super::api::health_check))
         .route(
             "/api/config",
             get(super::api::get_config).with_state(api_state.clone()),
-        )
+        );
+
+    // Protected API routes (auth required when configured)
+    let protected_api = Router::new()
         .route(
             "/api/sessions",
             get(super::api::list_sessions).with_state(api_state.clone()),
@@ -189,7 +191,26 @@ fn create_router(_config: &Config, app_state: AppState, api_state: ApiState) -> 
         .route(
             "/api/stats",
             get(super::api::get_stats).with_state(api_state),
-        )
+        );
+
+    // Apply auth middleware to protected routes when auth is configured
+    let protected_api = if let Some(ref auth_config) = config.auth {
+        let auth_state = super::api::ApiAuthState {
+            auth_config: auth_config.clone(),
+        };
+        protected_api.layer(middleware::from_fn_with_state(
+            auth_state,
+            super::api::api_auth_middleware,
+        ))
+    } else {
+        protected_api
+    };
+
+    Router::new()
+        .route("/", get(index_handler))
+        .route("/ws", get(super::websocket::websocket_handler))
+        .merge(public_api)
+        .merge(protected_api)
         .fallback(static_handler)
         .with_state(app_state)
 }
@@ -480,6 +501,246 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── API auth middleware tests ───────────────────────────────────
+
+    /// Build test AppState and ApiState with basic auth configured
+    fn test_state_with_basic_auth() -> (Config, AppState, ApiState) {
+        let mut config = Config::default();
+        config.auth = Some(crate::config::AuthConfig {
+            method: "basic".to_string(),
+            username: Some("admin".to_string()),
+            password: Some("secret".to_string()),
+            token: None,
+            audit_enabled: false,
+        });
+        let session_manager = Arc::new(SessionManager::new(
+            Duration::from_secs(3600),
+            SessionMode::Isolated,
+        ));
+        let config_arc = Arc::new(config.clone());
+
+        let app_state = AppState {
+            config: config_arc.clone(),
+            audit_logger: Arc::new(AuditLogger::new(None, false)),
+            validation: Arc::new(ValidationConfig::default()),
+            rate_limiter: Arc::new(RateLimiter::default()),
+            session_manager: session_manager.clone(),
+            shutdown_token: CancellationToken::new(),
+        };
+
+        let api_state = ApiState {
+            session_manager,
+            config: config_arc,
+        };
+        (config, app_state, api_state)
+    }
+
+    /// Build test AppState and ApiState with token auth configured
+    fn test_state_with_token_auth() -> (Config, AppState, ApiState) {
+        let mut config = Config::default();
+        config.auth = Some(crate::config::AuthConfig {
+            method: "token".to_string(),
+            username: None,
+            password: None,
+            token: Some("test-secret-token".to_string()),
+            audit_enabled: false,
+        });
+        let session_manager = Arc::new(SessionManager::new(
+            Duration::from_secs(3600),
+            SessionMode::Isolated,
+        ));
+        let config_arc = Arc::new(config.clone());
+
+        let app_state = AppState {
+            config: config_arc.clone(),
+            audit_logger: Arc::new(AuditLogger::new(None, false)),
+            validation: Arc::new(ValidationConfig::default()),
+            rate_limiter: Arc::new(RateLimiter::default()),
+            session_manager: session_manager.clone(),
+            shutdown_token: CancellationToken::new(),
+        };
+
+        let api_state = ApiState {
+            session_manager,
+            config: config_arc,
+        };
+        (config, app_state, api_state)
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_basic_sessions_401_without_credentials() {
+        let (config, app_state, api_state) = test_state_with_basic_auth();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/api/sessions")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_basic_sessions_401_with_wrong_credentials() {
+        use base64::Engine as _;
+
+        let (config, app_state, api_state) = test_state_with_basic_auth();
+        let app = create_router(&config, app_state, api_state);
+
+        let creds = base64::engine::general_purpose::STANDARD.encode("admin:wrong");
+        let req = Request::builder()
+            .uri("/api/sessions")
+            .header("authorization", format!("Basic {}", creds))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_basic_sessions_ok_with_correct_credentials() {
+        use base64::Engine as _;
+
+        let (config, app_state, api_state) = test_state_with_basic_auth();
+        let app = create_router(&config, app_state, api_state);
+
+        let creds = base64::engine::general_purpose::STANDARD.encode("admin:secret");
+        let req = Request::builder()
+            .uri("/api/sessions")
+            .header("authorization", format!("Basic {}", creds))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_basic_stats_401_without_credentials() {
+        let (config, app_state, api_state) = test_state_with_basic_auth();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/api/stats")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_basic_delete_session_401_without_credentials() {
+        let (config, app_state, api_state) = test_state_with_basic_auth();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/api/sessions/some-id")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_token_sessions_401_without_credentials() {
+        let (config, app_state, api_state) = test_state_with_token_auth();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/api/sessions")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_token_sessions_401_with_wrong_token() {
+        let (config, app_state, api_state) = test_state_with_token_auth();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/api/sessions")
+            .header("authorization", "Bearer wrong-token")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_token_sessions_ok_with_correct_token() {
+        let (config, app_state, api_state) = test_state_with_token_auth();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/api/sessions")
+            .header("authorization", "Bearer test-secret-token")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_health_public_with_auth_configured() {
+        let (config, app_state, api_state) = test_state_with_basic_auth();
+        let app = create_router(&config, app_state, api_state);
+
+        // /api/health should be accessible without credentials
+        let req = Request::builder()
+            .uri("/api/health")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_config_public_with_auth_configured() {
+        let (config, app_state, api_state) = test_state_with_basic_auth();
+        let app = create_router(&config, app_state, api_state);
+
+        // /api/config should be accessible without credentials
+        let req = Request::builder()
+            .uri("/api/config")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["auth_method"], "basic");
+    }
+
+    #[tokio::test]
+    async fn test_api_auth_no_auth_config_all_endpoints_open() {
+        // When no auth is configured, all API endpoints should be accessible
+        let config = Config::default();
+        let (app_state, api_state) = test_state();
+        let app = create_router(&config, app_state, api_state);
+
+        for uri in ["/api/sessions", "/api/stats", "/api/health", "/api/config"] {
+            let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "Expected 200 for {}", uri);
+        }
     }
 
     // ── WebSocket integration tests ─────────────────────────────────

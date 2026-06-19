@@ -1,10 +1,12 @@
 /// REST API endpoints for session management
-use crate::config::Config;
+use crate::config::{AuthConfig, Config};
 use crate::session::SessionManager;
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Request, State},
     http::StatusCode,
+    middleware::Next,
+    response::Response,
 };
 use serde::Serialize;
 use std::sync::Arc;
@@ -217,6 +219,71 @@ fn format_instant(instant: std::time::Instant) -> String {
         format!("{}h ago", secs / 3600)
     } else {
         format!("{}d ago", secs / 86400)
+    }
+}
+
+/// State for the API auth middleware
+#[derive(Clone)]
+pub(crate) struct ApiAuthState {
+    pub auth_config: AuthConfig,
+}
+
+/// Middleware: validate Authorization header against configured credentials.
+///
+/// Supports:
+/// - Basic auth: `Authorization: Basic <base64(user:pass)>`
+/// - Token auth: `Authorization: Bearer <token>`
+pub(crate) async fn api_auth_middleware(
+    State(auth_state): State<ApiAuthState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let auth_header = request
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok());
+
+    let authorized = match auth_header {
+        Some(header) => match auth_state.auth_config.method.as_str() {
+            "basic" => {
+                let credentials = header.strip_prefix("Basic ").map(String::from);
+                match (
+                    credentials,
+                    &auth_state.auth_config.username,
+                    &auth_state.auth_config.password,
+                ) {
+                    (Some(creds), Some(username), Some(password)) => {
+                        let authenticator =
+                            crate::auth::BasicAuth::new(username.clone(), password.clone());
+                        authenticator.validate(&creds)
+                    }
+                    _ => false,
+                }
+            }
+            "token" => {
+                let credentials = header.strip_prefix("Bearer ").map(String::from);
+                match (credentials, &auth_state.auth_config.token) {
+                    (Some(creds), Some(token)) => {
+                        let authenticator = crate::auth::TokenAuth::new(token.clone());
+                        authenticator.validate(&creds)
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        },
+        None => false,
+    };
+
+    if authorized {
+        Ok(next.run(request).await)
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "Unauthorized".to_string(),
+            }),
+        ))
     }
 }
 
