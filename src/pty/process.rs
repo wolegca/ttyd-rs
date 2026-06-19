@@ -209,6 +209,84 @@ impl PtyProcess {
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_spawn_empty_command_errors() {
+        let result = PtyProcess::spawn(&[], 80, 24);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        let msg = err.to_string();
+        assert!(msg.contains("empty"), "Expected 'empty' in error: {}", msg);
+    }
+
+    #[test]
+    fn test_spawn_valid_command() {
+        let result = PtyProcess::spawn(&["true".to_string()], 80, 24);
+        assert!(result.is_ok());
+        let proc = result.unwrap();
+        assert!(proc.master_fd >= 0);
+        // child_pid should be positive
+        assert!(proc.child_pid.as_raw() > 0);
+    }
+
+    #[test]
+    fn test_spawn_sets_dimensions() {
+        let proc = PtyProcess::spawn(&["sleep".to_string(), "0.1".to_string()], 120, 40).unwrap();
+        // Just verify it succeeds — dimensions are set via openpty
+        assert!(proc.master_fd >= 0);
+    }
+
+    #[test]
+    fn test_resize() {
+        let proc = PtyProcess::spawn(&["sleep".to_string(), "0.5".to_string()], 80, 24).unwrap();
+        let result = proc.resize(120, 40);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resize_invalid_fd() {
+        // Use an invalid fd to trigger an error
+        let proc = PtyProcess {
+            master_fd: -1,
+            child_pid: nix::unistd::Pid::from_raw(1),
+        };
+        let result = proc.resize(80, 24);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_drop_runs_without_panic() {
+        // Verify that Drop impl runs without panicking.
+        // The actual cleanup (SIGHUP, SIGKILL, reaper thread) is tested
+        // indirectly through the session tests.
+        let proc = PtyProcess::spawn(&["true".to_string()], 80, 24).unwrap();
+        // Drop should run without panic
+        drop(proc);
+    }
+
+    #[test]
+    fn test_spawn_and_drop_multiple() {
+        // Verify that spawning and dropping multiple processes works correctly
+        for _ in 0..3 {
+            let proc = PtyProcess::spawn(&["true".to_string()], 80, 24).unwrap();
+            assert!(proc.master_fd >= 0);
+        }
+    }
+
+    #[test]
+    fn test_spawn_invalid_command() {
+        let result = PtyProcess::spawn(&["/nonexistent/binary".to_string()], 80, 24);
+        // The child process will fail to exec, parent gets an Ok because fork succeeded
+        // The child's exec failure happens after fork returns to parent
+        // So spawn should succeed (parent side), but the child will exit with error
+        assert!(result.is_ok());
+    }
+}
+
 impl Drop for PtyProcess {
     fn drop(&mut self) {
         debug!(

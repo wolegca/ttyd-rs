@@ -120,9 +120,13 @@ async fn handle_socket(socket: WebSocket, state: AppState, remote_addr: String) 
     // Decrement active connection count
     state.active_connections.fetch_sub(1, Ordering::Relaxed);
 
-    match result {
-        Ok(()) => info!("WebSocket connection closed normally"),
-        Err(e) => warn!("WebSocket connection error: {}", e),
+    // Only log non-shutdown closures — shutdown already logs its own messages,
+    // and the "closed normally" log just adds noise after "Shutdown complete".
+    if !state.shutdown_token.is_cancelled() {
+        match result {
+            Ok(()) => info!("WebSocket connection closed normally"),
+            Err(e) => warn!("WebSocket connection error: {}", e),
+        }
     }
 }
 

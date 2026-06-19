@@ -264,6 +264,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn test_log_auth_failure_writes_to_file() {
+        let dir = std::env::temp_dir().join("ttyd-rs-audit-auth-fail");
+        let _ = std::fs::create_dir_all(&dir);
+        let log_path = dir.join("audit.log");
+
+        let logger = AuditLogger::new(Some(log_path.clone()), true);
+        logger
+            .log_auth_attempt("10.0.0.1", "baduser", false, "s1")
+            .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("auth_failure"));
+        assert!(content.contains("baduser"));
+        assert!(content.contains("failed"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_log_disconnect_writes_to_file() {
+        let dir = std::env::temp_dir().join("ttyd-rs-audit-disconnect");
+        let _ = std::fs::create_dir_all(&dir);
+        let log_path = dir.join("audit.log");
+
+        let logger = AuditLogger::new(Some(log_path.clone()), true);
+        logger
+            .log_disconnect("10.0.0.2", "s2", "client closed")
+            .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("connection_closed"));
+        assert!(content.contains("10.0.0.2"));
+        assert!(content.contains("client closed"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_log_session_started_writes_to_file() {
+        let dir = std::env::temp_dir().join("ttyd-rs-audit-session");
+        let _ = std::fs::create_dir_all(&dir);
+        let log_path = dir.join("audit.log");
+
+        let logger = AuditLogger::new(Some(log_path.clone()), true);
+        logger
+            .log_session_started("10.0.0.3", Some("alice"), "s3")
+            .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("session_started"));
+        assert!(content.contains("alice"));
+        assert!(content.contains("s3"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_log_error_writes_to_file() {
+        let dir = std::env::temp_dir().join("ttyd-rs-audit-error");
+        let _ = std::fs::create_dir_all(&dir);
+        let log_path = dir.join("audit.log");
+
+        let logger = AuditLogger::new(Some(log_path.clone()), true);
+        logger
+            .log_error("10.0.0.4", "s4", "PTY spawn failed")
+            .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(content.contains("error_occurred"));
+        assert!(content.contains("PTY spawn failed"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn test_default_audit_logger() {
         let logger = AuditLogger::default();

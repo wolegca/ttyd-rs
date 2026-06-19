@@ -288,13 +288,237 @@ pub(crate) async fn api_auth_middleware(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::session::SessionManager;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn test_api_state() -> (ApiState, Arc<SessionManager>) {
+        let config = Config::default();
+        let session_manager = Arc::new(SessionManager::new(
+            Duration::from_secs(3600),
+            crate::session::SessionMode::Isolated,
+        ));
+        let api_state = ApiState {
+            session_manager: session_manager.clone(),
+            config: Arc::new(config),
+        };
+        (api_state, session_manager)
+    }
 
     #[test]
     fn test_format_instant() {
         let now = std::time::Instant::now();
         let result = format_instant(now);
         assert!(result.ends_with("ago"));
+    }
+
+    #[test]
+    fn test_format_instant_seconds() {
+        let past = std::time::Instant::now() - Duration::from_secs(30);
+        let result = format_instant(past);
+        assert!(result.ends_with("s ago"));
+    }
+
+    #[test]
+    fn test_format_instant_minutes() {
+        let past = std::time::Instant::now() - Duration::from_secs(120);
+        let result = format_instant(past);
+        assert!(result.ends_with("m ago"));
+    }
+
+    #[test]
+    fn test_format_instant_hours() {
+        let past = std::time::Instant::now() - Duration::from_secs(7200);
+        let result = format_instant(past);
+        assert!(result.ends_with("h ago"));
+    }
+
+    #[tokio::test]
+    async fn test_health_check() {
+        let response = health_check().await;
+        assert_eq!(response.status, "ok");
+        assert!(!response.version.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_config_no_auth() {
+        let (api_state, _) = test_api_state();
+        let Json(config) = get_config(axum::extract::State(api_state)).await;
+        assert!(config.auth_method.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_config_with_auth() {
+        let mut cfg = Config::default();
+        cfg.auth = Some(crate::config::AuthConfig {
+            method: "basic".to_string(),
+            username: Some("admin".to_string()),
+            password: Some("secret".to_string()),
+            token: None,
+            audit_enabled: false,
+        });
+        let session_manager = Arc::new(SessionManager::new(
+            Duration::from_secs(3600),
+            crate::session::SessionMode::Isolated,
+        ));
+        let api_state = ApiState {
+            session_manager,
+            config: Arc::new(cfg),
+        };
+        let Json(config) = get_config(axum::extract::State(api_state)).await;
+        assert_eq!(config.auth_method.unwrap(), "basic");
+    }
+
+    #[tokio::test]
+    async fn test_list_sessions_empty() {
+        let (api_state, _) = test_api_state();
+        let result = list_sessions(axum::extract::State(api_state)).await;
+        assert!(result.is_ok());
+        let Json(resp) = result.unwrap();
+        assert_eq!(resp.total, 0);
+        assert!(resp.sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_session_not_found() {
+        let (api_state, _) = test_api_state();
+        let result = get_session(
+            axum::extract::State(api_state),
+            axum::extract::Path("nonexistent".to_string()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_not_found() {
+        let (api_state, _) = test_api_state();
+        let result = delete_session(
+            axum::extract::State(api_state),
+            axum::extract::Path("nonexistent".to_string()),
+        )
+        .await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_stats_empty() {
+        let (api_state, _) = test_api_state();
+        let result = get_stats(axum::extract::State(api_state)).await;
+        assert!(result.is_ok());
+        let Json(stats) = result.unwrap();
+        assert_eq!(stats.total_sessions, 0);
+        assert_eq!(stats.isolated_sessions, 0);
+        assert_eq!(stats.shared_sessions, 0);
+        assert_eq!(stats.total_clients, 0);
+    }
+
+    #[tokio::test]
+    async fn test_list_sessions_after_create() {
+        let (api_state, sm) = test_api_state();
+        sm.create_session(
+            "test-s1".to_string(),
+            &["true".to_string()],
+            None,
+            80,
+            24,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let Json(resp) = list_sessions(axum::extract::State(api_state)).await.unwrap();
+        assert_eq!(resp.total, 1);
+        assert_eq!(resp.sessions[0].session_id, "test-s1");
+        assert_eq!(resp.sessions[0].terminal.cols, 80);
+        assert_eq!(resp.sessions[0].terminal.rows, 24);
+    }
+
+    #[tokio::test]
+    async fn test_get_session_found() {
+        let (api_state, sm) = test_api_state();
+        sm.create_session(
+            "test-s2".to_string(),
+            &["true".to_string()],
+            None,
+            120,
+            40,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let result = get_session(
+            axum::extract::State(api_state),
+            axum::extract::Path("test-s2".to_string()),
+        )
+        .await;
+        assert!(result.is_ok());
+        let Json(info) = result.unwrap();
+        assert_eq!(info.session_id, "test-s2");
+        assert_eq!(info.terminal.cols, 120);
+        assert_eq!(info.terminal.rows, 40);
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_found() {
+        let (api_state, sm) = test_api_state();
+        sm.create_session(
+            "test-s3".to_string(),
+            &["true".to_string()],
+            None,
+            80,
+            24,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let result = delete_session(
+            axum::extract::State(api_state),
+            axum::extract::Path("test-s3".to_string()),
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn test_get_stats_after_create() {
+        let (api_state, sm) = test_api_state();
+        sm.create_session(
+            "iso1".to_string(),
+            &["true".to_string()],
+            None,
+            80,
+            24,
+            Some(crate::session::SessionMode::Isolated),
+        )
+        .await
+        .unwrap();
+        sm.create_session(
+            "shared1".to_string(),
+            &["true".to_string()],
+            None,
+            80,
+            24,
+            Some(crate::session::SessionMode::SharedReadWrite),
+        )
+        .await
+        .unwrap();
+
+        let result = get_stats(axum::extract::State(api_state)).await;
+        assert!(result.is_ok());
+        let Json(stats) = result.unwrap();
+        assert_eq!(stats.total_sessions, 2);
+        assert_eq!(stats.isolated_sessions, 1);
+        assert_eq!(stats.shared_sessions, 1);
     }
 }
