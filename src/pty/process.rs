@@ -1,6 +1,6 @@
 /// PTY process management using nix
 use nix::pty::{Winsize, openpty};
-use nix::unistd::{ForkResult, Pid, close, dup2, execvp, fork, setsid};
+use nix::unistd::{ForkResult, Pid, close, execvp, fork, setsid};
 use std::ffi::CString;
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
 use thiserror::Error;
@@ -53,17 +53,17 @@ impl PtyProcess {
         let master_fd = pty.master.as_raw_fd();
         let slave_fd = pty.slave.as_raw_fd();
 
-        // Set FD_CLOEXEC on both PTY fds so they are closed on exec
+        // Set FD_CLOEXEC on the master fd only.
+        // The slave fd must NOT have FD_CLOEXEC here: the child needs it open
+        // until after dup2, and we close it manually in setup_child.
         Self::set_cloexec(master_fd);
-        Self::set_cloexec(slave_fd);
 
         debug!("PTY opened: master_fd={}, slave_fd={}", master_fd, slave_fd);
 
         // Fork the process
         match unsafe { fork() } {
             Ok(ForkResult::Parent { child }) => {
-                // Parent process
-                // Take ownership of master_fd to prevent double-close
+                // Parent process: take ownership of master_fd to prevent double-close
                 let master_fd = pty.master.into_raw_fd();
 
                 // Explicitly drop slave to close it in parent
@@ -77,9 +77,9 @@ impl PtyProcess {
                 })
             }
             Ok(ForkResult::Child) => {
-                // Child process - pty will be dropped but we don't care since exec replaces the process
+                // Child process — pty will be dropped but exec replaces the process image anyway.
                 Self::setup_child(slave_fd, command)?;
-                // setup_child will exec, so this should never be reached
+                // setup_child calls execvp which never returns on success.
                 unreachable!("execvp should not return");
             }
             Err(e) => {
@@ -89,10 +89,22 @@ impl PtyProcess {
         }
     }
 
-    /// Setup the child process to use the PTY slave
+    /// Setup the child process to use the PTY slave.
     fn setup_child(slave_fd: RawFd, command: &[String]) -> Result<(), PtyError> {
-        // Create a new session
+        // Create a new session so this process becomes a session leader with no
+        // controlling terminal yet.
         setsid().map_err(|e| PtyError::ExecFailed(format!("setsid failed: {}", e)))?;
+
+        // Make the slave PTY the controlling terminal for this session.
+        // This is required for login(1) and any program that opens /dev/tty or
+        // calls tcgetpgrp(). Without it, login exits silently on Debian 13.
+        // SAFETY: slave_fd is a valid PTY slave fd obtained from openpty().
+        if unsafe { libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0i32) } < 0 {
+            return Err(PtyError::ExecFailed(format!(
+                "TIOCSCTTY failed: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
 
         // Set TERM environment variable so programs know we're a capable terminal.
         // Without this, systemd-launched processes have no TERM and colors are disabled.
@@ -109,22 +121,27 @@ impl PtyProcess {
             );
         }
 
-        // Redirect stdin, stdout, stderr to the slave PTY
-        use std::os::unix::io::{FromRawFd, OwnedFd};
-        let slave_owned = unsafe { OwnedFd::from_raw_fd(slave_fd) };
-        let mut stdin_owned = unsafe { OwnedFd::from_raw_fd(0) };
-        let mut stdout_owned = unsafe { OwnedFd::from_raw_fd(1) };
-        let mut stderr_owned = unsafe { OwnedFd::from_raw_fd(2) };
+        // Redirect stdin, stdout, stderr to the slave PTY using libc::dup2
+        // directly. Wrapping fd 0/1/2 in OwnedFd before the dup2 calls creates
+        // aliased ownership: drop() would close the real stdin/stdout/stderr
+        // after exec replaces the image, causing subtle fd leaks or double-closes
+        // depending on nix version behaviour.
+        for dst in [0i32, 1, 2] {
+            if unsafe { libc::dup2(slave_fd, dst) } < 0 {
+                return Err(PtyError::ExecFailed(format!(
+                    "dup2({} -> {}) failed: {}",
+                    slave_fd,
+                    dst,
+                    std::io::Error::last_os_error()
+                )));
+            }
+        }
 
-        dup2(&slave_owned, &mut stdin_owned)
-            .map_err(|e| PtyError::ExecFailed(format!("dup2 stdin failed: {}", e)))?;
-        dup2(&slave_owned, &mut stdout_owned)
-            .map_err(|e| PtyError::ExecFailed(format!("dup2 stdout failed: {}", e)))?;
-        dup2(&slave_owned, &mut stderr_owned)
-            .map_err(|e| PtyError::ExecFailed(format!("dup2 stderr failed: {}", e)))?;
-
-        // slave_fd is now duplicated onto fd 0/1/2, close the original
-        drop(slave_owned);
+        // Close the original slave fd now that it has been duplicated onto 0/1/2.
+        // Skip if slave_fd happens to be one of 0/1/2 (unlikely but possible).
+        if slave_fd > 2 {
+            unsafe { libc::close(slave_fd) };
+        }
 
         // Close all inherited file descriptors above stderr to prevent the
         // child from holding references to the parent's sockets, PTY masters,
@@ -140,7 +157,7 @@ impl PtyProcess {
 
         let args = args.map_err(|e| PtyError::ExecFailed(format!("Invalid arguments: {}", e)))?;
 
-        // Execute the command
+        // Execute the command — never returns on success
         execvp(&program, &args).map_err(|e| PtyError::ExecFailed(e.to_string()))?;
 
         Ok(())
