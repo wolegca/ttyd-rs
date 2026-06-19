@@ -145,8 +145,8 @@ impl Default for Config {
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
                 7681,
             ),
-            command: vec!["bash".to_string()],
-            working_dir: None,
+            command: vec!["bash".to_string(), "--login".to_string()],
+            working_dir: std::env::var("HOME").ok().map(PathBuf::from),
             auth: None,
             log_level: "info".to_string(),
             max_connections: 100,
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.command, vec!["bash".to_string()]);
+        assert_eq!(config.command, vec!["bash".to_string(), "--login".to_string()]);
         assert_eq!(config.session.mode, "isolated");
         assert_eq!(config.session.timeout, 3600);
     }

@@ -32,8 +32,8 @@ struct Args {
     config: Option<PathBuf>,
 
     /// Shell command to execute
-    #[arg(short, long, default_value = "bash")]
-    shell: String,
+    #[arg(short, long)]
+    shell: Option<String>,
 
     /// Working directory for the shell
     #[arg(short = 'w', long)]
@@ -148,7 +148,9 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
     // Override with command line arguments
     let bind_addr = format!("{}:{}", args.bind, args.port);
     config.bind = bind_addr.parse()?;
-    config.command = vec![args.shell.clone()];
+    if let Some(shell) = &args.shell {
+        config.command = shell.split_whitespace().map(String::from).collect();
+    }
     config.working_dir = args.working_dir.clone();
     config.log_level = args.log_level.clone();
     config.max_connections = args.max_connections;
@@ -200,7 +202,7 @@ mod tests {
             port: 7681,
             bind: "127.0.0.1".to_string(),
             config: None,
-            shell: "bash".to_string(),
+            shell: Some("bash --login".to_string()),
             working_dir: None,
             log_level: "info".to_string(),
             session_mode: "isolated".to_string(),
@@ -216,7 +218,7 @@ mod tests {
         };
 
         let config = load_config(&args).unwrap();
-        assert_eq!(config.command, vec!["bash"]);
+        assert_eq!(config.command, vec!["bash", "--login"]);
         assert_eq!(config.session.mode, "isolated");
         assert_eq!(config.session.timeout, 3600);
         assert!(config.auth.is_none());
@@ -229,7 +231,7 @@ mod tests {
             port: 8080,
             bind: "0.0.0.0".to_string(),
             config: None,
-            shell: "/bin/zsh".to_string(),
+            shell: Some("/bin/zsh".to_string()),
             working_dir: Some(PathBuf::from("/tmp")),
             log_level: "debug".to_string(),
             session_mode: "shared_readwrite".to_string(),
@@ -264,7 +266,7 @@ mod tests {
             port: 7681,
             bind: "127.0.0.1".to_string(),
             config: None,
-            shell: "bash".to_string(),
+            shell: Some("bash".to_string()),
             working_dir: None,
             log_level: "info".to_string(),
             session_mode: "isolated".to_string(),
@@ -324,7 +326,7 @@ enabled = false
             port: 9999,
             bind: "127.0.0.1".to_string(),
             config: Some(config_path),
-            shell: "bash".to_string(),
+            shell: Some("bash".to_string()),
             working_dir: None,
             log_level: "info".to_string(),
             session_mode: "isolated".to_string(),
