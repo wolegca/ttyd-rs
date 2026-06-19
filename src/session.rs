@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::{Mutex, RwLock, broadcast};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Errors that can occur during session operations
 #[derive(Debug, Error)]
@@ -295,7 +295,7 @@ impl SessionManager {
         if clients.is_empty() {
             sessions.remove(session_id);
             // clients guard is dropped here, after removal is complete
-            info!("Removed empty session {}", session_id);
+            debug!("Removed empty session {}", session_id);
             return true;
         }
         false
@@ -346,7 +346,7 @@ impl SessionManager {
         // Remove empty sessions via the atomic check
         for session_id in empty_candidates {
             if self.remove_if_empty(&session_id).await {
-                warn!("Cleaned up inactive session: {}", session_id);
+                debug!("Cleaned up inactive session: {}", session_id);
                 count += 1;
             }
         }

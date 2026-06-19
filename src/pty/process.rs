@@ -133,9 +133,17 @@ impl PtyProcess {
 
     /// Set `FD_CLOEXEC` on a file descriptor so it is closed on `exec`.
     fn set_cloexec(fd: RawFd) {
+        // SAFETY: fcntl is a POSIX syscall; fd is valid (from openpty).
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
         if flags >= 0 {
-            let _ = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+            let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+            if rc < 0 {
+                debug!(
+                    "Failed to set FD_CLOEXEC on fd {}: {}",
+                    fd,
+                    std::io::Error::last_os_error()
+                );
+            }
         }
     }
 

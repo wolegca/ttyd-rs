@@ -279,6 +279,7 @@
         let serverDisconnected = false;
         let authFailed = false;
         let authRequired = false;
+        let readOnly = false;
         /** @type {{ method: string, credentials: string } | null} */
         let authCredentials = null;
         const MAX_RETRIES = 10;
@@ -290,6 +291,20 @@
         // Check for session join query parameter
         const urlParams = new URLSearchParams(window.location.search);
         const joinSessionId = urlParams.get('session');
+
+        /** Safely send a JSON message over the WebSocket.
+         *  @param {string} type
+         *  @param {object} data
+         */
+        function sendMsg(type, data) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                try {
+                    ws.send(JSON.stringify({ type, data }));
+                } catch (e) {
+                    console.error('Failed to send message:', e);
+                }
+            }
+        }
 
         function connect() {
             // [Fix #1+#2] Cancel any pending reconnect timer and close old WebSocket
@@ -319,23 +334,13 @@
                 // Start heartbeat
                 if (heartbeatTimer === null) {
                     heartbeatTimer = setInterval(() => {
-                        if (ws && ws.readyState === WebSocket.OPEN) {
-                            const pingMsg = {
-                                type: 'ping',
-                                data: { timestamp: Date.now() }
-                            };
-                            ws.send(JSON.stringify(pingMsg));
-                        }
+                        sendMsg('ping', { timestamp: Date.now() });
                     }, 30000);
                 }
 
                 // Send auth first if required
                 if (authRequired && authCredentials) {
-                    const authMsg = {
-                        type: 'auth',
-                        data: authCredentials
-                    };
-                    ws.send(JSON.stringify(authMsg));
+                    sendMsg('auth', authCredentials);
                 } else {
                     // No auth needed, proceed directly
                     onAuthenticated();
@@ -363,6 +368,10 @@
                             console.log('Terminal ready:', msg.data);
                             setStatus(true);
                             updateSessionInfo(msg.data.session_id);
+                            readOnly = msg.data.readonly || false;
+                            if (readOnly) {
+                                term.write('\r\n[Read-only mode]\r\n');
+                            }
                             break;
                         case 'output':
                             term.write(msg.data.payload);
@@ -381,6 +390,10 @@
                         case 'error':
                             console.error('Error:', msg.data);
                             term.write(`\r\n[Error: ${msg.data.message}]\r\n`);
+                            if (msg.data.fatal) {
+                                serverDisconnected = true;
+                                if (ws) ws.close();
+                            }
                             break;
                         default:
                             console.warn('Unknown message type:', msg.type);
@@ -438,27 +451,19 @@
 
         // Called after auth succeeds (or if no auth needed)
         function onAuthenticated() {
+            // Reset readonly state on new connection
+            readOnly = false;
+
+            // Send resize first (required by server), then optionally join
+            const dims = fitAddon.proposeDimensions();
+            if (dims) {
+                sendMsg('resize', { cols: dims.cols, rows: dims.rows });
+            }
+
             // Try to rejoin previous session on reconnect, otherwise use URL param
             const rejoinId = currentSessionId || joinSessionId;
             if (rejoinId) {
-                const joinMsg = {
-                    type: 'join',
-                    data: { session_id: rejoinId }
-                };
-                ws.send(JSON.stringify(joinMsg));
-            }
-
-            // Send initial resize message
-            const dims = fitAddon.proposeDimensions();
-            if (dims) {
-                const resizeMsg = {
-                    type: 'resize',
-                    data: {
-                        cols: dims.cols,
-                        rows: dims.rows
-                    }
-                };
-                ws.send(JSON.stringify(resizeMsg));
+                sendMsg('join', { session_id: rejoinId });
             }
         }
 
@@ -547,29 +552,25 @@
 
         // Send user input to server
         term.onData((data) => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                const inputMsg = {
-                    type: 'input',
-                    data: { payload: data }
-                };
-                ws.send(JSON.stringify(inputMsg));
+            if (!readOnly) {
+                sendMsg('input', { payload: data });
             }
         });
 
-        // Handle terminal resize
+        // Handle terminal resize with debounce
+        let resizeTimer = null;
         window.addEventListener('resize', () => {
             fitAddon.fit();
-            const dims = fitAddon.proposeDimensions();
-            if (dims && ws && ws.readyState === WebSocket.OPEN) {
-                const resizeMsg = {
-                    type: 'resize',
-                    data: {
-                        cols: dims.cols,
-                        rows: dims.rows
-                    }
-                };
-                ws.send(JSON.stringify(resizeMsg));
+            if (resizeTimer !== null) {
+                clearTimeout(resizeTimer);
             }
+            resizeTimer = setTimeout(() => {
+                resizeTimer = null;
+                const dims = fitAddon.proposeDimensions();
+                if (dims) {
+                    sendMsg('resize', { cols: dims.cols, rows: dims.rows });
+                }
+            }, 100);
         });
     </script>
 </body>

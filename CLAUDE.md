@@ -73,7 +73,14 @@ expect-used = "deny"
 panic = "deny"
 ```
 
-**Critical**: Never use `.unwrap()`, `.expect()`, or `panic!()` in code. Always use proper error handling with `Result` and `?` operator, or handle `Option` values explicitly with `match`, `if let`, or combinators like `.ok_or()`.
+**Critical**: Never use `.unwrap()`, `.expect()`, or `panic!()` in production code. Always use proper error handling with `Result` and `?` operator, or handle `Option` values explicitly with `match`, `if let`, or combinators like `.ok_or()`.
+
+**Test code exception**: Test modules (`#[cfg(test)]`) may use `.unwrap()` for brevity, but must annotate the test module with `#[allow(clippy::unwrap_used)]`. Other error-discarding patterns (`let _ =`, `.ok()`, `.unwrap_or()`) are acceptable in production code only when:
+- The error is genuinely non-actionable (e.g., best-effort cleanup in `Drop`, WebSocket send to a possibly-disconnected client)
+- A fallback value is provided (e.g., `.ok().unwrap_or_else(|| 500_response)`)
+- The context makes the safety invariant clear and a comment explains why the error is ignored
+
+When discarding a `Result`, prefer an explicit comment over a bare `let _ =`.
 
 ## Dependency Management
 

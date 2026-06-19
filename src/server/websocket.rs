@@ -122,7 +122,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, remote_addr: String) 
 
     match result {
         Ok(()) => info!("WebSocket connection closed normally"),
-        Err(e) => error!("WebSocket error: {}", e),
+        Err(e) => warn!("WebSocket connection error: {}", e),
     }
 }
 
@@ -479,7 +479,7 @@ async fn handle_terminal_session(
                         .validation
                         .validate_terminal_size(data.cols, data.rows)
                     {
-                        error!("Invalid terminal size: {}", e);
+                        warn!("Invalid terminal size: {}", e);
                         state
                             .audit_logger
                             .log_error(
@@ -525,7 +525,7 @@ async fn handle_terminal_session(
             .validation
             .validate_terminal_size(data.cols, data.rows)
         {
-            error!("Invalid terminal size: {}", e);
+            warn!("Invalid terminal size: {}", e);
             state
                 .audit_logger
                 .log_error(
@@ -703,7 +703,13 @@ async fn handle_terminal_session(
         // that abort() cannot interrupt; combined with a shell that outlives
         // the connection, that thread blocks forever and hangs runtime
         // shutdown. AsyncFd makes the read truly async and cancellable.
-        let flags = nix::fcntl::fcntl(&dup_fd, nix::fcntl::FcntlArg::F_GETFL).unwrap_or(0);
+        let flags = match nix::fcntl::fcntl(&dup_fd, nix::fcntl::FcntlArg::F_GETFL) {
+            Ok(f) => f,
+            Err(e) => {
+                error!("Failed to get PTY fd flags: {}", e);
+                return;
+            }
+        };
         if let Err(e) = nix::fcntl::fcntl(
             &dup_fd,
             nix::fcntl::FcntlArg::F_SETFL(
@@ -928,7 +934,7 @@ async fn handle_terminal_session(
                         warn!("Unexpected message type");
                     }
                     Err(e) => {
-                        error!("Failed to parse message: {}", e);
+                        warn!("Failed to parse message: {}", e);
                     }
                 }
             }
@@ -937,7 +943,7 @@ async fn handle_terminal_session(
                 break;
             }
             Err(e) => {
-                error!("WebSocket error: {}", e);
+                warn!("WebSocket receive error: {}", e);
                 break;
             }
             _ => {}
