@@ -176,7 +176,7 @@ curl http://localhost:7681/api/stats
 ### Prerequisites
 
 - Rust 1.85+ (edition 2024)
-- Linux or macOS (Unix-like system required)
+- Linux (kernel 5.9+ recommended for `close_range` support)
 
 ### Build
 

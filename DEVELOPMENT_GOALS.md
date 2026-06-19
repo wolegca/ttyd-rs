@@ -4,7 +4,7 @@
 
 ttyd-rs is a Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd), a terminal sharing tool over the web. This document outlines the development goals, milestones, and feature planning for the project.
 
-**Target Platforms**: Linux and macOS only (no Windows support)
+**Target Platforms**: Linux only (no Windows or macOS support)
 
 **Current Status**: All core milestones (M1-M6) completed. 161 tests passing, all clippy lints clean.
 

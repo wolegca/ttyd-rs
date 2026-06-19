@@ -211,8 +211,8 @@ src/
 
 ## Platform Support
 
-- ✅ **Linux**: Full support
-- ✅ **macOS**: Full support
+- ✅ **Linux**: Full support (kernel 5.9+ recommended for `close_range`)
+- ❌ **macOS**: Not supported (removed to simplify codebase)
 - ❌ **Windows**: Not supported (Unix PTY required)
 
 ---

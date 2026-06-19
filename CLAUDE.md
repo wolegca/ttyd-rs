@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ttyd-rs is a Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd), a tool for sharing terminals over the web using WebSocket. This project focuses on enhanced security, memory safety, and modern async architecture.
 
-**Target Platforms**: Linux and macOS only (no Windows support)
+**Target Platforms**: Linux only (no Windows or macOS support)
 
 **Current Status**: Near production ready. 161 tests passing, all clippy lints clean. See [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) for detailed readiness assessment.
 
@@ -221,6 +221,6 @@ For detailed status, known issues, and deployment recommendations, see [docs/PRO
 ## Important Notes
 
 - The `ttyd/` directory contains the original C implementation for reference only
-- Focus on Unix-like systems; explicitly no Windows support to simplify PTY handling
+- Focus on Linux only; explicitly no Windows or macOS support to simplify PTY handling
 - Performance targets: <50ms startup, <10MB idle memory, <5ms latency, >1000 concurrent connections
 - TLS is not planned; use a reverse proxy (nginx, Caddy) for HTTPS
