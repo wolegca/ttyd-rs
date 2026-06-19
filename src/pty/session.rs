@@ -70,7 +70,8 @@ mod tests {
 
     #[test]
     fn test_pty_session_resize() {
-        let mut session = PtySession::new(&["sleep".to_string(), "0.5".to_string()], 80, 24).unwrap();
+        let mut session =
+            PtySession::new(&["sleep".to_string(), "0.5".to_string()], 80, 24).unwrap();
         assert_eq!(session.dimensions(), (80, 24));
 
         let result = session.resize(120, 40);
@@ -80,7 +81,8 @@ mod tests {
 
     #[test]
     fn test_pty_session_resize_updates_dimensions() {
-        let mut session = PtySession::new(&["sleep".to_string(), "0.5".to_string()], 80, 24).unwrap();
+        let mut session =
+            PtySession::new(&["sleep".to_string(), "0.5".to_string()], 80, 24).unwrap();
 
         session.resize(100, 50).unwrap();
         assert_eq!(session.dimensions(), (100, 50));

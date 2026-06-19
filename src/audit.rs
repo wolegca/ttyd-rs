@@ -334,9 +334,7 @@ mod tests {
         let log_path = dir.join("audit.log");
 
         let logger = AuditLogger::new(Some(log_path.clone()), true);
-        logger
-            .log_error("10.0.0.4", "s4", "PTY spawn failed")
-            .await;
+        logger.log_error("10.0.0.4", "s4", "PTY spawn failed").await;
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

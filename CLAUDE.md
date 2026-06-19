@@ -8,7 +8,7 @@ ttyd-rs is a Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd), a tool for
 
 **Target Platforms**: Linux and macOS only (no Windows support)
 
-**Current Status**: All core features implemented. 86 tests passing, all clippy lints clean.
+**Current Status**: Near production ready. 161 tests passing, all clippy lints clean. See [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) for detailed readiness assessment.
 
 ## Build & Development Commands
 
@@ -192,7 +192,11 @@ GET    /api/stats             - Server statistics
 
 ## Development Stage
 
-**Current Status**: All core milestones (M1-M6) completed.
+**Current Status**: Near production ready. All core milestones (M1-M6) completed. 161 tests passing.
+
+**Known Blocking Issue**: Token validation bug in `validation.rs:66-82` — rejects tokens containing non-base64 characters. Must fix before production use with token auth.
+
+For detailed status, known issues, and deployment recommendations, see [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
 
 **Implemented Features**:
 - CLI with all flags from original ttyd

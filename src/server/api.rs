@@ -434,7 +434,9 @@ mod tests {
         .await
         .unwrap();
 
-        let Json(resp) = list_sessions(axum::extract::State(api_state)).await.unwrap();
+        let Json(resp) = list_sessions(axum::extract::State(api_state))
+            .await
+            .unwrap();
         assert_eq!(resp.total, 1);
         assert_eq!(resp.sessions[0].session_id, "test-s1");
         assert_eq!(resp.sessions[0].terminal.cols, 80);
