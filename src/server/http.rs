@@ -6,7 +6,6 @@ use crate::rate_limit::RateLimiter;
 use crate::server::api::ApiState;
 use crate::server::websocket::AppState;
 use crate::session::{SessionManager, SessionMode};
-use crate::validation::ValidationConfig;
 use axum::{
     Router,
     body::Body,
@@ -25,7 +24,7 @@ use tracing::{error, info};
 /// Start the HTTP/WebSocket server
 pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let audit_logger = AuditLogger::new(config.audit.log_file.clone(), config.audit.enabled);
-    let validation = ValidationConfig::from_config(&config);
+    let validation = config.validation.clone();
     let rate_limiter = RateLimiter::new(
         config.rate_limit.max_requests,
         config.rate_limit.window_seconds,
@@ -262,9 +261,9 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
 mod tests {
     use super::*;
     use crate::audit::AuditLogger;
+    use crate::config::ValidationConfig;
     use crate::rate_limit::RateLimiter;
     use crate::session::SessionManager;
-    use crate::validation::ValidationConfig;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
@@ -852,7 +851,7 @@ mod tests {
     /// Helper: start server on a random port, return the bound address
     async fn start_test_server(config: Config) -> SocketAddr {
         let audit_logger = AuditLogger::new(config.audit.log_file.clone(), config.audit.enabled);
-        let validation = ValidationConfig::from_config(&config);
+        let validation = config.validation.clone();
         let rate_limiter = RateLimiter::new(
             config.rate_limit.max_requests,
             config.rate_limit.window_seconds,

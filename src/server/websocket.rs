@@ -2,10 +2,10 @@
 use crate::audit::AuditLogger;
 use crate::auth::{BasicAuth, TokenAuth};
 use crate::config::Config;
+use crate::config::ValidationConfig;
 use crate::protocol::*;
 use crate::rate_limit::RateLimiter;
 use crate::session::{Client, SessionManager, SessionMode};
-use crate::validation::ValidationConfig;
 use axum::{
     extract::{
         ConnectInfo, State, WebSocketUpgrade,

@@ -1,4 +1,5 @@
 /// Input validation module for security
+use crate::config::ValidationConfig;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -24,48 +25,7 @@ pub enum ValidationError {
     RateLimitExceeded,
 }
 
-/// Validation constraints
-pub struct ValidationConfig {
-    /// Maximum terminal columns
-    pub max_cols: u16,
-    /// Minimum terminal columns
-    pub min_cols: u16,
-    /// Maximum terminal rows
-    pub max_rows: u16,
-    /// Minimum terminal rows
-    pub min_rows: u16,
-    /// Maximum input payload size in bytes
-    pub max_input_size: usize,
-    /// Maximum credentials length
-    pub max_credentials_length: usize,
-}
-
-impl Default for ValidationConfig {
-    fn default() -> Self {
-        Self {
-            max_cols: 500,
-            min_cols: 10,
-            max_rows: 200,
-            min_rows: 5,
-            max_input_size: 16384, // 16KB per input message
-            max_credentials_length: 1024,
-        }
-    }
-}
-
 impl ValidationConfig {
-    /// Create from Config
-    pub fn from_config(config: &crate::config::Config) -> Self {
-        Self {
-            max_cols: config.validation.max_cols,
-            min_cols: config.validation.min_cols,
-            max_rows: config.validation.max_rows,
-            min_rows: config.validation.min_rows,
-            max_input_size: config.validation.max_input_size,
-            max_credentials_length: config.validation.max_credentials_length,
-        }
-    }
-
     /// Validate terminal size
     pub fn validate_terminal_size(&self, cols: u16, rows: u16) -> Result<(), ValidationError> {
         if cols < self.min_cols || cols > self.max_cols {
@@ -222,24 +182,5 @@ mod tests {
         let config = ValidationConfig::default();
         let payload = "hello\0world";
         assert!(config.validate_input_payload(payload).is_err());
-    }
-
-    #[test]
-    fn test_validation_config_from_config() {
-        let mut cfg = crate::config::Config::default();
-        cfg.validation.max_cols = 999;
-        cfg.validation.min_cols = 1;
-        cfg.validation.max_rows = 500;
-        cfg.validation.min_rows = 1;
-        cfg.validation.max_input_size = 32768;
-        cfg.validation.max_credentials_length = 2048;
-
-        let vc = ValidationConfig::from_config(&cfg);
-        assert_eq!(vc.max_cols, 999);
-        assert_eq!(vc.min_cols, 1);
-        assert_eq!(vc.max_rows, 500);
-        assert_eq!(vc.min_rows, 1);
-        assert_eq!(vc.max_input_size, 32768);
-        assert_eq!(vc.max_credentials_length, 2048);
     }
 }
