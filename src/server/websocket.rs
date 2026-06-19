@@ -17,7 +17,7 @@ use futures::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -759,6 +759,8 @@ async fn handle_terminal_session(
     let ws_sender_for_sub = ws_sender.clone();
     let mut output_rx = session.subscribe_output();
     let subscriber_task = tokio::spawn(async move {
+        let mut last_lag_notify: Option<Instant> = None;
+        const LAG_NOTIFY_COOLDOWN: Duration = Duration::from_secs(1);
         loop {
             match output_rx.recv().await {
                 Ok(data) => {
@@ -776,18 +778,29 @@ async fn handle_terminal_session(
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!("Client lagged by {} messages, notifying", n);
-                    let lag_msg = Message::Error(ErrorData {
-                        code: "OUTPUT_LAGGED".to_string(),
-                        message: format!("{} output messages dropped due to slow client", n),
-                        fatal: false,
-                    });
-                    if let Ok(json) = lag_msg.to_json() {
-                        let _ = ws_sender_for_sub
-                            .lock()
-                            .await
-                            .send(WsMessage::Text(json.into()))
-                            .await;
+                    let now = Instant::now();
+                    let should_notify = match last_lag_notify {
+                        Some(last) => now.duration_since(last) >= LAG_NOTIFY_COOLDOWN,
+                        None => true,
+                    };
+                    if should_notify {
+                        last_lag_notify = Some(now);
+                        warn!("Client lagged by {} messages, notifying", n);
+                        let lag_msg = Message::Error(ErrorData {
+                            code: "OUTPUT_LAGGED".to_string(),
+                            message: format!("{} output messages dropped due to slow client", n),
+                            fatal: false,
+                        });
+                        if let Ok(json) = lag_msg.to_json()
+                            && ws_sender_for_sub
+                                .lock()
+                                .await
+                                .send(WsMessage::Text(json.into()))
+                                .await
+                                .is_err()
+                        {
+                            break;
+                        }
                     }
                 }
                 Err(broadcast::error::RecvError::Closed) => {
