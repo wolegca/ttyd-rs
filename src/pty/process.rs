@@ -53,6 +53,10 @@ impl PtyProcess {
         let master_fd = pty.master.as_raw_fd();
         let slave_fd = pty.slave.as_raw_fd();
 
+        // Set FD_CLOEXEC on both PTY fds so they are closed on exec
+        Self::set_cloexec(master_fd);
+        Self::set_cloexec(slave_fd);
+
         debug!("PTY opened: master_fd={}, slave_fd={}", master_fd, slave_fd);
 
         // Fork the process
@@ -104,7 +108,13 @@ impl PtyProcess {
         dup2(&slave_owned, &mut stderr_owned)
             .map_err(|e| PtyError::ExecFailed(format!("dup2 stderr failed: {}", e)))?;
 
-        // Don't close slave_fd since it's now owned by slave_owned
+        // slave_fd is now duplicated onto fd 0/1/2, close the original
+        drop(slave_owned);
+
+        // Close all inherited file descriptors above stderr to prevent the
+        // child from holding references to the parent's sockets, PTY masters,
+        // tokio runtime internals, etc.
+        Self::close_fds_above(libc::STDERR_FILENO);
 
         // Convert command to CString
         let program = CString::new(command[0].as_str())
@@ -119,6 +129,56 @@ impl PtyProcess {
         execvp(&program, &args).map_err(|e| PtyError::ExecFailed(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Set `FD_CLOEXEC` on a file descriptor so it is closed on `exec`.
+    fn set_cloexec(fd: RawFd) {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags >= 0 {
+            let _ = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+        }
+    }
+
+    /// Close all file descriptors greater than `min_fd`.
+    ///
+    /// Uses `close_range(2)` on Linux ≥ 5.9, falls back to iterating
+    /// `/proc/self/fd` on older kernels, and `fcntl(F_MAXFD)` on macOS.
+    fn close_fds_above(min_fd: RawFd) {
+        let first = (min_fd + 1) as libc::c_uint;
+
+        // Fast path: close_range(2) — atomic, no race with other threads
+        #[cfg(target_os = "linux")]
+        {
+            // close_range(first, ~0u, 0) — close all fds >= first
+            if unsafe { libc::close_range(first, libc::c_uint::MAX, 0) } == 0 {
+                return;
+            }
+        }
+
+        // Fallback: enumerate open fds via /proc/self/fd (Linux)
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(dir) = std::fs::read_dir("/proc/self/fd") {
+                for entry in dir.flatten() {
+                    if let Ok(fd) = entry.file_name().to_string_lossy().parse::<RawFd>()
+                        && fd > min_fd
+                    {
+                        let _ = close(fd);
+                    }
+                }
+            }
+        }
+
+        // Fallback for macOS: use fcntl(F_MAXFD) to find the highest open fd
+        #[cfg(target_os = "macos")]
+        {
+            let max_fd = unsafe { libc::fcntl(0, libc::F_MAXFD) };
+            if max_fd >= 0 {
+                for fd in (min_fd + 1)..=max_fd {
+                    let _ = close(fd);
+                }
+            }
+        }
     }
 
     /// Resize the PTY window
