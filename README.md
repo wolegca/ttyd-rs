@@ -258,11 +258,11 @@ See [DEVELOPMENT_GOALS.md](DEVELOPMENT_GOALS.md) for detailed roadmap.
 
 ## Documentation
 
-- [Development Goals](DEVELOPMENT_GOALS.md) - Roadmap and planning
-- [M2 Report](docs/M2_COMPLETION_REPORT.md) - Security hardening details
-- [M3 Report](docs/M3_COMPLETION_REPORT.md) - Feature completion details
-- [M4 Report](docs/M4_COMPLETION_REPORT.md) - Production readiness details
-- [M2 Testing Guide](docs/M2_TESTING_GUIDE.md) - Security feature testing
+- [CLAUDE.md](CLAUDE.md) - Development guidelines and code quality requirements
+- [Development Goals](DEVELOPMENT_GOALS.md) - Roadmap and milestone details
+- [Project Status](docs/PROJECT_STATUS.md) - Production readiness assessment and known issues
+- [Current Status](docs/CURRENT_STATUS.md) - Feature list and module structure
+- [WebSocket Protocol](docs/PROTOCOL.md) - Protocol specification
 
 ## License
 

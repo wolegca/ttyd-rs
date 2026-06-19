@@ -12,15 +12,15 @@ All checks pass per [CLAUDE.md](../../CLAUDE.md):
 
 1. **Format** (`cargo fmt -- --check`) — ✅ Pass
 2. **Clippy** (`cargo clippy -- -D warnings`) — ✅ Zero warnings
-3. **Tests** (`cargo test`) — ✅ 104 tests passing
+3. **Tests** (`cargo test`) — ✅ 161 tests passing
 4. **Release build** — ✅ Success
 
 ---
 
 ## Project Statistics
 
-- **Rust source**: ~4,800 lines across 14 .rs files
-- **Tests**: 104 (unit + integration)
+- **Rust source**: ~6,260 lines across 18 .rs files
+- **Tests**: 161 (unit + integration)
 - **Frontend**: index.html with xterm.js integration
 - **Dependencies**: See Cargo.toml for current list
 
@@ -162,4 +162,4 @@ src/
 
 ---
 
-*Last updated: 2026-06-18*
+*Last updated: 2026-06-19*

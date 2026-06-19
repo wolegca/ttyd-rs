@@ -87,6 +87,16 @@ Client                          Server
 }
 ```
 
+#### 1.5 JOIN - 加入已有会话
+```json
+{
+  "type": "join",
+  "data": {
+    "session_id": "uuid"
+  }
+}
+```
+
 ### 2. 服务器 -> 客户端
 
 #### 2.1 AUTH_OK - 认证成功
@@ -94,7 +104,7 @@ Client                          Server
 {
   "type": "auth_ok",
   "data": {
-    "session_id": "uuid",
+    "client_id": "uuid",
     "readonly": false
   }
 }
@@ -261,11 +271,10 @@ Client                          Server
 
 ## 安全考虑
 
-1. **消息大小限制**：单条消息最大 1MB（防止 DoS）
-2. **速率限制**：每秒最多 100 条 INPUT 消息（防止滥用）
-3. **认证超时**：连接后 10 秒内必须完成认证
-4. **输入验证**：所有输入必须经过验证
-5. **XSS 防护**：前端必须正确处理 OUTPUT，防止注入攻击
+1. **消息大小限制**：单条消息最大 16KB（默认，可通过 `max_input_size` 配置）
+2. **速率限制**：默认 10 次/60 秒（可通过 `max_requests` / `window_seconds` 配置）
+3. **输入验证**：终端尺寸、payload 大小、凭证格式均经过验证
+4. **XSS 防护**：前端必须正确处理 OUTPUT，防止注入攻击
 
 ## 兼容性
 
@@ -275,5 +284,5 @@ Client                          Server
 
 ---
 
-*协议版本：v0.1*  
-*更新日期：2026-06-17*
+*协议版本：v0.1*
+*更新日期：2026-06-19*

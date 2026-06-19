@@ -6,7 +6,7 @@ ttyd-rs is a Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd), a terminal
 
 **Target Platforms**: Linux and macOS only (no Windows support)
 
-**Current Status**: All core milestones (M1-M6) completed. 104 tests passing, all clippy lints clean.
+**Current Status**: All core milestones (M1-M6) completed. 161 tests passing, all clippy lints clean.
 
 ---
 
@@ -272,8 +272,8 @@ cargo audit
 
 ### Current Test Coverage
 
-- **104 tests passing** across all modules
-- Tests cover: config loading, validation, auth, rate limiting, audit, session management, HTTP server
+- **161 tests passing** across all modules
+- Tests cover: config loading, validation, auth, rate limiting, audit, session management, HTTP server, WebSocket, PTY
 - All clippy lints clean with `-D warnings`
 
 ### Testing Strategy
@@ -288,29 +288,29 @@ cargo audit
 
 ```
 src/
-├── main.rs           # Entry point, CLI parsing, config loading
-├── config.rs         # Configuration types and validation (389 lines)
+├── main.rs           # Entry point, CLI parsing, config loading (342 lines)
+├── config.rs         # Configuration types and validation (410 lines)
 ├── server.rs         # Server module declaration
 ├── server/
-│   ├── http.rs       # HTTP server, routing, static files (653 lines)
-│   ├── websocket.rs  # WebSocket handler, session management (742 lines)
-│   └── api.rs        # REST API endpoints (218 lines)
+│   ├── http.rs       # HTTP server, routing, static files (1114 lines)
+│   ├── websocket.rs  # WebSocket handler, session management (1105 lines)
+│   └── api.rs        # REST API endpoints (526 lines)
 ├── pty.rs            # PTY module declaration
 ├── pty/
-│   ├── process.rs    # PTY process spawning and management (178 lines)
-│   └── session.rs    # PTY session wrapper (49 lines)
+│   ├── process.rs    # PTY process spawning and management (341 lines)
+│   └── session.rs    # PTY session wrapper (117 lines)
 ├── auth.rs           # Auth module declaration
 ├── auth/
-│   ├── basic.rs      # Basic authentication (81 lines)
-│   └── token.rs      # Token authentication (79 lines)
-├── protocol.rs       # WebSocket message types (269 lines)
-├── session.rs        # Session manager, multi-client support (833 lines)
-├── audit.rs          # Audit logging (307 lines)
+│   ├── basic.rs      # Basic authentication (125 lines)
+│   └── token.rs      # Token authentication (115 lines)
+├── protocol.rs       # WebSocket message types (296 lines)
+├── session.rs        # Session manager, multi-client support (871 lines)
+├── audit.rs          # Audit logging (386 lines)
 ├── rate_limit.rs     # Rate limiting (242 lines)
-├── validation.rs     # Input validation (245 lines)
-└── assets.rs         # Static asset embedding (5 lines)
+├── validation.rs     # Input validation (186 lines)
+└── assets.rs         # Static asset embedding (65 lines)
 
-Total: ~4,628 lines of Rust code
+Total: ~6,260 lines of Rust code
 ```
 
 ---
