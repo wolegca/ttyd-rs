@@ -1,13 +1,13 @@
-# WebSocket 协议规范
+# WebSocket Protocol Specification
 
-## 概述
+## Overview
 
-ttyd-rs 使用 WebSocket 在浏览器客户端和服务器端终端之间传输数据。协议设计目标：
-- **高效**：最小化开销，支持高频终端输出
-- **简单**：易于实现和调试
-- **扩展性**：支持未来功能扩展
+ttyd-rs uses WebSocket to transmit data between the browser client and the server-side terminal. The protocol design goals are:
+- **Efficient**: Minimize overhead, support high-frequency terminal output
+- **Simple**: Easy to implement and debug
+- **Extensible**: Support for future feature extensions
 
-## 连接流程
+## Connection Flow
 
 ```
 Client                          Server
@@ -26,11 +26,11 @@ Client                          Server
   |<-- DISCONNECT ----------------|
 ```
 
-## 消息格式
+## Message Format
 
-所有消息使用 JSON 格式传输（未来可考虑二进制协议优化）。
+All messages are transmitted in JSON format (binary protocol optimization may be considered in the future).
 
-### 消息结构
+### Message Structure
 
 ```json
 {
@@ -39,11 +39,11 @@ Client                          Server
 }
 ```
 
-## 消息类型
+## Message Types
 
-### 1. 客户端 -> 服务器
+### 1. Client -> Server
 
-#### 1.1 AUTH - 身份验证
+#### 1.1 AUTH - Authentication
 ```json
 {
   "type": "auth",
@@ -54,7 +54,7 @@ Client                          Server
 }
 ```
 
-#### 1.2 INPUT - 用户输入
+#### 1.2 INPUT - User Input
 ```json
 {
   "type": "input",
@@ -64,9 +64,9 @@ Client                          Server
 }
 ```
 
-**注意**：payload 包含原始键盘输入，包括控制字符（如 Ctrl+C = \x03）
+**Note**: The payload contains raw keyboard input, including control characters (e.g., Ctrl+C = \x03)
 
-#### 1.3 RESIZE - 终端大小调整
+#### 1.3 RESIZE - Terminal Resize
 ```json
 {
   "type": "resize",
@@ -77,7 +77,7 @@ Client                          Server
 }
 ```
 
-#### 1.4 PING - 保活
+#### 1.4 PING - Keepalive
 ```json
 {
   "type": "ping",
@@ -87,7 +87,7 @@ Client                          Server
 }
 ```
 
-#### 1.5 JOIN - 加入已有会话
+#### 1.5 JOIN - Join Existing Session
 ```json
 {
   "type": "join",
@@ -97,9 +97,9 @@ Client                          Server
 }
 ```
 
-### 2. 服务器 -> 客户端
+### 2. Server -> Client
 
-#### 2.1 AUTH_OK - 认证成功
+#### 2.1 AUTH_OK - Authentication Success
 ```json
 {
   "type": "auth_ok",
@@ -110,7 +110,7 @@ Client                          Server
 }
 ```
 
-#### 2.2 AUTH_FAIL - 认证失败
+#### 2.2 AUTH_FAIL - Authentication Failure
 ```json
 {
   "type": "auth_fail",
@@ -120,7 +120,7 @@ Client                          Server
 }
 ```
 
-#### 2.3 OUTPUT - 终端输出
+#### 2.3 OUTPUT - Terminal Output
 ```json
 {
   "type": "output",
@@ -130,9 +130,9 @@ Client                          Server
 }
 ```
 
-**注意**：payload 包含原始终端输出，包括 ANSI 转义序列
+**Note**: The payload contains raw terminal output, including ANSI escape sequences
 
-#### 2.4 PONG - 保活响应
+#### 2.4 PONG - Keepalive Response
 ```json
 {
   "type": "pong",
@@ -142,30 +142,30 @@ Client                          Server
 }
 ```
 
-#### 2.5 ERROR - 错误消息
+#### 2.5 ERROR - Error Message
 ```json
 {
   "type": "error",
   "data": {
     "code": "RATE_LIMIT_EXCEEDED",
     "message": "Too many requests",
-    "fatal": false  // true = 连接将被关闭
+    "fatal": false  // true = connection will be closed
   }
 }
 ```
 
-#### 2.6 DISCONNECT - 断开连接
+#### 2.6 DISCONNECT - Disconnect
 ```json
 {
   "type": "disconnect",
   "data": {
     "reason": "Terminal process exited",
-    "code": 0  // 进程退出码
+    "code": 0  // process exit code
   }
 }
 ```
 
-#### 2.7 READY - 终端就绪
+#### 2.7 READY - Terminal Ready
 ```json
 {
   "type": "ready",
@@ -178,9 +178,9 @@ Client                          Server
 }
 ```
 
-## 状态机
+## State Machine
 
-### 服务器端状态
+### Server-side State
 
 ```
 [Connected] --AUTH--> [Authenticating] --AUTH_OK--> [Ready]
@@ -192,7 +192,7 @@ Client                          Server
 [Ready] --DISCONNECT----> [Disconnected]
 ```
 
-### 客户端状态
+### Client-side State
 
 ```
 [Connected] --SEND_AUTH--> [Authenticating] --AUTH_OK--> [Active]
@@ -204,49 +204,49 @@ Client                          Server
 [Active] --DISCONNECT----> [Closed]
 ```
 
-## 错误码
+## Error Codes
 
-| 错误码 | 描述 |
-|--------|------|
-| `AUTH_REQUIRED` | 需要身份验证 |
-| `AUTH_FAILED` | 认证失败 |
-| `RATE_LIMIT_EXCEEDED` | 请求过于频繁 |
-| `MESSAGE_TOO_LARGE` | 消息体过大 |
-| `INVALID_MESSAGE` | 消息格式错误 |
-| `PTY_ERROR` | 终端错误 |
-| `PERMISSION_DENIED` | 权限不足（只读模式） |
+| Error Code | Description |
+|------------|-------------|
+| `AUTH_REQUIRED` | Authentication required |
+| `AUTH_FAILED` | Authentication failed |
+| `RATE_LIMIT_EXCEEDED` | Too many requests |
+| `MESSAGE_TOO_LARGE` | Message body too large |
+| `INVALID_MESSAGE` | Invalid message format |
+| `PTY_ERROR` | Terminal error |
+| `PERMISSION_DENIED` | Permission denied (read-only mode) |
 
-## 性能考虑
+## Performance Considerations
 
-### 批量处理
-- 服务器可以在单个 OUTPUT 消息中批量发送多个终端输出块
-- 客户端应该能够处理大块的输出数据
+### Batch Processing
+- The server can batch multiple terminal output blocks into a single OUTPUT message
+- Clients should be able to handle large chunks of output data
 
-### 流量控制
-- 如果客户端处理速度慢，服务器应该缓冲输出
-- 缓冲区满时，服务器可以降低发送频率或丢弃旧数据
+### Flow Control
+- If the client is processing slowly, the server should buffer output
+- When the buffer is full, the server can reduce sending frequency or discard old data
 
-### 心跳
-- 建议每 30 秒发送一次 PING/PONG
-- 超过 60 秒无响应则认为连接断开
+### Heartbeat
+- Recommended to send PING/PONG every 30 seconds
+- Connection is considered broken if no response for 60 seconds
 
-## 未来扩展
+## Future Extensions
 
-### 二进制协议（v2）
-为了更高的性能，可以考虑使用二进制协议：
+### Binary Protocol (v2)
+For higher performance, a binary protocol can be considered:
 
 ```
 [1 byte: message_type][4 bytes: payload_length][N bytes: payload]
 ```
 
-消息类型编码：
+Message type encoding:
 - 0x01: INPUT
 - 0x02: OUTPUT
 - 0x03: RESIZE
 - 0x04: AUTH
 - ...
 
-### 会话恢复
+### Session Resumption
 ```json
 {
   "type": "resume",
@@ -257,7 +257,7 @@ Client                          Server
 }
 ```
 
-### 文件传输（zmodem 支持）
+### File Transfer (zmodem support)
 ```json
 {
   "type": "file_transfer",
@@ -269,20 +269,20 @@ Client                          Server
 }
 ```
 
-## 安全考虑
+## Security Considerations
 
-1. **消息大小限制**：单条消息最大 16KB（默认，可通过 `max_input_size` 配置）
-2. **速率限制**：默认 10 次/60 秒（可通过 `max_requests` / `window_seconds` 配置）
-3. **输入验证**：终端尺寸、payload 大小、凭证格式均经过验证
-4. **XSS 防护**：前端必须正确处理 OUTPUT，防止注入攻击
+1. **Message size limit**: Single message max 16KB (default, configurable via `max_input_size`)
+2. **Rate limiting**: Default 10 requests/60 seconds (configurable via `max_requests` / `window_seconds`)
+3. **Input validation**: Terminal size, payload size, and credential format are all validated
+4. **XSS protection**: Frontend must properly handle OUTPUT to prevent injection attacks
 
-## 兼容性
+## Compatibility
 
-### 与原 ttyd 的兼容性
-- 消息格式与原 ttyd 类似但不完全相同
-- 如需兼容原 ttyd 客户端，需要实现协议适配层
+### Compatibility with Original ttyd
+- Message format is similar but not identical to the original ttyd
+- A protocol adaptation layer is needed for compatibility with original ttyd clients
 
 ---
 
-*协议版本：v0.1*
-*更新日期：2026-06-19*
+*Protocol version: v0.1*
+*Last updated: 2026-06-19*

@@ -260,8 +260,7 @@ See [DEVELOPMENT_GOALS.md](DEVELOPMENT_GOALS.md) for detailed roadmap.
 
 - [CLAUDE.md](CLAUDE.md) - Development guidelines and code quality requirements
 - [Development Goals](DEVELOPMENT_GOALS.md) - Roadmap and milestone details
-- [Project Status](docs/PROJECT_STATUS.md) - Production readiness assessment and known issues
-- [Current Status](docs/CURRENT_STATUS.md) - Feature list and module structure
+- [Project Status](docs/PROJECT_STATUS.md) - Production readiness assessment, feature list, and known issues
 - [WebSocket Protocol](docs/PROTOCOL.md) - Protocol specification
 
 ## License
