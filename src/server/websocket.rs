@@ -13,11 +13,15 @@ use axum::{
     },
     response::Response,
 };
+use futures::stream::SplitSink;
 use futures::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+/// Type alias for the shared WebSocket sender used across tasks.
+type WsSender = Arc<tokio::sync::Mutex<SplitSink<WebSocket, WsMessage>>>;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -120,6 +124,29 @@ async fn handle_socket(socket: WebSocket, state: AppState, remote_addr: String) 
         Ok(()) => info!("WebSocket connection closed normally"),
         Err(e) => error!("WebSocket error: {}", e),
     }
+}
+
+/// Send a structured error message to the client via the WebSocket sender.
+///
+/// Returns `Ok(())` on success, or the serialization/send error on failure.
+/// Callers decide whether to propagate the error (`?`) or ignore it (`let _ =`).
+async fn send_ws_error(
+    sender: &WsSender,
+    code: &str,
+    message: String,
+    fatal: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let msg = Message::Error(ErrorData {
+        code: code.to_string(),
+        message,
+        fatal,
+    });
+    sender
+        .lock()
+        .await
+        .send(WsMessage::Text(msg.to_json()?.into()))
+        .await?;
+    Ok(())
 }
 
 /// Handle a terminal session using SessionManager
@@ -461,16 +488,13 @@ async fn handle_terminal_session(
                                 &format!("Invalid terminal size: {}", e),
                             )
                             .await;
-                        let error_msg = Message::Error(ErrorData {
-                            code: "INVALID_SIZE".to_string(),
-                            message: format!("Invalid terminal size: {}", e),
-                            fatal: true,
-                        });
-                        ws_sender
-                            .lock()
-                            .await
-                            .send(WsMessage::Text(error_msg.to_json()?.into()))
-                            .await?;
+                        send_ws_error(
+                            &ws_sender,
+                            "INVALID_SIZE",
+                            format!("Invalid terminal size: {}", e),
+                            true,
+                        )
+                        .await?;
                         return Ok(());
                     }
                     cols = data.cols;
@@ -510,16 +534,13 @@ async fn handle_terminal_session(
                     &format!("Invalid terminal size: {}", e),
                 )
                 .await;
-            let error_msg = Message::Error(ErrorData {
-                code: "INVALID_SIZE".to_string(),
-                message: format!("Invalid terminal size: {}", e),
-                fatal: true,
-            });
-            ws_sender
-                .lock()
-                .await
-                .send(WsMessage::Text(error_msg.to_json()?.into()))
-                .await?;
+            send_ws_error(
+                &ws_sender,
+                "INVALID_SIZE",
+                format!("Invalid terminal size: {}", e),
+                true,
+            )
+            .await?;
             return Ok(());
         }
         cols = data.cols;
@@ -533,16 +554,13 @@ async fn handle_terminal_session(
             Some(existing_session) => {
                 let mode = existing_session.metadata().mode;
                 if mode == SessionMode::Isolated {
-                    let error_msg = Message::Error(ErrorData {
-                        code: "CANNOT_JOIN".to_string(),
-                        message: "Cannot join an isolated session".to_string(),
-                        fatal: true,
-                    });
-                    ws_sender
-                        .lock()
-                        .await
-                        .send(WsMessage::Text(error_msg.to_json()?.into()))
-                        .await?;
+                    send_ws_error(
+                        &ws_sender,
+                        "CANNOT_JOIN",
+                        "Cannot join an isolated session".to_string(),
+                        true,
+                    )
+                    .await?;
                     return Ok(());
                 }
                 let readonly = mode == SessionMode::SharedReadOnly;
@@ -786,18 +804,14 @@ async fn handle_terminal_session(
                     if should_notify {
                         last_lag_notify = Some(now);
                         warn!("Client lagged by {} messages, notifying", n);
-                        let lag_msg = Message::Error(ErrorData {
-                            code: "OUTPUT_LAGGED".to_string(),
-                            message: format!("{} output messages dropped due to slow client", n),
-                            fatal: false,
-                        });
-                        if let Ok(json) = lag_msg.to_json()
-                            && ws_sender_for_sub
-                                .lock()
-                                .await
-                                .send(WsMessage::Text(json.into()))
-                                .await
-                                .is_err()
+                        if send_ws_error(
+                            &ws_sender_for_sub,
+                            "OUTPUT_LAGGED",
+                            format!("{} output messages dropped due to slow client", n),
+                            false,
+                        )
+                        .await
+                        .is_err()
                         {
                             break;
                         }
@@ -826,18 +840,13 @@ async fn handle_terminal_session(
                     Ok(Message::Input(data)) => {
                         // Check if client can write (read-only enforcement)
                         if !session.can_write(&client_id).await {
-                            let error_msg = Message::Error(ErrorData {
-                                code: "READONLY".to_string(),
-                                message: "This session is read-only".to_string(),
-                                fatal: false,
-                            });
-                            if let Ok(json) = error_msg.to_json() {
-                                let _ = ws_sender
-                                    .lock()
-                                    .await
-                                    .send(WsMessage::Text(json.into()))
-                                    .await;
-                            }
+                            let _ = send_ws_error(
+                                &ws_sender,
+                                "READONLY",
+                                "This session is read-only".to_string(),
+                                false,
+                            )
+                            .await;
                             continue;
                         }
 
@@ -853,18 +862,13 @@ async fn handle_terminal_session(
                                 )
                                 .await;
 
-                            let error_msg = Message::Error(ErrorData {
-                                code: "INVALID_INPUT".to_string(),
-                                message: format!("Invalid input: {}", e),
-                                fatal: false,
-                            });
-                            if let Ok(json) = error_msg.to_json() {
-                                let _ = ws_sender
-                                    .lock()
-                                    .await
-                                    .send(WsMessage::Text(json.into()))
-                                    .await;
-                            }
+                            let _ = send_ws_error(
+                                &ws_sender,
+                                "INVALID_INPUT",
+                                format!("Invalid input: {}", e),
+                                false,
+                            )
+                            .await;
                             continue;
                         }
 
@@ -889,18 +893,13 @@ async fn handle_terminal_session(
                                 )
                                 .await;
 
-                            let error_msg = Message::Error(ErrorData {
-                                code: "INVALID_SIZE".to_string(),
-                                message: format!("Invalid terminal size: {}", e),
-                                fatal: false,
-                            });
-                            if let Ok(json) = error_msg.to_json() {
-                                let _ = ws_sender
-                                    .lock()
-                                    .await
-                                    .send(WsMessage::Text(json.into()))
-                                    .await;
-                            }
+                            let _ = send_ws_error(
+                                &ws_sender,
+                                "INVALID_SIZE",
+                                format!("Invalid terminal size: {}", e),
+                                false,
+                            )
+                            .await;
                             continue;
                         }
 
