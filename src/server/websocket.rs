@@ -133,6 +133,12 @@ async fn handle_terminal_session(
 
     let client_id = uuid::Uuid::new_v4().to_string();
 
+    // Audit: WebSocket connection established
+    state
+        .audit_logger
+        .log_connection(&remote_addr, &client_id)
+        .await;
+
     // Handle authentication if enabled
     let username = if let Some(auth_config) = &state.config.auth {
         match auth_config.method.as_str() {

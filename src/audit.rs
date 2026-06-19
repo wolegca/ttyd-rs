@@ -43,14 +43,13 @@ impl AuditLogger {
     }
 
     /// Log a connection event
-    #[allow(dead_code)]
-    pub async fn log_connection(&self, remote_addr: &str, session_id: &str) {
+    pub async fn log_connection(&self, remote_addr: &str, client_id: &str) {
         self.log_event(AuditEvent {
             timestamp: Utc::now(),
             event_type: AuditEventType::ConnectionOpened,
             remote_addr: remote_addr.to_string(),
             username: None,
-            session_id: Some(session_id.to_string()),
+            session_id: Some(client_id.to_string()),
             details: "WebSocket connection established".to_string(),
         })
         .await;
