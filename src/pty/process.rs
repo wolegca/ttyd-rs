@@ -213,9 +213,26 @@ impl Drop for PtyProcess {
         let _ = close(self.master_fd);
 
         // Send SIGHUP first — interactive shells use this to run cleanup
-        // (history flush, EXIT trap) before exiting.  SIGKILL follows as
-        // a fallback in case the child ignores SIGHUP.
+        // (history flush, EXIT trap) before exiting.  Poll for up to 500 ms
+        // to let the child exit cleanly, then fall back to SIGKILL.
         let _ = nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGHUP);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while std::time::Instant::now() < deadline {
+            match nix::sys::wait::waitpid(
+                self.child_pid,
+                Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+            ) {
+                Ok(_) | Err(nix::errno::Errno::ECHILD) => {
+                    // Child exited or was already reaped — no SIGKILL needed.
+                    // The outer waitpid/reaper below will be a harmless no-op.
+                    return;
+                }
+                _ => std::thread::sleep(std::time::Duration::from_millis(20)),
+            }
+        }
+
+        // Child still alive after grace period — force kill.
         let _ = nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGKILL);
 
         // First try a non-blocking reap in case the child has already exited.
