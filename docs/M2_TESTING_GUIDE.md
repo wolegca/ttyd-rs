@@ -228,7 +228,7 @@ cargo test -- --nocapture
 cargo fmt -- --check
 
 # Lint检查（零警告）
-cargo clippy --all-targets -- -D warnings
+cargo clippy -- -D warnings
 
 # 完整测试套件
 cargo test

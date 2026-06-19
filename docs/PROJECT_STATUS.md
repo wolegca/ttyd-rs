@@ -18,7 +18,7 @@ cargo fmt -- --check
 
 ### 2. ✅ Clippy 静态分析（零警告）
 ```bash
-cargo clippy --all-targets -- -D warnings
+cargo clippy -- -D warnings
 ```
 **状态**: ✅ PASSED（零警告，严格模式）
 

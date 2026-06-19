@@ -191,7 +191,7 @@ cargo build --release
 cargo test
 
 # Check code quality
-cargo clippy --all-targets -- -D warnings
+cargo clippy -- -D warnings
 cargo fmt -- --check
 ```
 

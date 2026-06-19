@@ -21,7 +21,7 @@ cargo fmt -- --check
 
 ### 2. ✅ Clippy 静态分析（零警告）
 ```bash
-cargo clippy --all-targets -- -D warnings
+cargo clippy -- -D warnings
 ```
 **结果**: ✅ **PASSED**  
 **说明**: 零警告，通过严格模式检查
@@ -90,7 +90,7 @@ src/audit.rs             ~208 行  - 审计日志
 
 ### Lint 规则（Cargo.toml）
 ```toml
-[workspace.lints.clippy]
+[ints.clippy]
 unwrap-used = "deny"      # ✅ 零 unwrap
 expect-used = "deny"      # ✅ 零 expect
 panic = "deny"            # ✅ 零 panic

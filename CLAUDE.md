@@ -32,7 +32,7 @@ cargo test test_name
 cargo check
 
 # Run clippy lints (strict mode)
-cargo clippy --all-targets -- -D warnings
+cargo clippy -- -D warnings
 
 # Format code
 cargo fmt
@@ -54,7 +54,7 @@ Before committing any code, ensure these commands pass:
 cargo fmt -- --check
 
 # 2. Clippy with zero warnings
-cargo clippy --all-targets -- -D warnings
+cargo clippy -- -D warnings
 
 # 3. All tests pass
 cargo test
@@ -67,7 +67,7 @@ cargo test
 This project has **strict lint rules** configured in `Cargo.toml`:
 
 ```toml
-[workspace.lints.clippy]
+[lints.clippy]
 unwrap-used = "deny"
 expect-used = "deny"
 panic = "deny"

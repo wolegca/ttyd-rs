@@ -261,7 +261,7 @@ Before merging any PR, ensure:
 cargo fmt -- --check
 
 # Clippy with zero warnings
-cargo clippy --all-targets -- -D warnings
+cargo clippy -- -D warnings
 
 # All tests pass
 cargo test

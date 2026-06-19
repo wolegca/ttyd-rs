@@ -5,7 +5,11 @@ edition = "2024"
 authors = ["wcx"]
 description = "A Rust rewrite of ttyd - Share your terminal over the web"
 license = "MIT"
-lints.workspace = true
+
+[lints.clippy]
+unwrap-used = "deny"
+expect-used = "deny"
+panic = "deny"
 
 [dependencies]
 axum = { version = "0.8.9", features = ["ws"] }
@@ -32,13 +36,6 @@ uuid = { version = "1.23.3", features = ["v4"] }
 
 [features]
 default = []
-
-[workspace.lints.rust]
-
-[workspace.lints.clippy]
-unwrap-used = "deny"
-expect-used = "deny"
-panic = "deny"
 
 [dev-dependencies]
 tokio-tungstenite = "0.29.0"

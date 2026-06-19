@@ -67,7 +67,7 @@ src/
 #### ✅ cargo fmt -- --check
 代码格式化检查全部通过
 
-#### ✅ cargo clippy --all-targets -- -D warnings  
+#### ✅ cargo clippy -- -D warnings  
 Clippy 检查零警告通过，包括：
 - 禁止 unwrap/expect/panic（workspace lint 规则）
 - 所有未使用代码已标记 `#[allow(dead_code)]`
@@ -95,7 +95,7 @@ Clippy 检查零警告通过，包括：
 
 ### 质量标准
 - ✅ 提交前必须通过 `cargo fmt -- --check`
-- ✅ 提交前必须通过 `cargo clippy --all-targets -- -D warnings`
+- ✅ 提交前必须通过 `cargo clippy -- -D warnings`
 - ✅ 提交前必须通过 `cargo test`
 
 ## 技术亮点

@@ -16,6 +16,7 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast;
@@ -31,6 +32,7 @@ pub struct AppState {
     pub rate_limiter: Arc<RateLimiter>,
     pub session_manager: Arc<SessionManager>,
     pub shutdown_token: CancellationToken,
+    pub active_connections: Arc<AtomicUsize>,
 }
 
 /// Extract the real client IP from proxy headers.
@@ -85,6 +87,23 @@ pub async fn websocket_handler(
     headers: axum::http::HeaderMap,
 ) -> Response {
     let remote_addr = extract_real_ip(&headers, addr.ip(), state.config.trust_proxy);
+
+    // Check max connections limit
+    let current = state.active_connections.load(Ordering::Relaxed);
+    if current >= state.config.max_connections {
+        warn!(
+            "Connection limit reached ({}/{}), rejecting {}",
+            current, state.config.max_connections, remote_addr
+        );
+        return Response::builder()
+            .status(axum::http::StatusCode::SERVICE_UNAVAILABLE)
+            .body(axum::body::Body::from("Connection limit reached"))
+            .unwrap_or_default();
+    }
+
+    // Increment active connection count
+    state.active_connections.fetch_add(1, Ordering::Relaxed);
+
     ws.on_upgrade(move |socket| handle_socket(socket, state, remote_addr))
 }
 
@@ -92,7 +111,12 @@ pub async fn websocket_handler(
 async fn handle_socket(socket: WebSocket, state: AppState, remote_addr: String) {
     info!("New WebSocket connection from {}", remote_addr);
 
-    match handle_terminal_session(socket, state, remote_addr).await {
+    let result = handle_terminal_session(socket, state.clone(), remote_addr).await;
+
+    // Decrement active connection count
+    state.active_connections.fetch_sub(1, Ordering::Relaxed);
+
+    match result {
         Ok(()) => info!("WebSocket connection closed normally"),
         Err(e) => error!("WebSocket error: {}", e),
     }

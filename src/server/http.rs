@@ -17,6 +17,7 @@ use axum::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
@@ -48,6 +49,7 @@ pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Erro
         rate_limiter: Arc::new(rate_limiter.clone()),
         session_manager: session_manager.clone(),
         shutdown_token: shutdown_token.clone(),
+        active_connections: Arc::new(AtomicUsize::new(0)),
     };
 
     let api_state = ApiState {
@@ -283,6 +285,7 @@ mod tests {
             rate_limiter: Arc::new(RateLimiter::default()),
             session_manager: session_manager.clone(),
             shutdown_token: CancellationToken::new(),
+            active_connections: Arc::new(AtomicUsize::new(0)),
         };
 
         let api_state = ApiState {
@@ -466,6 +469,7 @@ mod tests {
             rate_limiter: Arc::new(RateLimiter::default()),
             session_manager: session_manager.clone(),
             shutdown_token: CancellationToken::new(),
+            active_connections: Arc::new(AtomicUsize::new(0)),
         };
         let api_state = ApiState {
             session_manager,
@@ -528,6 +532,7 @@ mod tests {
             rate_limiter: Arc::new(RateLimiter::default()),
             session_manager: session_manager.clone(),
             shutdown_token: CancellationToken::new(),
+            active_connections: Arc::new(AtomicUsize::new(0)),
         };
 
         let api_state = ApiState {
@@ -560,6 +565,7 @@ mod tests {
             rate_limiter: Arc::new(RateLimiter::default()),
             session_manager: session_manager.clone(),
             shutdown_token: CancellationToken::new(),
+            active_connections: Arc::new(AtomicUsize::new(0)),
         };
 
         let api_state = ApiState {
@@ -745,6 +751,104 @@ mod tests {
 
     // ── WebSocket integration tests ─────────────────────────────────
 
+    #[tokio::test]
+    async fn test_max_connections_rejected_at_zero() {
+        let mut config = Config::default();
+        config.max_connections = 0; // Set limit to 0 to force rejection
+        let addr = start_test_server(config).await;
+
+        let url = format!("ws://{}/ws", addr);
+        let result = tokio_tungstenite::connect_async(&url).await;
+
+        // Connection should be rejected with 503
+        assert!(result.is_err(), "Expected connection to be rejected");
+    }
+
+    #[tokio::test]
+    async fn test_max_connections_allowed_under_limit() {
+        let mut config = Config::default();
+        config.max_connections = 10;
+        let addr = start_test_server(config).await;
+
+        let url = format!("ws://{}/ws", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // Connection should succeed, send resize to get ready
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 80, "rows": 24 }
+        });
+        send_ws_msg(&mut ws, &resize).await;
+        let ready = read_ws_msg(&mut ws).await;
+        assert_eq!(ready["type"], "ready");
+
+        ws.close(None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_max_connections_rejected_at_limit() {
+        let mut config = Config::default();
+        config.max_connections = 1;
+        let addr = start_test_server(config).await;
+
+        let url = format!("ws://{}/ws", addr);
+
+        // First connection should succeed
+        let (mut ws1, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 80, "rows": 24 }
+        });
+        send_ws_msg(&mut ws1, &resize).await;
+        let ready = read_ws_msg(&mut ws1).await;
+        assert_eq!(ready["type"], "ready");
+
+        // Second connection should be rejected
+        let result = tokio_tungstenite::connect_async(&url).await;
+        assert!(result.is_err(), "Expected second connection to be rejected");
+
+        ws1.close(None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_max_connections_reopens_after_close() {
+        let mut config = Config::default();
+        config.max_connections = 1;
+        let addr = start_test_server(config).await;
+
+        let url = format!("ws://{}/ws", addr);
+
+        // First connection
+        let (mut ws1, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 80, "rows": 24 }
+        });
+        send_ws_msg(&mut ws1, &resize).await;
+        let ready = read_ws_msg(&mut ws1).await;
+        assert_eq!(ready["type"], "ready");
+
+        // Second connection should be rejected while first is open
+        let result = tokio_tungstenite::connect_async(&url).await;
+        assert!(result.is_err(), "Expected second connection to be rejected");
+
+        // Close first connection
+        ws1.close(None).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // New connection should succeed after close
+        let (mut ws2, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 80, "rows": 24 }
+        });
+        send_ws_msg(&mut ws2, &resize).await;
+        let ready = read_ws_msg(&mut ws2).await;
+        assert_eq!(ready["type"], "ready");
+
+        ws2.close(None).await.unwrap();
+    }
+
     /// Helper: start server on a random port, return the bound address
     async fn start_test_server(config: Config) -> SocketAddr {
         let audit_logger = AuditLogger::new(config.audit.log_file.clone(), config.audit.enabled);
@@ -767,6 +871,7 @@ mod tests {
             rate_limiter: Arc::new(rate_limiter),
             session_manager: session_manager.clone(),
             shutdown_token: shutdown_token.clone(),
+            active_connections: Arc::new(AtomicUsize::new(0)),
         };
         let api_state = ApiState {
             session_manager,

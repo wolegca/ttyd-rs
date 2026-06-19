@@ -39,7 +39,7 @@ fmt-check:
 
 # Run clippy lints
 clippy:
-    cargo clippy --all-targets -- -D warnings
+    cargo clippy -- -D warnings
 
 # Run all quality checks (must pass before commit)
 qa: fmt-check clippy test

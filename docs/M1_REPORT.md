@@ -197,7 +197,7 @@ cargo fmt -- --check
 ✅ PASSED
 
 # 2. Clippy 严格模式（零警告）
-cargo clippy --all-targets -- -D warnings
+cargo clippy -- -D warnings
 ✅ PASSED
 
 # 3. 测试

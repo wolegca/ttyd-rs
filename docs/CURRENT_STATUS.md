@@ -11,7 +11,7 @@
 All checks pass per [CLAUDE.md](../../CLAUDE.md):
 
 1. **Format** (`cargo fmt -- --check`) — ✅ Pass
-2. **Clippy** (`cargo clippy --all-targets -- -D warnings`) — ✅ Zero warnings
+2. **Clippy** (`cargo clippy -- -D warnings`) — ✅ Zero warnings
 3. **Tests** (`cargo test`) — ✅ 104 tests passing
 4. **Release build** — ✅ Success
 

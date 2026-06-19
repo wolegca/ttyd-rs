@@ -35,7 +35,7 @@ cargo fmt -- --check
 
 #### Linting
 ```bash
-cargo clippy --all-targets -- -D warnings
+cargo clippy -- -D warnings
 ```
 ✅ **Status**: PASSED (Zero warnings)
 

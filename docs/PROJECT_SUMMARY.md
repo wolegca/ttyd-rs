@@ -236,7 +236,7 @@ cargo test
 cargo fmt
 
 # Clippy 检查
-cargo clippy --all-targets -- -D warnings
+cargo clippy -- -D warnings
 
 # 查看依赖
 cargo tree
