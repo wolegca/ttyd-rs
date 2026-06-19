@@ -1366,7 +1366,7 @@ dependencies = [
 
 [[package]]
 name = "ttyd-rs"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "axum",
  "base64",
