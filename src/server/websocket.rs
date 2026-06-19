@@ -775,9 +775,20 @@ async fn handle_terminal_session(
                         break;
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    // Skip lagged messages
-                    continue;
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!("Client lagged by {} messages, notifying", n);
+                    let lag_msg = Message::Error(ErrorData {
+                        code: "OUTPUT_LAGGED".to_string(),
+                        message: format!("{} output messages dropped due to slow client", n),
+                        fatal: false,
+                    });
+                    if let Ok(json) = lag_msg.to_json() {
+                        let _ = ws_sender_for_sub
+                            .lock()
+                            .await
+                            .send(WsMessage::Text(json.into()))
+                            .await;
+                    }
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     break;

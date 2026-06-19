@@ -101,7 +101,7 @@ impl Session {
     ) -> Result<Self, SessionError> {
         let pty_session = PtySession::new(command, cols, rows)?;
 
-        let (output_tx, _) = broadcast::channel(100);
+        let (output_tx, _) = broadcast::channel(512);
 
         Ok(Self {
             metadata: SessionMetadata {
