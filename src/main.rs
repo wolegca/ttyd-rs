@@ -79,9 +79,9 @@ struct Args {
     #[arg(long)]
     audit_file: Option<PathBuf>,
 
-    /// Disable trusting proxy headers (X-Real-IP / X-Forwarded-For) for client IP
+    /// Trust proxy headers (X-Real-IP / X-Forwarded-For) for client IP
     #[arg(long)]
-    no_trust_proxy: bool,
+    trust_proxy: bool,
 }
 
 #[tokio::main]
@@ -161,8 +161,8 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
     config.session.reconnect_window = args.reconnect_window;
 
     // Proxy configuration
-    if args.no_trust_proxy {
-        config.trust_proxy = false;
+    if args.trust_proxy {
+        config.trust_proxy = true;
     }
 
     // Audit configuration
@@ -214,7 +214,7 @@ mod tests {
             password: None,
             audit: false,
             audit_file: None,
-            no_trust_proxy: false,
+            trust_proxy: false,
         };
 
         let config = load_config(&args).unwrap();
@@ -243,7 +243,7 @@ mod tests {
             password: Some("secret".to_string()),
             audit: false,
             audit_file: None,
-            no_trust_proxy: false,
+            trust_proxy: false,
         };
 
         let config = load_config(&args).unwrap();
@@ -278,7 +278,7 @@ mod tests {
             password: None,
             audit: true,
             audit_file: Some(PathBuf::from("/tmp/audit.log")),
-            no_trust_proxy: false,
+            trust_proxy: false,
         };
 
         let config = load_config(&args).unwrap();
@@ -338,7 +338,7 @@ enabled = false
             password: None,
             audit: false,
             audit_file: None,
-            no_trust_proxy: false,
+            trust_proxy: false,
         };
 
         let config = load_config(&args).unwrap();
