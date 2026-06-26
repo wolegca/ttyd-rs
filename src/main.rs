@@ -105,6 +105,12 @@ async fn main() {
     tracing::info!("Starting ttyd-rs v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Configuration: {:?}", config);
 
+    // Register the global SIGCHLD handler.
+    if let Err(e) = crate::pty::process::register_sigchld_handler() {
+        tracing::error!("Failed to register SIGCHLD handler: {}", e);
+        std::process::exit(1);
+    }
+
     // Start the server
     if let Err(e) = server::start_server(config).await {
         tracing::error!("Server error: {}", e);

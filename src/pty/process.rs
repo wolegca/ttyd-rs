@@ -1,5 +1,7 @@
 /// PTY process management using nix
 use nix::pty::{Winsize, openpty};
+use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
+use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, close, execvp, fork, setsid};
 use std::ffi::CString;
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
@@ -22,6 +24,49 @@ pub enum PtyError {
 
     #[error("Nix error: {0}")]
     NixError(#[from] nix::Error),
+}
+
+/// SIGCHLD handler: reaps all terminated child processes immediately when they exit.
+///
+/// Called by the kernel whenever any child process changes state. We loop with
+/// `WNOHANG` to drain all pending exits in one shot — multiple children can exit
+/// between two handler invocations and the kernel coalesces the signals.
+///
+/// # Safety
+/// Only async-signal-safe functions are used inside the handler (`waitpid`).
+extern "C" fn sigchld_handler(_: libc::c_int) {
+    // Loop until no more children are ready to reap right now.
+    while let Ok(WaitStatus::Exited(..)) | Ok(WaitStatus::Signaled(..)) =
+        waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG))
+    {}
+}
+
+/// Register the global SIGCHLD handler.
+///
+/// Call this once at program startup (before any `PtyProcess::spawn`).
+/// After registration, every child bash process is reaped automatically
+/// the moment it exits, preventing zombie accumulation regardless of when
+/// `PtyProcess` is dropped.
+///
+/// `SA_NOCLDSTOP` suppresses delivery for stop/continue events so the
+/// handler only fires on actual process exit.
+/// `SA_RESTART` makes interrupted syscalls restart automatically.
+///
+/// Returns an error if `sigaction(2)` fails (e.g. OS resource exhaustion).
+/// The caller should propagate or log this error rather than proceeding
+/// without zombie reaping.
+pub fn register_sigchld_handler() -> Result<(), PtyError> {
+    let sa = SigAction::new(
+        SigHandler::Handler(sigchld_handler),
+        SaFlags::SA_RESTART | SaFlags::SA_NOCLDSTOP,
+        SigSet::empty(),
+    );
+    // SAFETY: signal handler only calls async-signal-safe functions.
+    unsafe {
+        sigaction(Signal::SIGCHLD, &sa)
+            .map(|_| ())
+            .map_err(PtyError::NixError)
+    }
 }
 
 pub struct PtyProcess {
@@ -109,16 +154,17 @@ impl PtyProcess {
         // Set TERM environment variable so programs know we're a capable terminal.
         // Without this, systemd-launched processes have no TERM and colors are disabled.
         // SAFETY: we are in a forked child before exec, so no threads to race.
-        unsafe {
-            libc::setenv(
-                CString::new("TERM")
-                    .map_err(|e| PtyError::ExecFailed(format!("Invalid TERM name: {}", e)))?
-                    .as_ptr(),
-                CString::new("xterm-256color")
-                    .map_err(|e| PtyError::ExecFailed(format!("Invalid TERM value: {}", e)))?
-                    .as_ptr(),
-                1, // overwrite = true
-            );
+        // setenv(3) returns -1 on failure (EINVAL or ENOMEM); treat either as fatal
+        // so the child does not exec into an environment with a missing TERM.
+        let term_name = CString::new("TERM")
+            .map_err(|e| PtyError::ExecFailed(format!("Invalid TERM name: {}", e)))?;
+        let term_value = CString::new("xterm-256color")
+            .map_err(|e| PtyError::ExecFailed(format!("Invalid TERM value: {}", e)))?;
+        if unsafe { libc::setenv(term_name.as_ptr(), term_value.as_ptr(), 1) } < 0 {
+            return Err(PtyError::ExecFailed(format!(
+                "setenv TERM failed: {}",
+                std::io::Error::last_os_error()
+            )));
         }
 
         // Redirect stdin, stdout, stderr to the slave PTY using libc::dup2
@@ -181,8 +227,12 @@ impl PtyProcess {
 
     /// Close all file descriptors greater than `min_fd`.
     ///
-    /// Uses `close_range(2)` on Linux ≥ 5.9, falls back to iterating
+    /// Uses `close_range(2)` on Linux >= 5.9, falls back to iterating
     /// `/proc/self/fd` on older kernels.
+    ///
+    /// Individual `close` errors in the fallback path are intentionally
+    /// ignored: the fd list is a snapshot and a given fd may already have
+    /// been closed by the time we reach it.
     fn close_fds_above(min_fd: RawFd) {
         let first = (min_fd + 1) as libc::c_uint;
 
@@ -198,6 +248,8 @@ impl PtyProcess {
                 if let Ok(fd) = entry.file_name().to_string_lossy().parse::<RawFd>()
                     && fd > min_fd
                 {
+                    // Ignore errors: the fd may have been closed already or
+                    // may be the dirfd backing this very read_dir iterator.
                     let _ = close(fd);
                 }
             }
@@ -276,8 +328,9 @@ mod tests {
     #[test]
     fn test_drop_runs_without_panic() {
         // Verify that Drop impl runs without panicking.
-        // The actual cleanup (SIGHUP, SIGKILL, reaper thread) is tested
-        // indirectly through the session tests.
+        // The actual cleanup (SIGHUP + non-blocking waitpid, with the global
+        // SIGCHLD handler handling deferred reaping) is tested indirectly
+        // through the session tests.
         let proc = PtyProcess::spawn(&["true".to_string()], 80, 24).unwrap();
         // Drop should run without panic
         drop(proc);
@@ -300,6 +353,12 @@ mod tests {
         // So spawn should succeed (parent side), but the child will exit with error
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn test_register_sigchld_handler_succeeds() {
+        // Registering the SIGCHLD handler should never fail on a standard Linux system.
+        assert!(register_sigchld_handler().is_ok());
+    }
 }
 
 impl Drop for PtyProcess {
@@ -309,48 +368,38 @@ impl Drop for PtyProcess {
             self.child_pid, self.master_fd
         );
 
-        // Close the master fd first so the child's controlling terminal hangs
-        // up and its foreground process group receives SIGHUP.
-        let _ = close(self.master_fd);
+        // Closing the master fd causes the slave PTY to receive a hangup,
+        // which delivers SIGHUP to the child's foreground process group.
+        // Interactive shells handle SIGHUP by flushing history and running
+        // EXIT traps before exiting.
+        if let Err(e) = close(self.master_fd) {
+            debug!("Failed to close master_fd {}: {}", self.master_fd, e);
+        }
 
-        // Send SIGHUP first — interactive shells use this to run cleanup
-        // (history flush, EXIT trap) before exiting.  Poll for up to 500 ms
-        // to let the child exit cleanly, then fall back to SIGKILL.
-        let _ = nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGHUP);
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        while std::time::Instant::now() < deadline {
-            match nix::sys::wait::waitpid(
-                self.child_pid,
-                Some(nix::sys::wait::WaitPidFlag::WNOHANG),
-            ) {
-                Ok(_) | Err(nix::errno::Errno::ECHILD) => {
-                    // Child exited or was already reaped — no SIGKILL needed.
-                    // The outer waitpid/reaper below will be a harmless no-op.
-                    return;
-                }
-                _ => std::thread::sleep(std::time::Duration::from_millis(20)),
+        // Send SIGHUP explicitly in case the shell did not exit due to the
+        // master fd close alone (e.g. the child ignored HUP or the session
+        // was detached from the PTY).
+        if let Err(e) = nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGHUP) {
+            // ESRCH means the process already exited — not an error worth logging.
+            if e != nix::errno::Errno::ESRCH {
+                debug!("Failed to send SIGHUP to pid {}: {}", self.child_pid, e);
             }
         }
 
-        // Child still alive after grace period — force kill.
-        let _ = nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGKILL);
-
-        // First try a non-blocking reap in case the child has already exited.
-        match nix::sys::wait::waitpid(self.child_pid, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
-            Ok(_) => return,
-            Err(nix::errno::Errno::ECHILD) => return, // already reaped
-            _ => {}
+        // Attempt a single non-blocking reap. If the child has already exited
+        // (e.g. the user typed `exit` before the WebSocket closed), this
+        // prevents a brief zombie window between exit and SIGCHLD delivery.
+        // If the child is still running, the global SIGCHLD handler registered
+        // via `register_sigchld_handler()` will reap it as soon as it exits —
+        // no sleep, no blocking, no per-drop reaper thread needed.
+        match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
+            Ok(_) | Err(nix::errno::Errno::ECHILD) => {
+                // Child already reaped — nothing more to do.
+            }
+            Err(e) => {
+                // Unexpected error; log and let the SIGCHLD handler reap the child.
+                debug!("waitpid for pid {} failed: {}", self.child_pid, e);
+            }
         }
-
-        // The child has not exited yet (signal delivery is async).
-        // Spawn a detached thread that does a blocking waitpid so we
-        // never leave a zombie, but also never block a tokio worker.
-        let pid = self.child_pid;
-        let _ = std::thread::Builder::new()
-            .name("pty-reaper".into())
-            .spawn(move || {
-                let _ = nix::sys::wait::waitpid(pid, None);
-            });
     }
 }
