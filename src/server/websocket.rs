@@ -834,10 +834,44 @@ async fn handle_terminal_session(
         }
     });
 
+    // Heartbeat timeout tracking
+    let last_ping_time = Arc::new(tokio::sync::Mutex::new(Instant::now()));
+    let last_ping_clone = last_ping_time.clone();
+    let heartbeat_timeout = Duration::from_secs(90); // 90 seconds without ping = timeout
+
+    // Spawn heartbeat monitor task
+    let mut heartbeat_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(15));
+        loop {
+            interval.tick().await;
+            let last = *last_ping_clone.lock().await;
+            if last.elapsed() > heartbeat_timeout {
+                warn!(
+                    "Client heartbeat timeout (no ping for {:?})",
+                    heartbeat_timeout
+                );
+                return false; // Timeout occurred
+            }
+        }
+    });
+
     // Handle WebSocket messages
     loop {
         let msg = tokio::select! {
             msg = ws_receiver.next() => msg,
+            result = &mut heartbeat_task => {
+                if let Ok(false) = result {
+                    warn!("Heartbeat timeout for client {}", client_id);
+                    let _ = send_ws_error(
+                        &ws_sender,
+                        "HEARTBEAT_TIMEOUT",
+                        "No heartbeat received from client".to_string(),
+                        true,
+                    )
+                    .await;
+                }
+                break;
+            }
             _ = state.shutdown_token.cancelled() => {
                 info!("Shutdown signal received, closing WebSocket connection");
                 break;
@@ -922,6 +956,9 @@ async fn handle_terminal_session(
                         }
                     }
                     Ok(Message::Ping(data)) => {
+                        // Update last ping time to prevent timeout
+                        *last_ping_time.lock().await = Instant::now();
+
                         // Respond to ping
                         let pong = Message::Pong(PongData {
                             timestamp: data.timestamp,
@@ -955,6 +992,7 @@ async fn handle_terminal_session(
     }
 
     // Cleanup
+    heartbeat_task.abort();
     pty_to_ws.abort();
     subscriber_task.abort();
 
@@ -1005,6 +1043,7 @@ async fn handle_terminal_session(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use axum::http::HeaderMap;

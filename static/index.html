@@ -276,6 +276,9 @@
         let reconnectTimer = null;
         /** @type {number | null} */
         let heartbeatTimer = null;
+        /** @type {number | null} */
+        let pongCheckTimer = null;
+        let lastPongTime = Date.now();
         let retryCount = 0;
         let serverDisconnected = false;
         let authFailed = false;
@@ -286,6 +289,8 @@
         const MAX_RETRIES = 10;
         const BASE_DELAY = 1000;
         const MAX_DELAY = 30000;
+        const HEARTBEAT_INTERVAL = 30000; // 30 seconds
+        const PONG_TIMEOUT = 90000; // 90 seconds
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/ws`;
 
@@ -332,12 +337,23 @@
                 retryCount = 0;
                 serverDisconnected = false;
 
-                // Start heartbeat
-                if (heartbeatTimer === null) {
-                    heartbeatTimer = setInterval(() => {
-                        sendMsg('ping', { timestamp: Date.now() });
-                    }, 30000);
-                }
+                // Stop any existing heartbeat timers to ensure only one is running
+                stopHeartbeat();
+
+                // Start heartbeat ping
+                lastPongTime = Date.now();
+                heartbeatTimer = setInterval(() => {
+                    sendMsg('ping', { timestamp: Date.now() });
+                }, HEARTBEAT_INTERVAL);
+
+                // Start pong timeout checker
+                pongCheckTimer = setInterval(() => {
+                    const elapsed = Date.now() - lastPongTime;
+                    if (elapsed > PONG_TIMEOUT) {
+                        console.error('Server pong timeout, forcing reconnect');
+                        if (ws) ws.close();
+                    }
+                }, 10000); // Check every 10 seconds
 
                 // Send auth first if required
                 if (authRequired && authCredentials) {
@@ -378,7 +394,8 @@
                             term.write(msg.data.payload);
                             break;
                         case 'pong':
-                            // Heartbeat acknowledged, no action needed
+                            // Update last pong time to track server responsiveness
+                            lastPongTime = Date.now();
                             break;
                         case 'disconnect':
                             console.log('Disconnected:', msg.data.reason);
@@ -450,6 +467,10 @@
             if (heartbeatTimer !== null) {
                 clearInterval(heartbeatTimer);
                 heartbeatTimer = null;
+            }
+            if (pongCheckTimer !== null) {
+                clearInterval(pongCheckTimer);
+                pongCheckTimer = null;
             }
         }
 

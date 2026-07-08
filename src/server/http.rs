@@ -258,6 +258,7 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::audit::AuditLogger;

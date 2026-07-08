@@ -1,16 +1,9 @@
-mod assets;
-mod audit;
-mod auth;
-mod config;
-mod protocol;
-mod pty;
-mod rate_limit;
-mod server;
-mod session;
-mod validation;
+use ttyd_rs::{
+    config::{AuthConfig, Config},
+    pty, server,
+};
 
 use clap::Parser;
-use config::Config;
 use std::path::PathBuf;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -106,13 +99,13 @@ async fn main() {
     tracing::info!("Configuration: {:?}", config);
 
     // Register the global SIGCHLD handler.
-    if let Err(e) = crate::pty::process::register_sigchld_handler() {
+    if let Err(e) = pty::process::register_sigchld_handler() {
         tracing::error!("Failed to register SIGCHLD handler: {}", e);
         std::process::exit(1);
     }
 
     // Start the server
-    if let Err(e) = server::start_server(config).await {
+    if let Err(e) = server::http::start_server(config).await {
         tracing::error!("Server error: {}", e);
         std::process::exit(1);
     }
@@ -183,7 +176,7 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
     if args.auth
         && let (Some(username), Some(password)) = (&args.username, &args.password)
     {
-        config.auth = Some(config::AuthConfig {
+        config.auth = Some(AuthConfig {
             method: "basic".to_string(),
             username: Some(username.clone()),
             password: Some(password.clone()),
@@ -199,6 +192,7 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
