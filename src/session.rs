@@ -205,7 +205,9 @@ impl Session {
 }
 
 /// Time to keep an empty session alive for client reconnection
-pub const RECONNECT_WINDOW: Duration = Duration::from_secs(60);
+/// Increased to 120 seconds to provide ample time for client reconnection
+/// after network issues or browser refresh
+pub const RECONNECT_WINDOW: Duration = Duration::from_secs(120);
 
 /// Session manager for managing all active sessions
 pub struct SessionManager {

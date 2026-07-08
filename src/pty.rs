@@ -1,5 +1,5 @@
 /// PTY (Pseudo-Terminal) management module
-pub(crate) mod process;
+pub mod process;
 mod session;
 
 pub use process::PtyError;

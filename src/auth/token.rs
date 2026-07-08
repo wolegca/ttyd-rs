@@ -45,6 +45,7 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

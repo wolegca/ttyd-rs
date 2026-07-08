@@ -34,6 +34,7 @@ pub enum PtyError {
 ///
 /// # Safety
 /// Only async-signal-safe functions are used inside the handler (`waitpid`).
+#[allow(dead_code)]
 extern "C" fn sigchld_handler(_: libc::c_int) {
     // Loop until no more children are ready to reap right now.
     while let Ok(WaitStatus::Exited(..)) | Ok(WaitStatus::Signaled(..)) =
@@ -55,6 +56,7 @@ extern "C" fn sigchld_handler(_: libc::c_int) {
 /// Returns an error if `sigaction(2)` fails (e.g. OS resource exhaustion).
 /// The caller should propagate or log this error rather than proceeding
 /// without zombie reaping.
+#[allow(dead_code)]
 pub fn register_sigchld_handler() -> Result<(), PtyError> {
     let sa = SigAction::new(
         SigHandler::Handler(sigchld_handler),
