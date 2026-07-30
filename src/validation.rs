@@ -171,7 +171,11 @@ mod tests {
     fn test_token_credentials_with_special_chars() {
         let config = ValidationConfig::default();
         // Tokens with -, _, . and other non-base64 chars should be accepted
-        assert!(config.validate_token_credentials("my-secret_token.v2").is_ok());
+        assert!(
+            config
+                .validate_token_credentials("my-secret_token.v2")
+                .is_ok()
+        );
         assert!(config.validate_token_credentials("abc~def!ghi").is_ok());
         assert!(config.validate_token_credentials("simple").is_ok());
     }

@@ -54,6 +54,14 @@ max_credentials_length = 1024
 max_requests = 10
 window_seconds = 60
 
+# File transfer configuration
+[file_transfer]
+enabled = true
+# Base directory for file operations (defaults to process working directory)
+# dir = "/tmp/uploads"
+# Maximum upload file size in bytes (default: 100MB)
+max_upload_size = 104857600
+
 # Proxy configuration (default: false)
 # Set to true to read real client IP from X-Real-IP / X-Forwarded-For
 # headers when behind a reverse proxy (nginx, Caddy, etc.).

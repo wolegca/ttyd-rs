@@ -126,7 +126,8 @@ src/
 ├── server/
 │   ├── http.rs       # HTTP server, routing, static files
 │   ├── websocket.rs  # WebSocket handler, session management
-│   └── api.rs        # REST API endpoints
+│   ├── api.rs        # REST API endpoints
+│   └── files.rs      # File transfer (upload/download/list)
 ├── pty.rs            # PTY module declaration
 ├── pty/
 │   ├── process.rs    # PTY process spawning and management
@@ -188,13 +189,14 @@ GET    /api/sessions          - List all active sessions
 GET    /api/sessions/:id      - Get session info
 DELETE /api/sessions/:id      - Terminate session
 GET    /api/stats             - Server statistics
+POST   /api/files/upload      - Upload file (multipart, auth required)
+GET    /api/files/download    - Download file (?path=, auth required)
+GET    /api/files/list        - List files in working dir (auth required)
 ```
 
 ## Development Stage
 
-**Current Status**: Near production ready. All core milestones (M1-M6) completed. 161 tests passing.
-
-**Known Blocking Issue**: Token validation bug in `validation.rs:66-82` — rejects tokens containing non-base64 characters. Must fix before production use with token auth.
+**Current Status**: Production ready. All core milestones (M1-M6) completed. File transfer feature added. 185 tests passing.
 
 For detailed status, known issues, and deployment recommendations, see [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
 
@@ -210,6 +212,7 @@ For detailed status, known issues, and deployment recommendations, see [docs/PRO
 - Session management (isolated/shared modes)
 - REST API for session management
 - xterm.js frontend
+- HTTP file transfer (upload/download/list) with dynamic `$PWD` tracking
 
 ## Reference Material
 

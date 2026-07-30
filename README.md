@@ -2,8 +2,8 @@
 
 A Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd) - Share your terminal over the web using WebSocket.
 
-**Current Version**: v0.1.0
-**Status**: Production-ready for single-user scenarios
+**Current Version**: v0.3.0
+**Status**: Production-ready
 
 ## Features
 
@@ -14,10 +14,16 @@ A Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd) - Share your terminal 
 - **xterm.js Integration**: Professional terminal emulation in the browser
 
 ### Security (M2) ✅
-- **Authentication**: Basic Auth support with username/password
+- **Authentication**: Basic Auth and Token Auth support
 - **Rate Limiting**: Prevents brute force attacks (10 attempts per 60 seconds)
 - **Input Validation**: Terminal size, payload size, and credential validation
 - **Audit Logging**: Comprehensive event logging (connections, auth, errors)
+
+### File Transfer ✅
+- **HTTP Upload**: Multipart form upload to server working directory
+- **HTTP Download**: Stream file downloads with path traversal protection
+- **Directory Listing**: Browse files in the terminal's current working directory
+- **Dynamic Path**: Automatically follows the terminal session's `$PWD`
 
 ### Session Management (M3 + M4) ✅
 - **SessionManager**: Centralized session management
@@ -118,6 +124,11 @@ password = "changeme"
 [audit]
 enabled = true
 log_file = "/var/log/ttyd-rs/audit.log"
+
+[file_transfer]
+enabled = true
+# dir = "/data"           # Optional: fixed directory (default: follows terminal $PWD)
+max_upload_size = 104857600  # 100MB
 ```
 
 ## REST API
@@ -130,6 +141,9 @@ log_file = "/var/log/ttyd-rs/audit.log"
 - `GET /api/sessions/:id` - Get session details
 - `DELETE /api/sessions/:id` - Terminate a session
 - `GET /api/stats` - Server statistics
+- `POST /api/files/upload` - Upload file (multipart, requires auth)
+- `GET /api/files/download?path=<name>` - Download file (requires auth)
+- `GET /api/files/list` - List files in working directory (requires auth)
 
 ### Examples
 
@@ -142,6 +156,15 @@ curl http://localhost:7681/api/sessions
 
 # Get server stats
 curl http://localhost:7681/api/stats
+
+# Upload a file (with auth)
+curl -u admin:secret -F "file=@myfile.txt" http://localhost:7681/api/files/upload
+
+# Download a file
+curl -u admin:secret -o out.txt "http://localhost:7681/api/files/download?path=myfile.txt"
+
+# List files in terminal working directory
+curl -u admin:secret http://localhost:7681/api/files/list
 ```
 
 ## Architecture
@@ -254,6 +277,7 @@ See [DEVELOPMENT_GOALS.md](DEVELOPMENT_GOALS.md) for detailed roadmap.
 | Session Management | Single | Multi-mode (M3) |
 | API | Limited | REST API (M3) |
 | Configuration | CLI only | CLI + TOML |
+| File Transfer | ❌ | ✅ HTTP upload/download |
 | Platform | Cross-platform | Unix-only (intentional) |
 
 ## Documentation

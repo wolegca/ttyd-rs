@@ -12,7 +12,7 @@ use axum::{
     http::{StatusCode, Uri, header},
     middleware,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -191,8 +191,31 @@ fn create_router(config: &Config, app_state: AppState, api_state: ApiState) -> R
         )
         .route(
             "/api/stats",
-            get(super::api::get_stats).with_state(api_state),
+            get(super::api::get_stats).with_state(api_state.clone()),
         );
+
+    // File transfer routes (conditionally enabled)
+    let protected_api = if config.file_transfer.enabled {
+        let file_state = super::files::FileTransferState {
+            config: Arc::new(config.file_transfer.clone()),
+            session_manager: app_state.session_manager.clone(),
+        };
+        protected_api
+            .route(
+                "/api/files/upload",
+                post(super::files::upload_file).with_state(file_state.clone()),
+            )
+            .route(
+                "/api/files/download",
+                get(super::files::download_file).with_state(file_state.clone()),
+            )
+            .route(
+                "/api/files/list",
+                get(super::files::list_files).with_state(file_state),
+            )
+    } else {
+        protected_api
+    };
 
     // Apply auth middleware to protected routes when auth is configured
     let protected_api = if let Some(ref auth_config) = config.auth {

@@ -1,8 +1,8 @@
 # ttyd-rs Project Status
 
-**Last Updated**: 2026-06-19
-**Version**: 0.1.0
-**Status**: Near Production Ready (one blocking issue)
+**Last Updated**: 2026-07-30
+**Version**: 0.3.0
+**Status**: Production Ready
 
 ---
 
@@ -12,15 +12,15 @@
 |-------|--------|
 | `cargo fmt -- --check` | ✅ Pass |
 | `cargo clippy -- -D warnings` | ✅ Pass |
-| `cargo test` | ✅ 161 tests passing |
+| `cargo test` | ✅ 185 tests passing |
 | `cargo build --release` | ✅ Success |
 
 ---
 
 ## Project Statistics
 
-- **Rust source**: ~6,260 lines across 18 .rs files
-- **Tests**: 161 (unit + integration)
+- **Rust source**: ~7,000 lines across 19 .rs files
+- **Tests**: 185 (unit + integration)
 - **Frontend**: index.html with xterm.js integration
 - **Dependencies**: See Cargo.toml for current list
 
@@ -100,6 +100,14 @@
 - Session join via URL parameter
 - Terminal resize handling
 
+### File Transfer ✅
+- HTTP multipart upload with size limit enforcement
+- Streaming file download with path traversal protection
+- Directory listing (JSON API)
+- Dynamic base directory: follows terminal session's `$PWD` via `/proc/<pid>/cwd`
+- Protected by existing auth middleware (basic/token)
+- Configurable: enable/disable, fixed directory override, max upload size
+
 ---
 
 ## Module Structure
@@ -112,7 +120,8 @@ src/
 ├── server/
 │   ├── http.rs          HTTP server, routing, static files
 │   ├── websocket.rs     WebSocket handler, session management
-│   └── api.rs           REST API endpoints
+│   ├── api.rs           REST API endpoints
+│   └── files.rs         File transfer (upload/download/list)
 ├── pty.rs               Module declaration
 ├── pty/
 │   ├── process.rs       PTY process spawning and management
@@ -141,6 +150,9 @@ src/
 | GET | /api/sessions/:id | Get session info |
 | DELETE | /api/sessions/:id | Terminate session |
 | GET | /api/stats | Server statistics |
+| POST | /api/files/upload | Upload file (multipart, auth required) |
+| GET | /api/files/download?path= | Download file (auth required) |
+| GET | /api/files/list | List files in working dir (auth required) |
 
 ---
 
@@ -183,9 +195,7 @@ src/
 
 ### Blocking (Must Fix Before Production)
 
-| Issue | Location | Description |
-|-------|----------|-------------|
-| Token validation rejects valid tokens | `validation.rs:66-82` | `validate_credentials` enforces base64 charset, blocking tokens with `-`, `_`, or other non-base64 characters. Token auth should skip this validation or use a different path. |
+None — all blocking issues resolved.
 
 ### Non-Blocking (Fix in Next Release)
 
@@ -196,16 +206,22 @@ src/
 | Low | SHA-256 without salt | `auth/basic.rs:22-29` | Acceptable for single-user in-memory scenario, but bcrypt/argon2 more robust against hash leaks. |
 | Info | `Box<dyn Error>` for top-level handlers | `http.rs:25`, `websocket.rs:161` | Typed error enums would improve debuggability. |
 
+### Resolved
+
+| Issue | Resolution |
+|-------|------------|
+| Token validation rejects valid tokens | Fixed in v0.2.10: separated `validate_token_credentials` (length-only) from `validate_credentials` (base64 charset for basic auth) |
+
 ---
 
 ## Deployment Recommendations
 
-1. **Fix Token validation bug** — blocking issue for token auth users
-2. **Enable authentication** — configure `[auth]` section in config
-3. **Enable audit logging** — configure `[audit]` section for security monitoring
-4. **Use reverse proxy** — nginx/Caddy for HTTPS termination (TLS not built-in)
-5. **Tune limits** — adjust `max_connections` and rate limit parameters for expected load
-6. **Set `trust_proxy`** — enable only when behind a trusted reverse proxy
+1. **Enable authentication** — configure `[auth]` section in config
+2. **Enable audit logging** — configure `[audit]` section for security monitoring
+3. **Use reverse proxy** — nginx/Caddy for HTTPS termination (TLS not built-in)
+4. **Tune limits** — adjust `max_connections` and rate limit parameters for expected load
+5. **Set `trust_proxy`** — enable only when behind a trusted reverse proxy
+6. **Configure file transfer** — set `[file_transfer]` dir or rely on dynamic `$PWD` tracking
 
 ---
 
@@ -221,8 +237,7 @@ src/
 
 1. **No built-in TLS**: Use a reverse proxy (nginx, Caddy) for HTTPS
 2. **No session persistence**: Sessions are lost on server restart
-3. **No file transfer**: No upload/download support
 
 ---
 
-*Last updated: 2026-06-19*
+*Last updated: 2026-07-30*

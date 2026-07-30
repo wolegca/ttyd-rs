@@ -163,11 +163,43 @@
             display: none;
             text-align: center;
         }
+
+        /* File transfer buttons */
+        #file-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        #file-actions button {
+            padding: 4px 12px;
+            background: #3e3e42;
+            border: 1px solid #555;
+            border-radius: 4px;
+            color: #cccccc;
+            font-family: inherit;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        #file-actions button:hover {
+            background: #505054;
+        }
+        #file-actions button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        #upload-input {
+            display: none;
+        }
     </style>
 </head>
 <body>
     <div id="header">
         <h1>ttyd-rs - Web Terminal</h1>
+        <div id="file-actions">
+            <button id="btn-upload" title="Upload file">&#8679; Upload</button>
+            <button id="btn-download" title="Download file">&#8681; Download</button>
+            <input type="file" id="upload-input" />
+        </div>
         <div id="status">
             <div class="status-indicator" id="status-indicator"></div>
             <span id="status-text">Connecting...</span>
@@ -606,6 +638,57 @@
                     }
                 }
             }, 100);
+        });
+
+        // === File Transfer ===
+        const btnUpload = document.getElementById('btn-upload');
+        const btnDownload = document.getElementById('btn-download');
+        const uploadInput = document.getElementById('upload-input');
+
+        btnUpload.addEventListener('click', () => {
+            uploadInput.click();
+        });
+
+        uploadInput.addEventListener('change', async () => {
+            const file = uploadInput.files[0];
+            if (!file) return;
+            uploadInput.value = '';
+
+            btnUpload.disabled = true;
+            btnUpload.textContent = 'Uploading...';
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                const resp = await fetch('/api/files/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    term.write(`\r\n[Uploaded: ${data.filename} (${data.size} bytes)]\r\n`);
+                } else {
+                    const err = await resp.json().catch(() => ({ error: resp.statusText }));
+                    term.write(`\r\n[Upload failed: ${err.error}]\r\n`);
+                }
+            } catch (e) {
+                term.write(`\r\n[Upload error: ${e.message}]\r\n`);
+            } finally {
+                btnUpload.disabled = false;
+                btnUpload.textContent = '\u21DF Upload';
+            }
+        });
+
+        btnDownload.addEventListener('click', () => {
+            const path = prompt('Enter file path to download (relative):');
+            if (path && path.trim()) {
+                const url = '/api/files/download?path=' + encodeURIComponent(path.trim());
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = '';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            }
         });
     </script>
 </body>

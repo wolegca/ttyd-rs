@@ -58,6 +58,10 @@ pub struct Config {
     /// Rate limiting configuration
     pub rate_limit: RateLimitConfig,
 
+    /// File transfer configuration
+    #[serde(default)]
+    pub file_transfer: FileTransferConfig,
+
     /// Trust proxy headers (X-Real-IP / X-Forwarded-For) for client IP
     #[serde(default)]
     pub trust_proxy: bool,
@@ -138,6 +142,28 @@ pub struct RateLimitConfig {
     pub window_seconds: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileTransferConfig {
+    /// Whether file transfer is enabled
+    #[serde(default = "default_file_transfer_enabled")]
+    pub enabled: bool,
+
+    /// Base directory for file operations (defaults to process working directory)
+    pub dir: Option<PathBuf>,
+
+    /// Maximum upload file size in bytes (default: 100MB)
+    #[serde(default = "default_max_upload_size")]
+    pub max_upload_size: usize,
+}
+
+fn default_file_transfer_enabled() -> bool {
+    true
+}
+
+fn default_max_upload_size() -> usize {
+    100 * 1024 * 1024 // 100MB
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -154,6 +180,7 @@ impl Default for Config {
             session: SessionConfig::default(),
             validation: ValidationConfig::default(),
             rate_limit: RateLimitConfig::default(),
+            file_transfer: FileTransferConfig::default(),
             trust_proxy: false,
         }
     }
@@ -199,6 +226,16 @@ impl Default for RateLimitConfig {
         Self {
             max_requests: 10,
             window_seconds: 60,
+        }
+    }
+}
+
+impl Default for FileTransferConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            dir: None,
+            max_upload_size: default_max_upload_size(),
         }
     }
 }
