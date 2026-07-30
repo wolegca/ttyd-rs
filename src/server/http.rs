@@ -1070,9 +1070,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_websocket_token_auth_success() {
-        // Token must be base64-compatible (alphanumeric + /+=) since
-        // validate_credentials checks the format before comparing.
-        let token = "dGVzdHNlY3JldDEyMzQ1";
+        // Token may contain arbitrary characters (e.g. -, _, .) since
+        // validate_token_credentials only checks length, not charset.
+        let token = "my-secret_token.v2";
 
         let mut config = Config::default();
         config.auth = Some(crate::config::AuthConfig {

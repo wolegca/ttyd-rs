@@ -62,7 +62,8 @@ impl ValidationConfig {
         Ok(())
     }
 
-    /// Validate credentials format and length
+    /// Validate credentials format and length for Basic Auth.
+    /// Basic Auth credentials must be valid base64 (encoding of "username:password").
     pub fn validate_credentials(&self, credentials: &str) -> Result<(), ValidationError> {
         if credentials.len() > self.max_credentials_length {
             return Err(ValidationError::CredentialsTooLong);
@@ -75,6 +76,22 @@ impl ValidationConfig {
         {
             return Err(ValidationError::InvalidFormat(
                 "Invalid base64 format".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Validate token credentials format and length for Token Auth.
+    /// Tokens are arbitrary strings (not base64-encoded), so only length is checked.
+    pub fn validate_token_credentials(&self, credentials: &str) -> Result<(), ValidationError> {
+        if credentials.len() > self.max_credentials_length {
+            return Err(ValidationError::CredentialsTooLong);
+        }
+
+        if credentials.is_empty() {
+            return Err(ValidationError::InvalidFormat(
+                "Token must not be empty".to_string(),
             ));
         }
 
@@ -148,6 +165,28 @@ mod tests {
         // Too long
         let long_creds = "a".repeat(2000);
         assert!(config.validate_credentials(&long_creds).is_err());
+    }
+
+    #[test]
+    fn test_token_credentials_with_special_chars() {
+        let config = ValidationConfig::default();
+        // Tokens with -, _, . and other non-base64 chars should be accepted
+        assert!(config.validate_token_credentials("my-secret_token.v2").is_ok());
+        assert!(config.validate_token_credentials("abc~def!ghi").is_ok());
+        assert!(config.validate_token_credentials("simple").is_ok());
+    }
+
+    #[test]
+    fn test_token_credentials_empty_rejected() {
+        let config = ValidationConfig::default();
+        assert!(config.validate_token_credentials("").is_err());
+    }
+
+    #[test]
+    fn test_token_credentials_too_long() {
+        let config = ValidationConfig::default();
+        let long_token = "x".repeat(2000);
+        assert!(config.validate_token_credentials(&long_token).is_err());
     }
 
     #[test]

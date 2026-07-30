@@ -350,10 +350,10 @@ async fn handle_terminal_session(
                                     return Ok(());
                                 }
 
-                                // Validate credentials format
+                                // Validate token credentials format (length only, no base64 check)
                                 if let Err(e) = state
                                     .validation
-                                    .validate_credentials(&auth_data.credentials)
+                                    .validate_token_credentials(&auth_data.credentials)
                                 {
                                     warn!("Invalid credentials format: {}", e);
                                     state
