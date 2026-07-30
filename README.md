@@ -2,7 +2,7 @@
 
 A Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd) - Share your terminal over the web using WebSocket.
 
-**Current Version**: v0.3.0
+**Current Version**: v0.4.0
 **Status**: Production-ready
 
 ## Features
@@ -20,10 +20,11 @@ A Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd) - Share your terminal 
 - **Audit Logging**: Comprehensive event logging (connections, auth, errors)
 
 ### File Transfer ✅
-- **HTTP Upload**: Multipart form upload to server working directory
+- **HTTP Upload**: Streaming multipart upload with size limit enforcement
 - **HTTP Download**: Stream file downloads with path traversal protection
-- **Directory Listing**: Browse files in the terminal's current working directory
+- **Directory Listing**: Browse files via WebSocket with subdirectory navigation
 - **Dynamic Path**: Automatically follows the terminal session's `$PWD`
+- **Security**: Overwrite protection, hidden file filtering, session isolation, filename sanitization
 
 ### Session Management (M3 + M4) ✅
 - **SessionManager**: Centralized session management
@@ -277,7 +278,7 @@ See [DEVELOPMENT_GOALS.md](DEVELOPMENT_GOALS.md) for detailed roadmap.
 | Session Management | Single | Multi-mode (M3) |
 | API | Limited | REST API (M3) |
 | Configuration | CLI only | CLI + TOML |
-| File Transfer | ❌ | ✅ HTTP upload/download |
+| File Transfer | ❌ | ✅ HTTP upload/download + WS file listing |
 | Platform | Cross-platform | Unix-only (intentional) |
 
 ## Documentation

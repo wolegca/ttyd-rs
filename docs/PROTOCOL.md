@@ -97,6 +97,19 @@ All messages are transmitted in JSON format (binary protocol optimization may be
 }
 ```
 
+#### 1.6 FILE_LIST - Request Directory Listing
+```json
+{
+  "type": "file_list",
+  "data": {
+    "path": ".",
+    "show_hidden": false
+  }
+}
+```
+
+**Note**: `path` is relative to the session's current working directory. The server uses the WebSocket-bound session_id automatically for directory isolation.
+
 ### 2. Server -> Client
 
 #### 2.1 AUTH_OK - Authentication Success
@@ -178,6 +191,32 @@ All messages are transmitted in JSON format (binary protocol optimization may be
 }
 ```
 
+#### 2.8 FILE_LIST_RESULT - Directory Listing Response
+```json
+{
+  "type": "file_list_result",
+  "data": {
+    "path": "resolved/absolute/path",
+    "entries": [
+      {
+        "name": "file.txt",
+        "size": 1024,
+        "is_dir": false,
+        "modified": "2026-07-30T10:00:00Z"
+      },
+      {
+        "name": "subdir",
+        "size": 4096,
+        "is_dir": true,
+        "modified": "2026-07-29T08:30:00Z"
+      }
+    ]
+  }
+}
+```
+
+**Note**: Hidden files (starting with `.`) are excluded unless `show_hidden: true` was requested.
+
 ## State Machine
 
 ### Server-side State
@@ -215,6 +254,9 @@ All messages are transmitted in JSON format (binary protocol optimization may be
 | `INVALID_MESSAGE` | Invalid message format |
 | `PTY_ERROR` | Terminal error |
 | `PERMISSION_DENIED` | Permission denied (read-only mode) |
+
+| `FILE_TRANSFER_DISABLED` | File transfer feature is not enabled |
+| `FILE_LIST_ERROR` | Directory listing failed |
 
 ## Performance Considerations
 
@@ -258,6 +300,9 @@ Message type encoding:
 ```
 
 ### File Transfer (zmodem support)
+
+> **Note**: Basic file transfer is already implemented via HTTP endpoints (`/api/files/upload`, `/api/files/download`) and WebSocket file listing. Zmodem support remains a future enhancement for in-band terminal file transfer.
+
 ```json
 {
   "type": "file_transfer",
@@ -284,5 +329,5 @@ Message type encoding:
 
 ---
 
-*Protocol version: v0.1*
-*Last updated: 2026-06-19*
+*Protocol version: v0.2*
+*Last updated: 2026-07-30*

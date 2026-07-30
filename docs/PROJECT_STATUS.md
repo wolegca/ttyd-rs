@@ -1,7 +1,7 @@
 # ttyd-rs Project Status
 
 **Last Updated**: 2026-07-30
-**Version**: 0.3.0
+**Version**: 0.4.0
 **Status**: Production Ready
 
 ---
@@ -12,7 +12,7 @@
 |-------|--------|
 | `cargo fmt -- --check` | ✅ Pass |
 | `cargo clippy -- -D warnings` | ✅ Pass |
-| `cargo test` | ✅ 185 tests passing |
+| `cargo test` | ✅ 190 tests passing |
 | `cargo build --release` | ✅ Success |
 
 ---
@@ -20,7 +20,7 @@
 ## Project Statistics
 
 - **Rust source**: ~7,000 lines across 19 .rs files
-- **Tests**: 185 (unit + integration)
+- **Tests**: 190 (unit + integration)
 - **Frontend**: index.html with xterm.js integration
 - **Dependencies**: See Cargo.toml for current list
 
@@ -99,13 +99,20 @@
 - Auto-reconnect with exponential backoff
 - Session join via URL parameter
 - Terminal resize handling
+- Three-dot kebab menu (upload/browse files, visible only when authenticated)
+- Connection status indicator (green=connected, yellow=login required, red=disconnected)
 
 ### File Transfer ✅
-- HTTP multipart upload with size limit enforcement
+- HTTP multipart upload with streaming size limit enforcement
 - Streaming file download with path traversal protection
-- Directory listing (JSON API)
+- Directory listing via WebSocket (`file_list` / `file_list_result` messages)
+- File panel with subdirectory navigation and hidden file toggle
 - Dynamic base directory: follows terminal session's `$PWD` via `/proc/<pid>/cwd`
 - Protected by existing auth middleware (basic/token)
+- Overwrite protection (409 Conflict + client confirm)
+- Hidden file filtering (default off, user-toggleable)
+- Content-Disposition filename sanitization
+- Session isolation: invalid session_id returns 404 (no fallback)
 - Configurable: enable/disable, fixed directory override, max upload size
 
 ---
@@ -167,6 +174,8 @@ src/
 | S→C | output | Terminal output |
 | C→S | resize | Terminal resize |
 | C→S | join | Join existing session |
+| C→S | file_list | Request directory listing |
+| S→C | file_list_result | Directory listing response |
 | C→S / S→C | ping / pong | Keepalive |
 | S→C | ready | Session ready notification |
 | S→C | disconnect | Session ended |
@@ -241,3 +250,4 @@ None — all blocking issues resolved.
 ---
 
 *Last updated: 2026-07-30*
+*Version: 0.4.0*

@@ -8,7 +8,7 @@ ttyd-rs is a Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd), a tool for
 
 **Target Platforms**: Linux only (no Windows or macOS support)
 
-**Current Status**: Near production ready. 161 tests passing, all clippy lints clean. See [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) for detailed readiness assessment.
+**Current Status**: Production ready. 190 tests passing, all clippy lints clean. See [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) for detailed readiness assessment.
 
 ## Build & Development Commands
 
@@ -179,6 +179,7 @@ The WebSocket protocol uses JSON messages with the following types:
 - `error` / `disconnect` - Error handling
 - `ready` - Session ready notification
 - `join` - Join an existing session by ID
+- `file_list` / `file_list_result` - Directory listing via WebSocket
 
 ## REST API Endpoints
 
@@ -196,7 +197,7 @@ GET    /api/files/list        - List files in working dir (auth required)
 
 ## Development Stage
 
-**Current Status**: Production ready. All core milestones (M1-M6) completed. File transfer feature added. 185 tests passing.
+**Current Status**: Production ready. All core milestones (M1-M6) completed. File transfer feature with security hardening. 190 tests passing.
 
 For detailed status, known issues, and deployment recommendations, see [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
 
@@ -213,6 +214,9 @@ For detailed status, known issues, and deployment recommendations, see [docs/PRO
 - REST API for session management
 - xterm.js frontend
 - HTTP file transfer (upload/download/list) with dynamic `$PWD` tracking
+- File transfer security: streaming I/O, overwrite protection, hidden file filtering, session isolation
+- WebSocket file listing (`file_list` / `file_list_result`) with subdirectory navigation
+- Frontend: three-dot kebab menu, connection status indicator, file panel with directory browsing
 
 ## Reference Material
 

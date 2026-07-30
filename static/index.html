@@ -39,6 +39,7 @@
             display: flex;
             align-items: center;
             gap: 10px;
+            margin-left: auto;
         }
 
         .status-indicator {
@@ -50,6 +51,10 @@
 
         .status-indicator.disconnected {
             background-color: #f48771;
+        }
+
+        .status-indicator.pending {
+            background-color: #dcdcaa;
         }
 
         #status-text {
@@ -165,45 +170,254 @@
         }
 
         /* File transfer buttons */
-        #file-actions {
-            display: flex;
-            align-items: center;
-            gap: 8px;
+        /* Kebab menu (three-dot) */
+        #menu-wrapper {
+            position: relative;
         }
-        #file-actions button {
-            padding: 4px 12px;
-            background: #3e3e42;
-            border: 1px solid #555;
-            border-radius: 4px;
+        #btn-menu {
+            background: none;
+            border: none;
             color: #cccccc;
-            font-family: inherit;
-            font-size: 12px;
+            font-size: 20px;
             cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            line-height: 1;
         }
-        #file-actions button:hover {
-            background: #505054;
+        #btn-menu:hover {
+            background: #3e3e42;
         }
-        #file-actions button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
+        #menu-dropdown {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: 100%;
+            margin-top: 4px;
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            z-index: 300;
+            min-width: 140px;
+            overflow: hidden;
+        }
+        #menu-dropdown.open {
+            display: block;
+        }
+        #menu-dropdown button {
+            display: block;
+            width: 100%;
+            padding: 10px 16px;
+            background: none;
+            border: none;
+            color: #cccccc;
+            font-size: 13px;
+            text-align: left;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        #menu-dropdown button:hover {
+            background: #37373d;
         }
         #upload-input {
             display: none;
+        }
+
+        /* Toast notifications */
+        #toast-container {
+            position: fixed;
+            top: 60px;
+            right: 16px;
+            z-index: 200;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            pointer-events: none;
+        }
+        .toast {
+            padding: 10px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            color: #fff;
+            background: #333;
+            border-left: 4px solid #4ec9b0;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+            animation: toast-in 0.25s ease;
+            max-width: 320px;
+            word-break: break-all;
+        }
+        .toast.error {
+            border-left-color: #f48771;
+        }
+        .toast.success {
+            border-left-color: #4ec9b0;
+        }
+        .toast.fade-out {
+            animation: toast-out 0.3s ease forwards;
+        }
+        @keyframes toast-in {
+            from { opacity: 0; transform: translateX(30px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes toast-out {
+            from { opacity: 1; }
+            to { opacity: 0; transform: translateX(30px); }
+        }
+
+        /* File list panel */
+        #file-panel-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 150;
+        }
+        #file-panel-overlay.hidden { display: none; }
+        #file-panel {
+            background: #2d2d2d;
+            border: 1px solid #3e3e42;
+            border-radius: 8px;
+            width: 460px;
+            max-width: 90vw;
+            max-height: 70vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        #file-panel-header {
+            padding: 14px 18px;
+            border-bottom: 1px solid #3e3e42;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        #file-panel-header h3 {
+            font-size: 14px;
+            font-weight: normal;
+            color: #ccc;
+        }
+        #file-panel-close {
+            background: none;
+            border: none;
+            color: #858585;
+            font-size: 18px;
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        #file-panel-close:hover { background: #3e3e42; color: #fff; }
+        #file-panel-body {
+            overflow-y: auto;
+            padding: 8px 0;
+            flex: 1;
+        }
+        #file-panel-body .file-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 18px;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        #file-panel-body .file-item:hover {
+            background: #37373d;
+        }
+        .file-item-name {
+            font-size: 13px;
+            color: #d4d4d4;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+            margin-right: 12px;
+        }
+        .file-item-meta {
+            font-size: 11px;
+            color: #858585;
+            white-space: nowrap;
+        }
+        .file-item-dl {
+            margin-left: 12px;
+            padding: 3px 10px;
+            background: #0e639c;
+            border: none;
+            border-radius: 3px;
+            color: #fff;
+            font-size: 11px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .file-item-dl:hover { background: #1177bb; }
+        #file-panel-empty {
+            padding: 30px;
+            text-align: center;
+            color: #858585;
+            font-size: 13px;
+        }
+        #file-panel-loading {
+            padding: 30px;
+            text-align: center;
+            color: #858585;
+            font-size: 13px;
+        }
+
+        /* Drag & drop overlay */
+        #drop-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(14, 99, 156, 0.25);
+            border: 3px dashed #1177bb;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 300;
+            pointer-events: none;
+        }
+        #drop-overlay.hidden { display: none; }
+        #drop-overlay span {
+            background: #222;
+            padding: 16px 32px;
+            border-radius: 8px;
+            font-size: 16px;
+            color: #4ec9b0;
+        }
+
+        /* Upload progress bar */
+        #upload-progress {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: #3e3e42;
+            z-index: 250;
+        }
+        #upload-progress.hidden { display: none; }
+        #upload-progress-bar {
+            height: 100%;
+            width: 0%;
+            background: #4ec9b0;
+            transition: width 0.2s ease;
         }
     </style>
 </head>
 <body>
     <div id="header">
         <h1>ttyd-rs - Web Terminal</h1>
-        <div id="file-actions">
-            <button id="btn-upload" title="Upload file">&#8679; Upload</button>
-            <button id="btn-download" title="Download file">&#8681; Download</button>
-            <input type="file" id="upload-input" />
-        </div>
         <div id="status">
             <div class="status-indicator" id="status-indicator"></div>
             <span id="status-text">Connecting...</span>
             <span id="session-info" style="margin-left: 15px; color: #858585; font-size: 11px;"></span>
+        </div>
+        <div id="menu-wrapper" class="hidden">
+            <button id="btn-menu" title="Menu">&#8942;</button>
+            <div id="menu-dropdown">
+                <button id="btn-upload">&#8679; Upload</button>
+                <button id="btn-download">&#8681; Browse Files</button>
+            </div>
+            <input type="file" id="upload-input" />
         </div>
     </div>
     <div id="terminal-container">
@@ -225,6 +439,35 @@
             </div>
             <button id="login-submit" type="button">Login</button>
         </div>
+    </div>
+
+    <!-- Toast notifications -->
+    <div id="toast-container"></div>
+
+    <!-- File list panel -->
+    <div id="file-panel-overlay" class="hidden">
+        <div id="file-panel">
+            <div id="file-panel-header">
+                <h3>Files</h3>
+                <label style="font-size:12px;color:#999;cursor:pointer;user-select:none;">
+                    <input type="checkbox" id="show-hidden-toggle" style="vertical-align:middle;" /> Show hidden
+                </label>
+                <button id="file-panel-close">&times;</button>
+            </div>
+            <div id="file-panel-body">
+                <div id="file-panel-loading">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Drag & drop overlay -->
+    <div id="drop-overlay" class="hidden">
+        <span>&#8681; Drop files to upload</span>
+    </div>
+
+    <!-- Upload progress bar -->
+    <div id="upload-progress" class="hidden">
+        <div id="upload-progress-bar"></div>
     </div>
 
     <script src="/vendor/xterm.js"></script>
@@ -279,6 +522,7 @@
 
         /** @param {boolean} connected */
         function setStatus(connected) {
+            statusIndicator.classList.remove('pending');
             if (connected) {
                 statusIndicator.classList.remove('disconnected');
                 statusText.textContent = 'Connected';
@@ -442,11 +686,19 @@
                             break;
                         case 'error':
                             console.error('Error:', msg.data);
-                            term.write(`\r\n[Error: ${msg.data.message}]\r\n`);
+                            // Route file-list errors to the panel if it's open
+                            if (msg.data.code === 'FILE_LIST_ERROR' && !filePanelOverlay.classList.contains('hidden')) {
+                                filePanelBody.innerHTML = `<div id="file-panel-empty">Error: ${msg.data.message}</div>`;
+                            } else {
+                                term.write(`\r\n[Error: ${msg.data.message}]\r\n`);
+                            }
                             if (msg.data.fatal) {
                                 serverDisconnected = true;
                                 if (ws) ws.close();
                             }
+                            break;
+                        case 'file_list_result':
+                            renderFileList(msg.data);
                             break;
                         default:
                             console.warn('Unknown message type:', msg.type);
@@ -463,6 +715,7 @@
 
             ws.onclose = () => {
                 console.log('WebSocket closed');
+                setMenuVisible(false);
 
                 // Auth failed: login overlay is visible, don't write to the
                 // terminal canvas behind it (causes a visible flash).
@@ -510,6 +763,7 @@
         function onAuthenticated() {
             // Reset readonly state on new connection
             readOnly = false;
+            setMenuVisible(true);
 
             // Send resize first (required by server), then optionally join
             const dims = fitAddon.proposeDimensions();
@@ -592,6 +846,7 @@
                         authCredentials = { method: 'basic', credentials: '' };
                     }
                     loginOverlay.classList.remove('hidden');
+                    statusIndicator.classList.add('pending');
                     statusText.textContent = 'Login required';
                 } else {
                     // No auth needed, connect directly
@@ -640,54 +895,353 @@
             }, 100);
         });
 
-        // === File Transfer ===
+        // === Toast Notifications ===
+        const toastContainer = document.getElementById('toast-container');
+
+        /**
+         * Show a toast notification.
+         * @param {string} message
+         * @param {'success'|'error'} [type='success']
+         * @param {number} [duration=4000]
+         */
+        function showToast(message, type = 'success', duration = 4000) {
+            const el = document.createElement('div');
+            el.className = `toast ${type}`;
+            el.textContent = message;
+            toastContainer.appendChild(el);
+            setTimeout(() => {
+                el.classList.add('fade-out');
+                setTimeout(() => el.remove(), 300);
+            }, duration);
+        }
+
+        // === Upload Progress Bar ===
+        const uploadProgress = document.getElementById('upload-progress');
+        const uploadProgressBar = document.getElementById('upload-progress-bar');
+
+        function setUploadProgress(percent) {
+            uploadProgress.classList.remove('hidden');
+            uploadProgressBar.style.width = percent + '%';
+        }
+
+        function hideUploadProgress() {
+            uploadProgress.classList.add('hidden');
+            uploadProgressBar.style.width = '0%';
+        }
+
+        // === Kebab Menu ===
+        const menuWrapper = document.getElementById('menu-wrapper');
+        const btnMenu = document.getElementById('btn-menu');
+        const menuDropdown = document.getElementById('menu-dropdown');
+
+        btnMenu.addEventListener('click', (e) => {
+            e.stopPropagation();
+            menuDropdown.classList.toggle('open');
+        });
+
+        document.addEventListener('click', () => {
+            menuDropdown.classList.remove('open');
+        });
+
+        menuDropdown.addEventListener('click', (e) => {
+            e.stopPropagation();
+            menuDropdown.classList.remove('open');
+        });
+
+        function setMenuVisible(visible) {
+            if (visible) {
+                menuWrapper.classList.remove('hidden');
+            } else {
+                menuWrapper.classList.add('hidden');
+                menuDropdown.classList.remove('open');
+            }
+        }
+
+        // === File Upload (with progress via XHR) ===
         const btnUpload = document.getElementById('btn-upload');
         const btnDownload = document.getElementById('btn-download');
         const uploadInput = document.getElementById('upload-input');
+
+        /**
+         * Upload a file with progress tracking.
+         * @param {File} file
+         */
+        function uploadFile(file, overwrite = false) {
+            btnUpload.disabled = true;
+            btnUpload.textContent = 'Uploading...';
+            setUploadProgress(0);
+
+            const xhr = new XMLHttpRequest();
+            const formData = new FormData();
+            formData.append('file', file);
+
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const pct = Math.round((e.loaded / e.total) * 100);
+                    setUploadProgress(pct);
+                }
+            });
+
+            xhr.addEventListener('load', () => {
+                hideUploadProgress();
+                btnUpload.disabled = false;
+                btnUpload.textContent = '\u21DF Upload';
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                        const data = JSON.parse(xhr.responseText);
+                        showToast(`Uploaded: ${data.filename} (${formatSize(data.size)})`, 'success');
+                    } catch (_) {
+                        showToast('Upload complete', 'success');
+                    }
+                } else if (xhr.status === 409) {
+                    // File exists — ask user to confirm overwrite
+                    if (confirm('File already exists. Overwrite?')) {
+                        uploadFile(file, true);
+                    }
+                } else {
+                    let errMsg = `Upload failed (${xhr.status})`;
+                    try {
+                        const err = JSON.parse(xhr.responseText);
+                        errMsg = err.error || errMsg;
+                    } catch (_) {}
+                    showToast(errMsg, 'error');
+                }
+            });
+
+            xhr.addEventListener('error', () => {
+                hideUploadProgress();
+                btnUpload.disabled = false;
+                btnUpload.textContent = '\u21DF Upload';
+                showToast('Upload failed: network error', 'error');
+            });
+
+            let url = '/api/files/upload?session_id=' + encodeURIComponent(currentSessionId || '');
+            if (overwrite) url += '&overwrite=true';
+            xhr.open('POST', url);
+            const authHeader = getAuthHeader();
+            if (authHeader) xhr.setRequestHeader('Authorization', authHeader);
+            xhr.send(formData);
+        }
+
+        /**
+         * Build the Authorization header value from current credentials.
+         * @returns {string|null}
+         */
+        function getAuthHeader() {
+            if (!authRequired || !authCredentials || !authCredentials.credentials) return null;
+            if (authCredentials.method === 'basic') {
+                return 'Basic ' + authCredentials.credentials;
+            } else if (authCredentials.method === 'token') {
+                return 'Bearer ' + authCredentials.credentials;
+            }
+            return null;
+        }
+
+        /**
+         * Format byte size to human-readable string.
+         * @param {number} bytes
+         * @returns {string}
+         */
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+            return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+        }
 
         btnUpload.addEventListener('click', () => {
             uploadInput.click();
         });
 
-        uploadInput.addEventListener('change', async () => {
+        uploadInput.addEventListener('change', () => {
             const file = uploadInput.files[0];
             if (!file) return;
             uploadInput.value = '';
+            uploadFile(file);
+        });
 
-            btnUpload.disabled = true;
-            btnUpload.textContent = 'Uploading...';
-            try {
-                const formData = new FormData();
-                formData.append('file', file);
-                const resp = await fetch('/api/files/upload', {
-                    method: 'POST',
-                    body: formData,
-                });
-                if (resp.ok) {
-                    const data = await resp.json();
-                    term.write(`\r\n[Uploaded: ${data.filename} (${data.size} bytes)]\r\n`);
-                } else {
-                    const err = await resp.json().catch(() => ({ error: resp.statusText }));
-                    term.write(`\r\n[Upload failed: ${err.error}]\r\n`);
-                }
-            } catch (e) {
-                term.write(`\r\n[Upload error: ${e.message}]\r\n`);
-            } finally {
-                btnUpload.disabled = false;
-                btnUpload.textContent = '\u21DF Upload';
+        // === File List Panel (replaces prompt() download) ===
+        const filePanelOverlay = document.getElementById('file-panel-overlay');
+        const filePanelBody = document.getElementById('file-panel-body');
+        const filePanelClose = document.getElementById('file-panel-close');
+
+        btnDownload.addEventListener('click', () => {
+            openFilePanel();
+        });
+
+        filePanelClose.addEventListener('click', () => {
+            filePanelOverlay.classList.add('hidden');
+        });
+
+        filePanelOverlay.addEventListener('click', (e) => {
+            if (e.target === filePanelOverlay) {
+                filePanelOverlay.classList.add('hidden');
             }
         });
 
-        btnDownload.addEventListener('click', () => {
-            const path = prompt('Enter file path to download (relative):');
-            if (path && path.trim()) {
-                const url = '/api/files/download?path=' + encodeURIComponent(path.trim());
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = '';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
+        const showHiddenToggle = document.getElementById('show-hidden-toggle');
+        let currentFilePath = '.';
+
+        function requestFileList(path) {
+            currentFilePath = path || '.';
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'file_list', data: { path: currentFilePath, show_hidden: showHiddenToggle.checked } }));
+            } else {
+                filePanelBody.innerHTML = '<div id="file-panel-empty">Not connected</div>';
+            }
+        }
+
+        function openFilePanel() {
+            filePanelOverlay.classList.remove('hidden');
+            filePanelBody.innerHTML = '<div id="file-panel-loading">Loading...</div>';
+            requestFileList('.');
+        }
+
+        showHiddenToggle.addEventListener('change', () => {
+            filePanelBody.innerHTML = '<div id="file-panel-loading">Loading...</div>';
+            requestFileList(currentFilePath);
+        });
+
+        function joinPath(base, name) {
+            if (base === '.' || base === '') return name;
+            return base + '/' + name;
+        }
+
+        function parentPath(path) {
+            if (path === '.' || path === '') return null;
+            const idx = path.lastIndexOf('/');
+            return idx > 0 ? path.substring(0, idx) : '.';
+        }
+
+        function renderFileList(data) {
+            const files = data.entries || [];
+            filePanelBody.innerHTML = '';
+
+            // ".." entry to go up
+            const parent = parentPath(currentFilePath);
+            if (parent !== null) {
+                const upItem = document.createElement('div');
+                upItem.className = 'file-item';
+                const upName = document.createElement('span');
+                upName.className = 'file-item-name';
+                upName.textContent = '..';
+                upName.style.color = '#569cd6';
+                upItem.appendChild(upName);
+                upItem.addEventListener('click', () => {
+                    filePanelBody.innerHTML = '<div id="file-panel-loading">Loading...</div>';
+                    requestFileList(parent);
+                });
+                filePanelBody.appendChild(upItem);
+            }
+
+            if (files.length === 0 && parent === null) {
+                filePanelBody.innerHTML = '<div id="file-panel-empty">No files in current directory</div>';
+                return;
+            }
+
+            files.forEach(f => {
+                const item = document.createElement('div');
+                item.className = 'file-item';
+
+                const name = document.createElement('span');
+                name.className = 'file-item-name';
+                name.textContent = f.name;
+                name.title = f.name;
+                if (f.is_dir) name.style.color = '#569cd6';
+
+                const meta = document.createElement('span');
+                meta.className = 'file-item-meta';
+                meta.textContent = f.is_dir ? 'DIR' : formatSize(f.size);
+
+                if (f.is_dir) {
+                    // Click to navigate into subdirectory
+                    item.addEventListener('click', () => {
+                        filePanelBody.innerHTML = '<div id="file-panel-loading">Loading...</div>';
+                        requestFileList(joinPath(currentFilePath, f.name));
+                    });
+                    item.appendChild(name);
+                    item.appendChild(meta);
+                } else {
+                    const dl = document.createElement('button');
+                    dl.className = 'file-item-dl';
+                    dl.textContent = 'Download';
+                    dl.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        triggerDownload(joinPath(currentFilePath, f.name));
+                    });
+                    item.appendChild(name);
+                    item.appendChild(meta);
+                    item.appendChild(dl);
+                }
+
+                filePanelBody.appendChild(item);
+            });
+        }
+
+        function triggerDownload(filename) {
+            const url = '/api/files/download?path=' + encodeURIComponent(filename) + '&session_id=' + encodeURIComponent(currentSessionId || '');
+            const headers = {};
+            const authHeader = getAuthHeader();
+            if (authHeader) headers['Authorization'] = authHeader;
+
+            showToast(`Downloading: ${filename}`, 'info');
+            fetch(url, { headers })
+                .then(resp => {
+                    if (!resp.ok) throw new Error(`Download failed (${resp.status})`);
+                    return resp.blob();
+                })
+                .then(blob => {
+                    const blobUrl = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = blobUrl;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(blobUrl);
+                    showToast(`Downloaded: ${filename}`, 'success');
+                })
+                .catch(err => {
+                    showToast(err.message || 'Download failed', 'error');
+                });
+        }
+
+        // === Drag & Drop Upload ===
+        const dropOverlay = document.getElementById('drop-overlay');
+        let dragCounter = 0;
+
+        document.addEventListener('dragenter', (e) => {
+            e.preventDefault();
+            dragCounter++;
+            if (dragCounter === 1) {
+                dropOverlay.classList.remove('hidden');
+            }
+        });
+
+        document.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            dragCounter--;
+            if (dragCounter <= 0) {
+                dragCounter = 0;
+                dropOverlay.classList.add('hidden');
+            }
+        });
+
+        document.addEventListener('dragover', (e) => {
+            e.preventDefault();
+        });
+
+        document.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dragCounter = 0;
+            dropOverlay.classList.add('hidden');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                // Upload first file (single-file upload)
+                uploadFile(files[0]);
+                if (files.length > 1) {
+                    showToast(`Only first file uploaded (${files.length} files dropped)`, 'error');
+                }
             }
         });
     </script>

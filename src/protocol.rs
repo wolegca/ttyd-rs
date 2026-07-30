@@ -40,6 +40,12 @@ pub enum Message {
 
     /// Client requests to join an existing session
     Join(JoinData),
+
+    /// Client requests a directory listing
+    FileList(FileListData),
+
+    /// Server responds with directory listing
+    FileListResult(FileListResultData),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +115,34 @@ pub struct ReadyData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JoinData {
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileListData {
+    /// Relative path to list (default: ".")
+    #[serde(default = "default_file_list_path")]
+    pub path: String,
+    /// Whether to include hidden files
+    #[serde(default)]
+    pub show_hidden: bool,
+}
+
+fn default_file_list_path() -> String {
+    ".".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileListResultData {
+    pub path: String,
+    pub entries: Vec<FileEntryData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileEntryData {
+    pub name: String,
+    pub size: u64,
+    pub is_dir: bool,
+    pub modified: Option<String>,
 }
 
 impl Message {
@@ -292,6 +326,72 @@ mod tests {
         match parsed {
             Message::Join(data) => assert_eq!(data.session_id, "abc-123"),
             _ => panic!("Expected Join message"),
+        }
+    }
+
+    #[test]
+    fn test_file_list_message_roundtrip() {
+        let msg = Message::FileList(FileListData {
+            path: ".".to_string(),
+            show_hidden: false,
+        });
+        let json = msg.to_json().unwrap();
+        assert!(json.contains(r#""type":"file_list""#));
+
+        let parsed = Message::from_json(&json).unwrap();
+        match parsed {
+            Message::FileList(data) => {
+                assert_eq!(data.path, ".");
+                assert!(!data.show_hidden);
+            }
+            _ => panic!("Expected FileList message"),
+        }
+    }
+
+    #[test]
+    fn test_file_list_result_message_roundtrip() {
+        let msg = Message::FileListResult(FileListResultData {
+            path: ".".to_string(),
+            entries: vec![
+                FileEntryData {
+                    name: "src".to_string(),
+                    size: 4096,
+                    is_dir: true,
+                    modified: Some("1700000000".to_string()),
+                },
+                FileEntryData {
+                    name: "main.rs".to_string(),
+                    size: 1234,
+                    is_dir: false,
+                    modified: None,
+                },
+            ],
+        });
+        let json = msg.to_json().unwrap();
+        assert!(json.contains(r#""type":"file_list_result""#));
+
+        let parsed = Message::from_json(&json).unwrap();
+        match parsed {
+            Message::FileListResult(data) => {
+                assert_eq!(data.entries.len(), 2);
+                assert!(data.entries[0].is_dir);
+                assert!(!data.entries[1].is_dir);
+            }
+            _ => panic!("Expected FileListResult message"),
+        }
+    }
+
+    #[test]
+    fn test_file_list_default_path() {
+        // When path is omitted, it should default to "."
+        let json = r#"{"type":"file_list","data":{}}"#;
+        let parsed = Message::from_json(json).unwrap();
+        match parsed {
+            Message::FileList(data) => {
+                assert_eq!(data.path, ".");
+                assert!(!data.show_hidden);
+            }
+            _ => panic!("Expected FileList message"),
         }
     }
 }

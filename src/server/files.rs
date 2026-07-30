@@ -3,6 +3,7 @@ use crate::config::FileTransferConfig;
 use crate::session::SessionManager;
 use axum::{
     Json,
+    body::Body,
     extract::{Multipart, Query, State},
     http::{StatusCode, header},
     response::Response,
@@ -10,7 +11,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio_util::io::ReaderStream;
 use tracing::debug;
 
 /// Shared state for file transfer handlers
@@ -53,25 +55,79 @@ pub struct UploadResponse {
 #[derive(Debug, Deserialize)]
 pub struct PathQuery {
     pub path: Option<String>,
+    pub session_id: Option<String>,
+    /// Show hidden files (dotfiles) in listing. Default: false
+    #[serde(default)]
+    pub show_hidden: bool,
+}
+
+/// Query parameters for upload (session_id passed via query string)
+#[derive(Debug, Deserialize)]
+pub struct UploadQuery {
+    pub session_id: Option<String>,
+    /// Allow overwriting an existing file. Default: false
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 /// Resolve the base directory for file operations.
 ///
 /// When `file_transfer.dir` is explicitly configured, use it directly.
-/// Otherwise, dynamically resolve the CWD of the most recently active
-/// session's PTY child process via `/proc/<pid>/cwd`. This makes file
-/// operations follow the terminal's `$PWD` as the user `cd`s around.
-/// Falls back to the server process CWD if no active session exists.
-async fn resolve_base_dir(state: &FileTransferState) -> PathBuf {
+/// Otherwise, resolve the CWD of the specified session's PTY child process
+/// via `/proc/<pid>/cwd`. If no session_id is given, falls back to the most
+/// recently active session. If a session_id IS given but not found, returns
+/// an error to prevent cross-session directory access.
+/// Falls back to the server process CWD only when no session_id is specified.
+async fn resolve_base_dir(
+    state: &FileTransferState,
+    session_id: Option<&str>,
+) -> Result<PathBuf, (StatusCode, String)> {
     // Explicitly configured directory takes priority
     if let Some(ref dir) = state.config.dir {
-        return dir.clone();
+        return Ok(dir.clone());
     }
 
-    // Try to resolve from the most recently active session's PTY process
+    // If a specific session is requested, resolve from that session ONLY
+    if let Some(sid) = session_id {
+        if sid.is_empty() {
+            // Empty session_id treated as "no session specified"
+        } else if let Some(session) = state.session_manager.get_session(sid).await {
+            let pty = session.pty_session();
+            let pty_guard = pty.lock().await;
+            let pid = pty_guard.child_pid().as_raw();
+            drop(pty_guard);
+
+            let cwd_link = PathBuf::from(format!("/proc/{}/cwd", pid));
+            match tokio::fs::read_link(&cwd_link).await {
+                Ok(cwd) => {
+                    debug!(
+                        "Resolved file transfer base dir from session {} (pid {}): {}",
+                        sid,
+                        pid,
+                        cwd.display()
+                    );
+                    return Ok(cwd);
+                }
+                Err(e) => {
+                    debug!(
+                        "Failed to read /proc/{}/cwd for session {}: {}",
+                        pid, sid, e
+                    );
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Cannot resolve working directory for session: {}", e),
+                    ));
+                }
+            }
+        } else {
+            // Session not found: reject to prevent cross-session access
+            return Err((StatusCode::NOT_FOUND, format!("Session not found: {}", sid)));
+        }
+    }
+
+    // Fallback (only when no session_id specified): most recently active session
     let sessions = state.session_manager.list_sessions().await;
     if !sessions.is_empty() {
-        // Find the session with the most recent activity
         let mut most_recent: Option<(std::time::Instant, i32)> = None;
         for session in &sessions {
             let activity = session.last_activity().await;
@@ -92,16 +148,15 @@ async fn resolve_base_dir(state: &FileTransferState) -> PathBuf {
         }
 
         if let Some((_, pid)) = most_recent {
-            // Read /proc/<pid>/cwd symlink to get the shell's current directory
             let cwd_link = PathBuf::from(format!("/proc/{}/cwd", pid));
             match tokio::fs::read_link(&cwd_link).await {
                 Ok(cwd) => {
                     debug!(
-                        "Resolved file transfer base dir from pid {}: {}",
+                        "Resolved file transfer base dir from most recent pid {}: {}",
                         pid,
                         cwd.display()
                     );
-                    return cwd;
+                    return Ok(cwd);
                 }
                 Err(e) => {
                     debug!(
@@ -113,8 +168,8 @@ async fn resolve_base_dir(state: &FileTransferState) -> PathBuf {
         }
     }
 
-    // Fallback: server process working directory
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp"))
+    // Final fallback: server process working directory
+    Ok(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp")))
 }
 
 /// Validate that a resolved path does not escape the base directory.
@@ -164,9 +219,12 @@ fn safe_resolve(base: &Path, relative: &str) -> Result<PathBuf, (StatusCode, Str
 /// POST /api/files/upload — upload a file via multipart/form-data
 pub async fn upload_file(
     State(state): State<FileTransferState>,
+    Query(query): Query<UploadQuery>,
     mut multipart: Multipart,
 ) -> Result<Json<UploadResponse>, (StatusCode, Json<FileErrorResponse>)> {
-    let base = resolve_base_dir(&state).await;
+    let base = resolve_base_dir(&state, query.session_id.as_deref())
+        .await
+        .map_err(|(status, msg)| (status, Json(FileErrorResponse { error: msg })))?;
     let max_size = state.config.max_upload_size;
 
     // Ensure base directory exists
@@ -221,41 +279,72 @@ pub async fn upload_file(
         let target = safe_resolve(&base, &sanitized)
             .map_err(|(status, msg)| (status, Json(FileErrorResponse { error: msg })))?;
 
-        // Read field data with size limit
-        let data = field.bytes().await.map_err(|e| {
+        // Overwrite protection: reject if file exists and overwrite not requested
+        if !query.overwrite && target.exists() {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(FileErrorResponse {
+                    error: format!(
+                        "File already exists: {}. Use overwrite=true to replace.",
+                        sanitized
+                    ),
+                }),
+            ));
+        }
+
+        // Stream field data to file with incremental size checking
+        let mut file = tokio::fs::File::create(&target).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(FileErrorResponse {
+                    error: format!("Cannot create file: {}", e),
+                }),
+            )
+        })?;
+
+        let mut total_size: usize = 0;
+        let mut field = field;
+        while let Some(chunk) = field.chunk().await.map_err(|e| {
             (
                 StatusCode::BAD_REQUEST,
                 Json(FileErrorResponse {
                     error: format!("Failed to read upload data: {}", e),
                 }),
             )
-        })?;
-
-        if data.len() > max_size {
-            return Err((
-                StatusCode::PAYLOAD_TOO_LARGE,
-                Json(FileErrorResponse {
-                    error: format!(
-                        "File too large: {} bytes (max: {} bytes)",
-                        data.len(),
-                        max_size
-                    ),
-                }),
-            ));
+        })? {
+            total_size += chunk.len();
+            if total_size > max_size {
+                // Abort: close and remove partial file
+                drop(file);
+                let _ = tokio::fs::remove_file(&target).await;
+                return Err((
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    Json(FileErrorResponse {
+                        error: format!("File too large: exceeds max {} bytes", max_size),
+                    }),
+                ));
+            }
+            file.write_all(&chunk).await.map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(FileErrorResponse {
+                        error: format!("Failed to write file: {}", e),
+                    }),
+                )
+            })?;
         }
 
-        // Write file
-        tokio::fs::write(&target, &data).await.map_err(|e| {
+        file.flush().await.map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(FileErrorResponse {
-                    error: format!("Failed to write file: {}", e),
+                    error: format!("Failed to flush file: {}", e),
                 }),
             )
         })?;
 
         uploaded_filename = sanitized;
-        uploaded_size = data.len();
+        uploaded_size = total_size;
     }
 
     if uploaded_filename.is_empty() {
@@ -273,7 +362,7 @@ pub async fn upload_file(
     }))
 }
 
-/// GET /api/files/download?path=... — download a file
+/// GET /api/files/download?path=... — download a file (streaming)
 pub async fn download_file(
     State(state): State<FileTransferState>,
     Query(query): Query<PathQuery>,
@@ -289,7 +378,9 @@ pub async fn download_file(
         ));
     }
 
-    let base = resolve_base_dir(&state).await;
+    let base = resolve_base_dir(&state, query.session_id.as_deref())
+        .await
+        .map_err(|(status, msg)| (status, Json(FileErrorResponse { error: msg })))?;
     let target = safe_resolve(&base, relative)
         .map_err(|(status, msg)| (status, Json(FileErrorResponse { error: msg })))?;
 
@@ -311,8 +402,8 @@ pub async fn download_file(
         ));
     }
 
-    // Read file content
-    let mut file = tokio::fs::File::open(&target).await.map_err(|e| {
+    // Open file for streaming
+    let file = tokio::fs::File::open(&target).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(FileErrorResponse {
@@ -330,32 +421,35 @@ pub async fn download_file(
         )
     })?;
 
-    let mut buf = Vec::with_capacity(metadata.len() as usize);
-    file.read_to_end(&mut buf).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(FileErrorResponse {
-                error: format!("Cannot read file: {}", e),
-            }),
-        )
-    })?;
-
     let file_name = target
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "download".to_string());
 
+    // Sanitize filename for Content-Disposition: remove control chars and quotes
+    let safe_name: String = file_name
+        .chars()
+        .filter(|c| !c.is_control() && *c != '"' && *c != '\\')
+        .collect();
+    let safe_name = if safe_name.is_empty() {
+        "download".to_string()
+    } else {
+        safe_name
+    };
+
     let mime = mime_guess::from_path(&target).first_or_octet_stream();
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
 
     let response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime.as_ref())
-        .header(header::CONTENT_LENGTH, buf.len())
+        .header(header::CONTENT_LENGTH, metadata.len())
         .header(
             header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{}\"", file_name),
+            format!("attachment; filename=\"{}\"", safe_name),
         )
-        .body(axum::body::Body::from(buf))
+        .body(body)
         .map_err(|_| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -368,32 +462,31 @@ pub async fn download_file(
     Ok(response)
 }
 
-/// GET /api/files/list?path=... — list directory contents
-pub async fn list_files(
-    State(state): State<FileTransferState>,
-    Query(query): Query<PathQuery>,
-) -> Result<Json<ListResponse>, (StatusCode, Json<FileErrorResponse>)> {
-    let relative = query.path.as_deref().unwrap_or(".");
-    let base = resolve_base_dir(&state).await;
+/// Core directory listing logic, reusable by both HTTP and WebSocket handlers.
+///
+/// Resolves the base directory for the given session, then lists entries.
+/// Returns `(resolved_path_display, entries)` on success.
+pub async fn list_directory(
+    state: &FileTransferState,
+    session_id: Option<&str>,
+    relative: &str,
+    show_hidden: bool,
+) -> Result<(String, Vec<FileEntry>), (StatusCode, String)> {
+    let base = resolve_base_dir(state, session_id).await?;
 
-    let target = safe_resolve(&base, relative)
-        .map_err(|(status, msg)| (status, Json(FileErrorResponse { error: msg })))?;
+    let target = safe_resolve(&base, relative)?;
 
     if !target.exists() {
         return Err((
             StatusCode::NOT_FOUND,
-            Json(FileErrorResponse {
-                error: format!("Directory not found: {}", relative),
-            }),
+            format!("Directory not found: {}", relative),
         ));
     }
 
     if !target.is_dir() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(FileErrorResponse {
-                error: "Path is not a directory".to_string(),
-            }),
+            "Path is not a directory".to_string(),
         ));
     }
 
@@ -401,22 +494,23 @@ pub async fn list_files(
     let mut read_dir = tokio::fs::read_dir(&target).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(FileErrorResponse {
-                error: format!("Cannot read directory: {}", e),
-            }),
+            format!("Cannot read directory: {}", e),
         )
     })?;
 
     while let Some(entry) = read_dir.next_entry().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(FileErrorResponse {
-                error: format!("Error reading directory entry: {}", e),
-            }),
+            format!("Error reading entry: {}", e),
         )
     })? {
-        let metadata = entry.metadata().await.ok();
         let name = entry.file_name().to_string_lossy().to_string();
+
+        if !show_hidden && name.starts_with('.') {
+            continue;
+        }
+
+        let metadata = entry.metadata().await.ok();
         let is_dir = metadata.as_ref().is_some_and(|m| m.is_dir());
         let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
         let modified = metadata.as_ref().and_then(|m| m.modified().ok()).map(|t| {
@@ -437,10 +531,25 @@ pub async fn list_files(
     // Sort: directories first, then by name
     entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
 
-    Ok(Json(ListResponse {
-        path: relative.to_string(),
-        entries,
-    }))
+    Ok((relative.to_string(), entries))
+}
+
+/// GET /api/files/list?path=... — list directory contents
+pub async fn list_files(
+    State(state): State<FileTransferState>,
+    Query(query): Query<PathQuery>,
+) -> Result<Json<ListResponse>, (StatusCode, Json<FileErrorResponse>)> {
+    let relative = query.path.as_deref().unwrap_or(".");
+    let (path, entries) = list_directory(
+        &state,
+        query.session_id.as_deref(),
+        relative,
+        query.show_hidden,
+    )
+    .await
+    .map_err(|(status, msg)| (status, Json(FileErrorResponse { error: msg })))?;
+
+    Ok(Json(ListResponse { path, entries }))
 }
 
 #[cfg(test)]
@@ -521,7 +630,10 @@ mod tests {
     #[tokio::test]
     async fn test_base_dir_uses_config() {
         let state = test_state(PathBuf::from("/tmp/custom"));
-        assert_eq!(resolve_base_dir(&state).await, PathBuf::from("/tmp/custom"));
+        assert_eq!(
+            resolve_base_dir(&state, None).await.unwrap(),
+            PathBuf::from("/tmp/custom")
+        );
     }
 
     #[tokio::test]
@@ -539,7 +651,27 @@ mod tests {
         };
         // No active sessions, should fall back to process CWD
         let expected = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp"));
-        assert_eq!(resolve_base_dir(&state).await, expected);
+        assert_eq!(resolve_base_dir(&state, None).await.unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn test_base_dir_invalid_session_returns_error() {
+        let state = FileTransferState {
+            config: Arc::new(FileTransferConfig {
+                enabled: true,
+                dir: None,
+                max_upload_size: 1024,
+            }),
+            session_manager: Arc::new(SessionManager::new(
+                Duration::from_secs(3600),
+                SessionMode::Isolated,
+            )),
+        };
+        // Non-existent session_id should return 404, NOT fallback
+        let result = resolve_base_dir(&state, Some("nonexistent-session")).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -570,7 +702,7 @@ mod tests {
         };
 
         // The resolved dir should be a valid existing directory (the shell's CWD)
-        let resolved = resolve_base_dir(&state).await;
+        let resolved = resolve_base_dir(&state, Some("test-pwd")).await.unwrap();
         assert!(resolved.exists());
         assert!(resolved.is_dir());
     }
@@ -578,7 +710,11 @@ mod tests {
     #[tokio::test]
     async fn test_list_files_nonexistent_dir() {
         let state = test_state(PathBuf::from("/nonexistent-dir-xyz"));
-        let query = PathQuery { path: None };
+        let query = PathQuery {
+            path: None,
+            session_id: None,
+            show_hidden: false,
+        };
         let result = list_files(State(state), Query(query)).await;
         assert!(result.is_err());
     }
@@ -590,11 +726,50 @@ mod tests {
         fs::write(dir.join("hello.txt"), "world").unwrap();
 
         let state = test_state(dir.clone());
-        let query = PathQuery { path: None };
+        let query = PathQuery {
+            path: None,
+            session_id: None,
+            show_hidden: false,
+        };
         let result = list_files(State(state), Query(query)).await;
         assert!(result.is_ok());
         let Json(resp) = result.unwrap();
         assert!(resp.entries.iter().any(|e| e.name == "hello.txt"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_list_files_hides_dotfiles_by_default() {
+        let dir = std::env::temp_dir().join("ttyd-rs-files-test-hidden");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(dir.join("visible.txt"), "yes").unwrap();
+        fs::write(dir.join(".secret"), "hidden").unwrap();
+
+        let state = test_state(dir.clone());
+
+        // Default: hidden files filtered
+        let query = PathQuery {
+            path: None,
+            session_id: None,
+            show_hidden: false,
+        };
+        let result = list_files(State(state.clone()), Query(query))
+            .await
+            .unwrap();
+        let Json(resp) = result;
+        assert!(resp.entries.iter().any(|e| e.name == "visible.txt"));
+        assert!(!resp.entries.iter().any(|e| e.name == ".secret"));
+
+        // show_hidden=true: all files shown
+        let query = PathQuery {
+            path: None,
+            session_id: None,
+            show_hidden: true,
+        };
+        let result = list_files(State(state), Query(query)).await.unwrap();
+        let Json(resp) = result;
+        assert!(resp.entries.iter().any(|e| e.name == ".secret"));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -607,6 +782,8 @@ mod tests {
         let state = test_state(dir.clone());
         let query = PathQuery {
             path: Some("nonexistent.txt".to_string()),
+            session_id: None,
+            show_hidden: false,
         };
         let result = download_file(State(state), Query(query)).await;
         assert!(result.is_err());
@@ -625,6 +802,8 @@ mod tests {
         let state = test_state(dir.clone());
         let query = PathQuery {
             path: Some("data.bin".to_string()),
+            session_id: None,
+            show_hidden: false,
         };
         let result = download_file(State(state), Query(query)).await;
         assert!(result.is_ok());
@@ -642,6 +821,8 @@ mod tests {
         let state = test_state(dir.clone());
         let query = PathQuery {
             path: Some("../../etc/passwd".to_string()),
+            session_id: None,
+            show_hidden: false,
         };
         let result = download_file(State(state), Query(query)).await;
         assert!(result.is_err());

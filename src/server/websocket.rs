@@ -971,6 +971,59 @@ async fn handle_terminal_session(
                                 .await;
                         }
                     }
+                    Ok(Message::FileList(data)) => {
+                        // Handle file listing request via WebSocket
+                        if !state.config.file_transfer.enabled {
+                            let _ = send_ws_error(
+                                &ws_sender,
+                                "FILE_TRANSFER_DISABLED",
+                                "File transfer is not enabled".to_string(),
+                                false,
+                            )
+                            .await;
+                            continue;
+                        }
+
+                        let file_state = super::files::FileTransferState {
+                            config: Arc::new(state.config.file_transfer.clone()),
+                            session_manager: state.session_manager.clone(),
+                        };
+
+                        match super::files::list_directory(
+                            &file_state,
+                            Some(&session_id),
+                            &data.path,
+                            data.show_hidden,
+                        )
+                        .await
+                        {
+                            Ok((path, entries)) => {
+                                let result = Message::FileListResult(FileListResultData {
+                                    path,
+                                    entries: entries
+                                        .into_iter()
+                                        .map(|e| FileEntryData {
+                                            name: e.name,
+                                            size: e.size,
+                                            is_dir: e.is_dir,
+                                            modified: e.modified,
+                                        })
+                                        .collect(),
+                                });
+                                if let Ok(json) = result.to_json() {
+                                    let _ = ws_sender
+                                        .lock()
+                                        .await
+                                        .send(WsMessage::Text(json.into()))
+                                        .await;
+                                }
+                            }
+                            Err((_status, msg)) => {
+                                let _ =
+                                    send_ws_error(&ws_sender, "FILE_LIST_ERROR", msg, false).await;
+                            }
+                        }
+                    }
                     Ok(_) => {
                         warn!("Unexpected message type");
                     }
