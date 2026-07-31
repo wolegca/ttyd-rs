@@ -1,7 +1,7 @@
 # ttyd-rs Project Status
 
-**Last Updated**: 2026-07-30
-**Version**: 0.4.0
+**Last Updated**: 2026-07-31
+**Version**: 0.4.1
 **Status**: Production Ready
 
 ---
@@ -249,5 +249,5 @@ None — all blocking issues resolved.
 
 ---
 
-*Last updated: 2026-07-30*
-*Version: 0.4.0*
+*Last updated: 2026-07-31*
+*Version: 0.4.1*

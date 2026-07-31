@@ -1,6 +1,6 @@
 [package]
 name = "ttyd-rs"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 authors = ["wcx"]
 description = "A Rust rewrite of ttyd - Share your terminal over the web"
@@ -39,3 +39,10 @@ default = []
 
 [dev-dependencies]
 tokio-tungstenite = "0.29.0"
+
+[profile.release]
+lto = true
+opt-level = "s"
+strip = "symbols"
+panic = "abort"
+codegen-units = 1
