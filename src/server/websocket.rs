@@ -83,6 +83,14 @@ fn extract_real_ip(
     connect_addr.to_string()
 }
 
+/// Maximum allowed WebSocket message size (64 KB).
+///
+/// The largest legitimate message is an `Input` payload (capped by
+/// `ValidationConfig::max_input_size` = 16 KB) plus JSON envelope overhead.
+/// 64 KB provides ample headroom while preventing memory-exhaustion attacks
+/// from oversized frames.
+const MAX_WS_MESSAGE_SIZE: usize = 64 * 1024;
+
 /// WebSocket upgrade handler
 pub async fn websocket_handler(
     ws: WebSocketUpgrade,
@@ -108,7 +116,8 @@ pub async fn websocket_handler(
     // Increment active connection count
     state.active_connections.fetch_add(1, Ordering::Relaxed);
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state, remote_addr))
+    ws.max_message_size(MAX_WS_MESSAGE_SIZE)
+        .on_upgrade(move |socket| handle_socket(socket, state, remote_addr))
 }
 
 /// Handle a WebSocket connection

@@ -67,7 +67,7 @@ pub struct Config {
     pub trust_proxy: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
     /// Authentication method: "basic" or "token"
     pub method: String,
@@ -83,6 +83,21 @@ pub struct AuthConfig {
 
     /// Enable audit logging for auth events
     pub audit_enabled: bool,
+}
+
+impl std::fmt::Debug for AuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthConfig")
+            .field("method", &self.method)
+            .field("username", &self.username)
+            .field(
+                "password",
+                &self.password.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
+            .field("audit_enabled", &self.audit_enabled)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
