@@ -7,6 +7,12 @@ bind = "127.0.0.1:7681"
 max_connections = 100
 log_level = "info"
 
+# Trust proxy headers (default: false)
+# Set to true to read real client IP from X-Real-IP / X-Forwarded-For
+# headers when behind a reverse proxy (nginx, Caddy, etc.).
+# Only enable this when you trust the proxy to set these headers correctly.
+# trust_proxy = false
+
 # Terminal command to execute
 command = ["bash", "-l"]
 
@@ -62,8 +68,3 @@ enabled = true
 # Maximum upload file size in bytes (default: 100MB)
 max_upload_size = 104857600
 
-# Proxy configuration (default: false)
-# Set to true to read real client IP from X-Real-IP / X-Forwarded-For
-# headers when behind a reverse proxy (nginx, Caddy, etc.).
-# Only enable this when you trust the proxy to set these headers correctly.
-# trust_proxy = false
