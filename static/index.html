@@ -59,7 +59,61 @@
 
         #status-text {
             font-size: 12px;
+            color: #b8b8b8;
+        }
+
+        /* Read-only badge */
+        #readonly-badge {
+            display: none;
+            font-size: 11px;
+            color: #1e1e1e;
+            background: #dcdcaa;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-weight: bold;
+            letter-spacing: 0.3px;
+        }
+        #readonly-badge.visible {
+            display: inline-block;
+        }
+
+        /* Copy session link button */
+        #btn-copy-session {
+            display: none;
+            background: none;
+            border: 1px solid #3e3e42;
             color: #858585;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        #btn-copy-session:hover {
+            background: #3e3e42;
+            color: #cccccc;
+        }
+        #btn-copy-session.visible {
+            display: inline-block;
+        }
+
+        /* Reconnect button (shown after retries exhausted) */
+        #btn-reconnect {
+            display: none;
+            background: #0e639c;
+            border: none;
+            color: #fff;
+            font-size: 11px;
+            padding: 3px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        #btn-reconnect:hover {
+            background: #1177bb;
+        }
+        #btn-reconnect.visible {
+            display: inline-block;
         }
 
         #terminal-container {
@@ -401,6 +455,111 @@
             background: #4ec9b0;
             transition: width 0.2s ease;
         }
+
+        /* File panel breadcrumb */
+        #file-panel-breadcrumb {
+            padding: 8px 18px;
+            font-size: 11px;
+            color: #858585;
+            border-bottom: 1px solid #3e3e42;
+            overflow-x: auto;
+            white-space: nowrap;
+        }
+        #file-panel-breadcrumb .crumb {
+            cursor: pointer;
+            color: #569cd6;
+        }
+        #file-panel-breadcrumb .crumb:hover {
+            text-decoration: underline;
+        }
+        #file-panel-breadcrumb .sep {
+            color: #555;
+            margin: 0 4px;
+        }
+
+        /* Custom confirm modal (replaces native confirm()) */
+        #confirm-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 400;
+        }
+        #confirm-overlay.hidden { display: none; }
+        #confirm-box {
+            background: #2d2d2d;
+            border: 1px solid #3e3e42;
+            border-radius: 8px;
+            padding: 20px 24px;
+            min-width: 280px;
+            max-width: 90vw;
+        }
+        #confirm-box p {
+            font-size: 13px;
+            color: #d4d4d4;
+            margin-bottom: 16px;
+            word-break: break-all;
+        }
+        #confirm-box .confirm-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+        #confirm-box button {
+            padding: 6px 14px;
+            border-radius: 4px;
+            border: none;
+            font-family: inherit;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        #confirm-cancel {
+            background: #3e3e42;
+            color: #ccc;
+        }
+        #confirm-cancel:hover { background: #4a4a4e; }
+        #confirm-ok {
+            background: #0e639c;
+            color: #fff;
+        }
+        #confirm-ok:hover { background: #1177bb; }
+
+        /* Mobile special-key toolbar */
+        #mobile-keys {
+            display: none;
+            position: fixed;
+            left: 0; right: 0; bottom: 0;
+            background: #252526;
+            border-top: 1px solid #3e3e42;
+            padding: 6px 8px;
+            gap: 6px;
+            overflow-x: auto;
+            z-index: 90;
+        }
+        #mobile-keys button {
+            flex: 0 0 auto;
+            background: #333;
+            border: 1px solid #3e3e42;
+            color: #cccccc;
+            font-family: inherit;
+            font-size: 12px;
+            padding: 8px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #mobile-keys button:active {
+            background: #0e639c;
+        }
+        @media (max-width: 768px) {
+            #mobile-keys {
+                display: flex;
+            }
+            #terminal-container {
+                height: calc(100vh - 51px - 44px);
+            }
+        }
     </style>
 </head>
 <body>
@@ -409,15 +568,19 @@
         <div id="status">
             <div class="status-indicator" id="status-indicator"></div>
             <span id="status-text">Connecting...</span>
+            <span id="readonly-badge" title="You cannot type in this session">READ-ONLY</span>
+            <button id="btn-reconnect" title="Reconnect">Reconnect</button>
             <span id="session-info" style="margin-left: 15px; color: #858585; font-size: 11px;"></span>
+            <button id="btn-copy-session" title="Copy shareable session link">&#128279; Copy link</button>
         </div>
         <div id="menu-wrapper" class="hidden">
-            <button id="btn-menu" title="Menu">&#8942;</button>
+            <button id="btn-menu" title="Menu" aria-label="Open menu">&#8942;</button>
             <div id="menu-dropdown">
                 <button id="btn-upload">&#8679; Upload</button>
                 <button id="btn-download">&#8681; Browse Files</button>
+                <button id="btn-clear">&#8998; Clear Terminal</button>
             </div>
-            <input type="file" id="upload-input" />
+            <input type="file" id="upload-input" multiple />
         </div>
     </div>
     <div id="terminal-container">
@@ -452,8 +615,9 @@
                 <label style="font-size:12px;color:#999;cursor:pointer;user-select:none;">
                     <input type="checkbox" id="show-hidden-toggle" style="vertical-align:middle;" /> Show hidden
                 </label>
-                <button id="file-panel-close">&times;</button>
+                <button id="file-panel-close" aria-label="Close file panel">&times;</button>
             </div>
+            <div id="file-panel-breadcrumb"></div>
             <div id="file-panel-body">
                 <div id="file-panel-loading">Loading...</div>
             </div>
@@ -468,6 +632,32 @@
     <!-- Upload progress bar -->
     <div id="upload-progress" class="hidden">
         <div id="upload-progress-bar"></div>
+    </div>
+
+    <!-- Custom confirm modal (replaces native confirm()) -->
+    <div id="confirm-overlay" class="hidden">
+        <div id="confirm-box">
+            <p id="confirm-message"></p>
+            <div class="confirm-actions">
+                <button id="confirm-cancel">Cancel</button>
+                <button id="confirm-ok">Overwrite</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mobile special-key toolbar -->
+    <div id="mobile-keys">
+        <button data-key="Escape">Esc</button>
+        <button data-key="Tab">Tab</button>
+        <button data-key="ArrowUp">&#8593;</button>
+        <button data-key="ArrowDown">&#8595;</button>
+        <button data-key="ArrowLeft">&#8592;</button>
+        <button data-key="ArrowRight">&#8594;</button>
+        <button data-key="CtrlC">Ctrl+C</button>
+        <button data-key="CtrlD">Ctrl+D</button>
+        <button data-key="CtrlL">Ctrl+L</button>
+        <button data-key="PageUp">PgUp</button>
+        <button data-key="PageDown">PgDn</button>
     </div>
 
     <script src="/vendor/xterm.js"></script>
@@ -537,13 +727,57 @@
             currentSessionId = sessionId;
             if (sessionId) {
                 sessionInfo.textContent = `Session: ${sessionId.substring(0, 8)}`;
+                btnCopySession.classList.add('visible');
             }
         }
 
         function clearSessionInfo() {
             currentSessionId = null;
             sessionInfo.textContent = '';
+            btnCopySession.classList.remove('visible');
         }
+
+        /**
+         * Write an app-level system message to the terminal, visually
+         * distinguished (dim gray) from real program output so users
+         * don't mistake it for command output.
+         * @param {string} msg
+         */
+        function writeSystemMessage(msg) {
+            term.write(`\r\n\x1b[90m[${msg}]\x1b[0m\r\n`);
+        }
+
+        /** @param {string} msg */
+        function writeErrorMessage(msg) {
+            term.write(`\r\n\x1b[91m[${msg}]\x1b[0m\r\n`);
+        }
+
+        const readonlyBadge = document.getElementById('readonly-badge');
+        /** @param {boolean} isReadOnly */
+        function setReadOnlyBadge(isReadOnly) {
+            readonlyBadge.classList.toggle('visible', isReadOnly);
+        }
+
+        const btnReconnect = document.getElementById('btn-reconnect');
+        btnReconnect.addEventListener('click', () => {
+            btnReconnect.classList.remove('visible');
+            retryCount = 0;
+            serverDisconnected = false;
+            statusText.textContent = 'Connecting...';
+            connect();
+        });
+
+        const btnCopySession = document.getElementById('btn-copy-session');
+        btnCopySession.addEventListener('click', async () => {
+            if (!currentSessionId) return;
+            const link = `${window.location.origin}${window.location.pathname}?session=${encodeURIComponent(currentSessionId)}`;
+            try {
+                await navigator.clipboard.writeText(link);
+                showToast('Session link copied to clipboard', 'success');
+            } catch (e) {
+                showToast('Could not copy link: ' + link, 'error');
+            }
+        });
 
         // WebSocket connection with reconnection support
         /** @type {WebSocket | null} */
@@ -612,6 +846,7 @@
                 console.log('WebSocket connected');
                 retryCount = 0;
                 serverDisconnected = false;
+                btnReconnect.classList.remove('visible');
 
                 // Stop any existing heartbeat timers to ensure only one is running
                 stopHeartbeat();
@@ -662,8 +897,9 @@
                             setStatus(true);
                             updateSessionInfo(msg.data.session_id);
                             readOnly = msg.data.readonly || false;
+                            setReadOnlyBadge(readOnly);
                             if (readOnly) {
-                                term.write('\r\n[Read-only mode]\r\n');
+                                writeSystemMessage('Read-only mode: your keystrokes will not be sent.');
                             }
                             break;
                         case 'output':
@@ -675,9 +911,10 @@
                             break;
                         case 'disconnect':
                             console.log('Disconnected:', msg.data.reason);
-                            term.write(`\r\n[Disconnected: ${msg.data.reason}]\r\n`);
-                            term.write('\r\n[Press Enter or refresh page to reconnect]\r\n');
+                            writeSystemMessage(`Disconnected: ${msg.data.reason}`);
+                            writeSystemMessage('Press Enter or refresh page to reconnect.');
                             setStatus(false);
+                            setReadOnlyBadge(false);
                             clearSessionInfo();
                             // Server-initiated disconnect — stop heartbeat and close socket
                             serverDisconnected = true;
@@ -690,7 +927,7 @@
                             if (msg.data.code === 'FILE_LIST_ERROR' && !filePanelOverlay.classList.contains('hidden')) {
                                 filePanelBody.innerHTML = `<div id="file-panel-empty">Error: ${msg.data.message}</div>`;
                             } else {
-                                term.write(`\r\n[Error: ${msg.data.message}]\r\n`);
+                                writeErrorMessage(`Error: ${msg.data.message}`);
                             }
                             if (msg.data.fatal) {
                                 serverDisconnected = true;
@@ -738,11 +975,12 @@
                     statusText.textContent = `Reconnecting (${retryCount}/${MAX_RETRIES})...`;
                     console.log(`Reconnecting in ${delay}ms (attempt ${retryCount}/${MAX_RETRIES})`);
                     // [Fix #3] Don't clear terminal — just write a separator
-                    term.write(`\r\n[Reconnecting...]\r\n`);
+                    writeSystemMessage('Reconnecting...');
                     reconnectTimer = setTimeout(connect, delay);
                 } else {
-                    term.write('\r\n[Connection lost. Refresh page to retry.]\r\n');
+                    writeErrorMessage('Connection lost.');
                     statusText.textContent = 'Connection lost';
+                    btnReconnect.classList.add('visible');
                     stopHeartbeat();
                 }
             };
@@ -763,7 +1001,11 @@
         function onAuthenticated() {
             // Reset readonly state on new connection
             readOnly = false;
+            setReadOnlyBadge(false);
             setMenuVisible(true);
+            loginOverlay.classList.add('hidden');
+            loginSubmit.disabled = false;
+            loginSubmit.textContent = 'Login';
 
             // Send resize first (required by server), then optionally join
             const dims = fitAddon.proposeDimensions();
@@ -793,6 +1035,8 @@
             loginError.textContent = msg;
             loginError.style.display = 'block';
             loginOverlay.classList.remove('hidden');
+            loginSubmit.disabled = false;
+            loginSubmit.textContent = 'Login';
         }
 
         loginSubmit.addEventListener('click', () => {
@@ -814,7 +1058,8 @@
                         return;
                     }
                 }
-                loginOverlay.classList.add('hidden');
+                loginSubmit.disabled = true;
+                loginSubmit.textContent = 'Connecting...';
                 retryCount = 0;
                 connect();
             }
@@ -848,6 +1093,9 @@
                     loginOverlay.classList.remove('hidden');
                     statusIndicator.classList.add('pending');
                     statusText.textContent = 'Login required';
+                    setTimeout(() => {
+                        (config.auth_method === 'token' ? loginToken : loginUsername).focus();
+                    }, 0);
                 } else {
                     // No auth needed, connect directly
                     connect();
@@ -867,7 +1115,7 @@
             if (serverDisconnected) {
                 // After disconnect, Enter triggers reconnection
                 if (data === '\r' || data === '\n') {
-                    term.write('\r\n[Reconnecting...]\r\n');
+                    writeSystemMessage('Reconnecting...');
                     connect();
                 }
                 return;
@@ -893,6 +1141,30 @@
                     }
                 }
             }, 100);
+        });
+
+        // === Mobile special-key toolbar ===
+        // Mobile soft keyboards can't send Ctrl/Esc/Tab/arrows, so provide
+        // dedicated buttons that inject the equivalent escape sequences.
+        const MOBILE_KEY_SEQUENCES = {
+            Escape: '\x1b',
+            Tab: '\t',
+            ArrowUp: '\x1b[A',
+            ArrowDown: '\x1b[B',
+            ArrowRight: '\x1b[C',
+            ArrowLeft: '\x1b[D',
+            CtrlC: '\x03',
+            CtrlD: '\x04',
+            CtrlL: '\x0c',
+            PageUp: '\x1b[5~',
+            PageDown: '\x1b[6~'
+        };
+        document.getElementById('mobile-keys').addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-key]');
+            if (!btn) return;
+            if (serverDisconnected || readOnly) return;
+            const seq = MOBILE_KEY_SEQUENCES[btn.dataset.key];
+            if (seq) sendMsg('input', { payload: seq });
         });
 
         // === Toast Notifications ===
@@ -948,6 +1220,11 @@
             menuDropdown.classList.remove('open');
         });
 
+        const btnClear = document.getElementById('btn-clear');
+        btnClear.addEventListener('click', () => {
+            term.clear();
+        });
+
         function setMenuVisible(visible) {
             if (visible) {
                 menuWrapper.classList.remove('hidden');
@@ -957,10 +1234,69 @@
             }
         }
 
+        // === Custom confirm modal (styled, replaces window.confirm) ===
+        const confirmOverlay = document.getElementById('confirm-overlay');
+        const confirmMessage = document.getElementById('confirm-message');
+        const confirmOk = document.getElementById('confirm-ok');
+        const confirmCancel = document.getElementById('confirm-cancel');
+
+        /**
+         * Show a styled confirm dialog matching the app's theme.
+         * @param {string} message
+         * @returns {Promise<boolean>}
+         */
+        function showConfirm(message) {
+            confirmMessage.textContent = message;
+            confirmOverlay.classList.remove('hidden');
+            return new Promise((resolve) => {
+                function cleanup(result) {
+                    confirmOverlay.classList.add('hidden');
+                    confirmOk.removeEventListener('click', onOk);
+                    confirmCancel.removeEventListener('click', onCancel);
+                    resolve(result);
+                }
+                function onOk() { cleanup(true); }
+                function onCancel() { cleanup(false); }
+                confirmOk.addEventListener('click', onOk);
+                confirmCancel.addEventListener('click', onCancel);
+            });
+        }
+
         // === File Upload (with progress via XHR) ===
         const btnUpload = document.getElementById('btn-upload');
         const btnDownload = document.getElementById('btn-download');
         const uploadInput = document.getElementById('upload-input');
+
+        // Queue so multiple files (via multi-select or multi-file drop) upload
+        // one after another instead of silently dropping all but the first.
+        /** @type {File[]} */
+        let uploadQueue = [];
+        let uploadQueueTotal = 0;
+
+        /** Queue files for sequential upload.
+         * @param {File[]|FileList} files
+         */
+        function queueUploads(files) {
+            const list = Array.from(files);
+            if (list.length === 0) return;
+            uploadQueue.push(...list);
+            uploadQueueTotal += list.length;
+            if (list.length > 1) {
+                showToast(`Queued ${list.length} files for upload`, 'success');
+            }
+            if (!btnUpload.disabled) {
+                processUploadQueue();
+            }
+        }
+
+        function processUploadQueue() {
+            if (uploadQueue.length === 0) {
+                uploadQueueTotal = 0;
+                return;
+            }
+            const next = uploadQueue.shift();
+            uploadFile(next);
+        }
 
         /**
          * Upload a file with progress tracking.
@@ -968,7 +1304,10 @@
          */
         function uploadFile(file, overwrite = false) {
             btnUpload.disabled = true;
-            btnUpload.textContent = 'Uploading...';
+            const position = uploadQueueTotal - uploadQueue.length;
+            btnUpload.textContent = uploadQueueTotal > 1
+                ? `Uploading ${position}/${uploadQueueTotal}...`
+                : 'Uploading...';
             setUploadProgress(0);
 
             const xhr = new XMLHttpRequest();
@@ -993,18 +1332,24 @@
                     } catch (_) {
                         showToast('Upload complete', 'success');
                     }
+                    processUploadQueue();
                 } else if (xhr.status === 409) {
                     // File exists — ask user to confirm overwrite
-                    if (confirm('File already exists. Overwrite?')) {
-                        uploadFile(file, true);
-                    }
+                    showConfirm(`"${file.name}" already exists. Overwrite it?`).then((ok) => {
+                        if (ok) {
+                            uploadFile(file, true);
+                        } else {
+                            processUploadQueue();
+                        }
+                    });
                 } else {
                     let errMsg = `Upload failed (${xhr.status})`;
                     try {
                         const err = JSON.parse(xhr.responseText);
                         errMsg = err.error || errMsg;
                     } catch (_) {}
-                    showToast(errMsg, 'error');
+                    showToast(`${file.name}: ${errMsg}`, 'error');
+                    processUploadQueue();
                 }
             });
 
@@ -1012,7 +1357,8 @@
                 hideUploadProgress();
                 btnUpload.disabled = false;
                 btnUpload.textContent = '\u21DF Upload';
-                showToast('Upload failed: network error', 'error');
+                showToast(`${file.name}: upload failed (network error)`, 'error');
+                processUploadQueue();
             });
 
             let url = '/api/files/upload?session_id=' + encodeURIComponent(currentSessionId || '');
@@ -1054,10 +1400,9 @@
         });
 
         uploadInput.addEventListener('change', () => {
-            const file = uploadInput.files[0];
-            if (!file) return;
+            if (!uploadInput.files || uploadInput.files.length === 0) return;
+            queueUploads(uploadInput.files);
             uploadInput.value = '';
-            uploadFile(file);
         });
 
         // === File List Panel (replaces prompt() download) ===
@@ -1082,8 +1427,44 @@
         const showHiddenToggle = document.getElementById('show-hidden-toggle');
         let currentFilePath = '.';
 
+        const filePanelBreadcrumb = document.getElementById('file-panel-breadcrumb');
+
+        function renderBreadcrumb(path) {
+            filePanelBreadcrumb.innerHTML = '';
+            const rootCrumb = document.createElement('span');
+            rootCrumb.className = 'crumb';
+            rootCrumb.textContent = '~';
+            rootCrumb.addEventListener('click', () => {
+                filePanelBody.innerHTML = '<div id="file-panel-loading">Loading...</div>';
+                requestFileList('.');
+            });
+            filePanelBreadcrumb.appendChild(rootCrumb);
+
+            if (path === '.' || path === '') return;
+            const parts = path.split('/').filter(Boolean);
+            let accum = '';
+            parts.forEach((part) => {
+                accum = accum ? accum + '/' + part : part;
+                const sep = document.createElement('span');
+                sep.className = 'sep';
+                sep.textContent = '/';
+                filePanelBreadcrumb.appendChild(sep);
+
+                const crumb = document.createElement('span');
+                crumb.className = 'crumb';
+                crumb.textContent = part;
+                const target = accum;
+                crumb.addEventListener('click', () => {
+                    filePanelBody.innerHTML = '<div id="file-panel-loading">Loading...</div>';
+                    requestFileList(target);
+                });
+                filePanelBreadcrumb.appendChild(crumb);
+            });
+        }
+
         function requestFileList(path) {
             currentFilePath = path || '.';
+            renderBreadcrumb(currentFilePath);
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'file_list', data: { path: currentFilePath, show_hidden: showHiddenToggle.checked } }));
             } else {
@@ -1237,11 +1618,7 @@
             dropOverlay.classList.add('hidden');
             const files = e.dataTransfer.files;
             if (files.length > 0) {
-                // Upload first file (single-file upload)
-                uploadFile(files[0]);
-                if (files.length > 1) {
-                    showToast(`Only first file uploaded (${files.length} files dropped)`, 'error');
-                }
+                queueUploads(files);
             }
         });
     </script>
