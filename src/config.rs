@@ -90,10 +90,7 @@ impl std::fmt::Debug for AuthConfig {
         f.debug_struct("AuthConfig")
             .field("method", &self.method)
             .field("username", &self.username)
-            .field(
-                "password",
-                &self.password.as_ref().map(|_| "[REDACTED]"),
-            )
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
             .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
             .field("audit_enabled", &self.audit_enabled)
             .finish()
