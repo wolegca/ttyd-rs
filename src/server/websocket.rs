@@ -27,6 +27,26 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+/// Returns a human-readable name for a protocol message variant.
+fn message_type_name(msg: &Message) -> &'static str {
+    match msg {
+        Message::Auth(_) => "auth",
+        Message::Input(_) => "input",
+        Message::Resize(_) => "resize",
+        Message::Ping(_) => "ping",
+        Message::AuthOk(_) => "auth_ok",
+        Message::AuthFail(_) => "auth_fail",
+        Message::Output(_) => "output",
+        Message::Pong(_) => "pong",
+        Message::Error(_) => "error",
+        Message::Disconnect(_) => "disconnect",
+        Message::Ready(_) => "ready",
+        Message::Join(_) => "join",
+        Message::FileList(_) => "file_list",
+        Message::FileListResult(_) => "file_list_result",
+    }
+}
+
 /// Shared application state
 #[derive(Clone)]
 pub struct AppState {
@@ -560,6 +580,19 @@ async fn handle_terminal_session(
         rows = data.rows;
     }
 
+    // If we got Resize first, the client may have sent a Join message right
+    // after it (e.g. on reconnect). Try to consume it with a short timeout so
+    // it doesn't leak into the main I/O loop.
+    if resize_received && join_session_id.is_none() {
+        if let Ok(Some(Ok(WsMessage::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(100), ws_receiver.next()).await
+        {
+            if let Ok(Message::Join(data)) = Message::from_json(&text) {
+                join_session_id = Some(data.session_id);
+            }
+        }
+    }
+
     // Create or join session based on whether a Join message was received
     let (session, session_id, is_readonly) = if let Some(target_id) = join_session_id {
         // Try to join an existing session
@@ -1033,8 +1066,11 @@ async fn handle_terminal_session(
                             }
                         }
                     }
-                    Ok(_) => {
-                        warn!("Unexpected message type");
+                    Ok(other) => {
+                        warn!(
+                            "Unexpected message type in main loop: {}",
+                            message_type_name(&other)
+                        );
                     }
                     Err(e) => {
                         warn!("Failed to parse message: {}", e);
