@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ttyd-rs - Web Terminal</title>
+    <title>ttyd-rs</title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="stylesheet" href="/vendor/xterm.css" />
     <style>
@@ -74,26 +74,6 @@
             letter-spacing: 0.3px;
         }
         #readonly-badge.visible {
-            display: inline-block;
-        }
-
-        /* Copy session link button */
-        #btn-copy-session {
-            display: none;
-            background: none;
-            border: 1px solid #3e3e42;
-            color: #858585;
-            font-size: 11px;
-            padding: 2px 8px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-family: inherit;
-        }
-        #btn-copy-session:hover {
-            background: #3e3e42;
-            color: #cccccc;
-        }
-        #btn-copy-session.visible {
             display: inline-block;
         }
 
@@ -252,7 +232,7 @@
             border-radius: 6px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.4);
             z-index: 300;
-            min-width: 140px;
+            width: max-content;
             overflow: hidden;
         }
         #menu-dropdown.open {
@@ -564,14 +544,13 @@
 </head>
 <body>
     <div id="header">
-        <h1>ttyd-rs - Web Terminal</h1>
+        <h1>ttyd-rs</h1>
         <div id="status">
             <div class="status-indicator" id="status-indicator"></div>
             <span id="status-text">Connecting...</span>
             <span id="readonly-badge" title="You cannot type in this session">READ-ONLY</span>
             <button id="btn-reconnect" title="Reconnect">Reconnect</button>
             <span id="session-info" style="margin-left: 15px; color: #858585; font-size: 11px;"></span>
-            <button id="btn-copy-session" title="Copy shareable session link">&#128279; Copy link</button>
         </div>
         <div id="menu-wrapper" class="hidden">
             <button id="btn-menu" title="Menu" aria-label="Open menu">&#8942;</button>
@@ -727,14 +706,12 @@
             currentSessionId = sessionId;
             if (sessionId) {
                 sessionInfo.textContent = `Session: ${sessionId.substring(0, 8)}`;
-                btnCopySession.classList.add('visible');
             }
         }
 
         function clearSessionInfo() {
             currentSessionId = null;
             sessionInfo.textContent = '';
-            btnCopySession.classList.remove('visible');
         }
 
         /**
@@ -765,18 +742,6 @@
             serverDisconnected = false;
             statusText.textContent = 'Connecting...';
             connect();
-        });
-
-        const btnCopySession = document.getElementById('btn-copy-session');
-        btnCopySession.addEventListener('click', async () => {
-            if (!currentSessionId) return;
-            const link = `${window.location.origin}${window.location.pathname}?session=${encodeURIComponent(currentSessionId)}`;
-            try {
-                await navigator.clipboard.writeText(link);
-                showToast('Session link copied to clipboard', 'success');
-            } catch (e) {
-                showToast('Could not copy link: ' + link, 'error');
-            }
         });
 
         // WebSocket connection with reconnection support
