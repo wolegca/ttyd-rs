@@ -583,15 +583,12 @@ async fn handle_terminal_session(
     // If we got Resize first, the client may have sent a Join message right
     // after it (e.g. on reconnect). Try to consume it with a short timeout so
     // it doesn't leak into the main I/O loop.
-    if resize_received && join_session_id.is_none() {
-        if let Ok(Some(Ok(WsMessage::Text(text)))) =
+    if resize_received && join_session_id.is_none()
+        && let Ok(Some(Ok(WsMessage::Text(text)))) =
             tokio::time::timeout(Duration::from_millis(100), ws_receiver.next()).await
-        {
-            if let Ok(Message::Join(data)) = Message::from_json(&text) {
+            && let Ok(Message::Join(data)) = Message::from_json(&text) {
                 join_session_id = Some(data.session_id);
             }
-        }
-    }
 
     // Create or join session based on whether a Join message was received
     let (session, session_id, is_readonly) = if let Some(target_id) = join_session_id {
