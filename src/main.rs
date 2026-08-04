@@ -150,7 +150,9 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
     if let Some(shell) = &args.shell {
         config.command = shell.split_whitespace().map(String::from).collect();
     }
-    config.working_dir = args.working_dir.clone();
+    if let Some(working_dir) = &args.working_dir {
+        config.working_dir = Some(working_dir.clone());
+    }
     config.log_level = args.log_level.clone();
     config.max_connections = args.max_connections;
 

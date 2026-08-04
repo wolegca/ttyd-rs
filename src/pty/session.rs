@@ -1,6 +1,7 @@
 /// PTY session management
 use super::process::{PtyError, PtyProcess};
 use nix::unistd::Pid;
+use std::path::Path;
 
 pub struct PtySession {
     /// The underlying PTY process
@@ -13,8 +14,13 @@ pub struct PtySession {
 
 impl PtySession {
     /// Create a new PTY session
-    pub fn new(command: &[String], cols: u16, rows: u16) -> Result<Self, PtyError> {
-        let process = PtyProcess::spawn(command, cols, rows)?;
+    pub fn new(
+        command: &[String],
+        cols: u16,
+        rows: u16,
+        working_dir: Option<&Path>,
+    ) -> Result<Self, PtyError> {
+        let process = PtyProcess::spawn(command, cols, rows, working_dir)?;
 
         Ok(Self {
             process,
@@ -54,7 +60,7 @@ mod tests {
 
     #[test]
     fn test_pty_session_new() {
-        let session = PtySession::new(&["true".to_string()], 80, 24);
+        let session = PtySession::new(&["true".to_string()], 80, 24, None);
         assert!(session.is_ok());
         let session = session.unwrap();
         assert_eq!(session.dimensions(), (80, 24));
@@ -64,14 +70,14 @@ mod tests {
 
     #[test]
     fn test_pty_session_new_with_dimensions() {
-        let session = PtySession::new(&["true".to_string()], 120, 40).unwrap();
+        let session = PtySession::new(&["true".to_string()], 120, 40, None).unwrap();
         assert_eq!(session.dimensions(), (120, 40));
     }
 
     #[test]
     fn test_pty_session_resize() {
         let mut session =
-            PtySession::new(&["sleep".to_string(), "0.5".to_string()], 80, 24).unwrap();
+            PtySession::new(&["sleep".to_string(), "0.5".to_string()], 80, 24, None).unwrap();
         assert_eq!(session.dimensions(), (80, 24));
 
         let result = session.resize(120, 40);
@@ -82,7 +88,7 @@ mod tests {
     #[test]
     fn test_pty_session_resize_updates_dimensions() {
         let mut session =
-            PtySession::new(&["sleep".to_string(), "0.5".to_string()], 80, 24).unwrap();
+            PtySession::new(&["sleep".to_string(), "0.5".to_string()], 80, 24, None).unwrap();
 
         session.resize(100, 50).unwrap();
         assert_eq!(session.dimensions(), (100, 50));
@@ -93,14 +99,14 @@ mod tests {
 
     #[test]
     fn test_pty_session_master_fd_valid() {
-        let session = PtySession::new(&["true".to_string()], 80, 24).unwrap();
+        let session = PtySession::new(&["true".to_string()], 80, 24, None).unwrap();
         let fd = session.master_fd();
         assert!(fd >= 0);
     }
 
     #[test]
     fn test_pty_session_child_pid_valid() {
-        let session = PtySession::new(&["true".to_string()], 80, 24).unwrap();
+        let session = PtySession::new(&["true".to_string()], 80, 24, None).unwrap();
         let pid = session.child_pid();
         assert!(pid.as_raw() > 0);
     }
@@ -110,7 +116,7 @@ mod tests {
         // Verify that Drop impl runs without panicking.
         // The actual cleanup (SIGHUP, SIGKILL, reaper thread) is tested
         // indirectly through the session manager tests.
-        let session = PtySession::new(&["true".to_string()], 80, 24).unwrap();
+        let session = PtySession::new(&["true".to_string()], 80, 24, None).unwrap();
         // Drop should run without panic
         drop(session);
     }

@@ -99,7 +99,8 @@ impl Session {
         cols: u16,
         rows: u16,
     ) -> Result<Self, SessionError> {
-        let pty_session = PtySession::new(command, cols, rows)?;
+        let working_dir_path = working_dir.as_ref().map(std::path::PathBuf::from);
+        let pty_session = PtySession::new(command, cols, rows, working_dir_path.as_deref())?;
 
         let (output_tx, _) = broadcast::channel(512);
 

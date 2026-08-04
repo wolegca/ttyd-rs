@@ -5,6 +5,7 @@ use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, close, execvp, fork, setsid};
 use std::ffi::CString;
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
+use std::path::Path;
 use thiserror::Error;
 use tracing::debug;
 
@@ -81,7 +82,12 @@ pub struct PtyProcess {
 
 impl PtyProcess {
     /// Create a new PTY process with the given command and window size
-    pub fn spawn(command: &[String], cols: u16, rows: u16) -> Result<Self, PtyError> {
+    pub fn spawn(
+        command: &[String],
+        cols: u16,
+        rows: u16,
+        working_dir: Option<&Path>,
+    ) -> Result<Self, PtyError> {
         if command.is_empty() {
             return Err(PtyError::ExecFailed("Command cannot be empty".to_string()));
         }
@@ -125,7 +131,7 @@ impl PtyProcess {
             }
             Ok(ForkResult::Child) => {
                 // Child process — pty will be dropped but exec replaces the process image anyway.
-                Self::setup_child(slave_fd, command)?;
+                Self::setup_child(slave_fd, command, working_dir)?;
                 // setup_child calls execvp which never returns on success.
                 unreachable!("execvp should not return");
             }
@@ -137,7 +143,11 @@ impl PtyProcess {
     }
 
     /// Setup the child process to use the PTY slave.
-    fn setup_child(slave_fd: RawFd, command: &[String]) -> Result<(), PtyError> {
+    fn setup_child(
+        slave_fd: RawFd,
+        command: &[String],
+        working_dir: Option<&Path>,
+    ) -> Result<(), PtyError> {
         // Create a new session so this process becomes a session leader with no
         // controlling terminal yet.
         setsid().map_err(|e| PtyError::ExecFailed(format!("setsid failed: {}", e)))?;
@@ -167,6 +177,22 @@ impl PtyProcess {
                 "setenv TERM failed: {}",
                 std::io::Error::last_os_error()
             )));
+        }
+
+        // Change working directory if specified
+        if let Some(dir) = working_dir {
+            let dir_cstr =
+                CString::new(dir.to_str().ok_or_else(|| {
+                    PtyError::ExecFailed("Invalid UTF-8 in working_dir".to_string())
+                })?)
+                .map_err(|e| PtyError::ExecFailed(format!("Invalid working_dir path: {}", e)))?;
+            if unsafe { libc::chdir(dir_cstr.as_ptr()) } < 0 {
+                return Err(PtyError::ExecFailed(format!(
+                    "chdir to {:?} failed: {}",
+                    dir,
+                    std::io::Error::last_os_error()
+                )));
+            }
         }
 
         // Redirect stdin, stdout, stderr to the slave PTY using libc::dup2
@@ -285,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_spawn_empty_command_errors() {
-        let result = PtyProcess::spawn(&[], 80, 24);
+        let result = PtyProcess::spawn(&[], 80, 24, None);
         assert!(result.is_err());
         let err = result.err().unwrap();
         let msg = err.to_string();
@@ -294,7 +320,7 @@ mod tests {
 
     #[test]
     fn test_spawn_valid_command() {
-        let result = PtyProcess::spawn(&["true".to_string()], 80, 24);
+        let result = PtyProcess::spawn(&["true".to_string()], 80, 24, None);
         assert!(result.is_ok());
         let proc = result.unwrap();
         assert!(proc.master_fd >= 0);
@@ -304,14 +330,16 @@ mod tests {
 
     #[test]
     fn test_spawn_sets_dimensions() {
-        let proc = PtyProcess::spawn(&["sleep".to_string(), "0.1".to_string()], 120, 40).unwrap();
+        let proc =
+            PtyProcess::spawn(&["sleep".to_string(), "0.1".to_string()], 120, 40, None).unwrap();
         // Just verify it succeeds — dimensions are set via openpty
         assert!(proc.master_fd >= 0);
     }
 
     #[test]
     fn test_resize() {
-        let proc = PtyProcess::spawn(&["sleep".to_string(), "0.5".to_string()], 80, 24).unwrap();
+        let proc =
+            PtyProcess::spawn(&["sleep".to_string(), "0.5".to_string()], 80, 24, None).unwrap();
         let result = proc.resize(120, 40);
         assert!(result.is_ok());
     }
@@ -333,7 +361,7 @@ mod tests {
         // The actual cleanup (SIGHUP + non-blocking waitpid, with the global
         // SIGCHLD handler handling deferred reaping) is tested indirectly
         // through the session tests.
-        let proc = PtyProcess::spawn(&["true".to_string()], 80, 24).unwrap();
+        let proc = PtyProcess::spawn(&["true".to_string()], 80, 24, None).unwrap();
         // Drop should run without panic
         drop(proc);
     }
@@ -342,14 +370,14 @@ mod tests {
     fn test_spawn_and_drop_multiple() {
         // Verify that spawning and dropping multiple processes works correctly
         for _ in 0..3 {
-            let proc = PtyProcess::spawn(&["true".to_string()], 80, 24).unwrap();
+            let proc = PtyProcess::spawn(&["true".to_string()], 80, 24, None).unwrap();
             assert!(proc.master_fd >= 0);
         }
     }
 
     #[test]
     fn test_spawn_invalid_command() {
-        let result = PtyProcess::spawn(&["/nonexistent/binary".to_string()], 80, 24);
+        let result = PtyProcess::spawn(&["/nonexistent/binary".to_string()], 80, 24, None);
         // The child process will fail to exec, parent gets an Ok because fork succeeded
         // The child's exec failure happens after fork returns to parent
         // So spawn should succeed (parent side), but the child will exit with error
