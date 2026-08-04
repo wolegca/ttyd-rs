@@ -14,19 +14,19 @@ All dependencies are hosted locally instead of using CDN links to:
 
 ## Included Libraries
 
-### xterm.js v5.3.0
+### xterm.js v6.0.0
 - **Files**: `xterm.js`, `xterm.css`
 - **Purpose**: Terminal emulator for the web
 - **License**: MIT
 - **Source**: https://github.com/xtermjs/xterm.js
 
-### xterm-addon-fit v0.8.0
+### xterm-addon-fit v0.11.0
 - **File**: `xterm-addon-fit.js`
 - **Purpose**: Fit terminal to container dimensions
 - **License**: MIT
 - **Source**: https://github.com/xtermjs/xterm.js
 
-### xterm-addon-web-links v0.9.0
+### xterm-addon-web-links v0.12.0
 - **File**: `xterm-addon-web-links.js`
 - **Purpose**: Add clickable web links to terminal
 - **License**: MIT
@@ -40,10 +40,10 @@ To update these libraries to newer versions:
 cd static/vendor
 
 # Download new versions
-curl -L -o xterm.css "https://cdn.jsdelivr.net/npm/xterm@VERSION/css/xterm.css"
-curl -L -o xterm.js "https://cdn.jsdelivr.net/npm/xterm@VERSION/lib/xterm.js"
-curl -L -o xterm-addon-fit.js "https://cdn.jsdelivr.net/npm/xterm-addon-fit@VERSION/lib/xterm-addon-fit.js"
-curl -L -o xterm-addon-web-links.js "https://cdn.jsdelivr.net/npm/xterm-addon-web-links@VERSION/lib/xterm-addon-web-links.js"
+curl -L -o xterm.css "https://cdn.jsdelivr.net/npm/@xterm/xterm@VERSION/lib/xterm.min.js"
+curl -L -o xterm.js "https://cdn.jsdelivr.net/npm/@xterm/xterm@VERSION/css/xterm.css"
+curl -L -o xterm-addon-fit.js "https://cdn.jsdelivr.net/npm/@xterm/addon-fit@VERSION/lib/addon-fit.min.js"
+curl -L -o xterm-addon-web-links.js "https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@VERSION/lib/addon-web-links.min.js"
 
 # Test the application
 cargo run
