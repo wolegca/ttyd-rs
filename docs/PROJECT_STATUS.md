@@ -1,7 +1,7 @@
 # ttyd-rs Project Status
 
-**Last Updated**: 2026-07-31
-**Version**: 0.4.1
+**Last Updated**: 2026-08-04
+**Version**: 0.4.3
 **Status**: Production Ready
 
 ---
