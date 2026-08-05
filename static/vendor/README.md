@@ -40,8 +40,8 @@ To update these libraries to newer versions:
 cd static/vendor
 
 # Download new versions
-curl -L -o xterm.css "https://cdn.jsdelivr.net/npm/@xterm/xterm@VERSION/lib/xterm.min.js"
-curl -L -o xterm.js "https://cdn.jsdelivr.net/npm/@xterm/xterm@VERSION/css/xterm.css"
+curl -L -o xterm.js "https://cdn.jsdelivr.net/npm/@xterm/xterm@VERSION/lib/xterm.min.js"
+curl -L -o xterm.css "https://cdn.jsdelivr.net/npm/@xterm/xterm@VERSION/css/xterm.css"
 curl -L -o xterm-addon-fit.js "https://cdn.jsdelivr.net/npm/@xterm/addon-fit@VERSION/lib/addon-fit.min.js"
 curl -L -o xterm-addon-web-links.js "https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@VERSION/lib/addon-web-links.min.js"
 
