@@ -1,11 +1,24 @@
-/// WebSocket handler for terminal connections - Refactored to use SessionManager
+/// WebSocket handler for terminal connections — modular implementation.
+///
+/// This module orchestrates the full lifecycle of a WebSocket terminal session:
+/// 1. Connection upgrade and authentication ([`auth`])
+/// 2. Handshake (Resize/Join) parsing ([`handshake`])
+/// 3. Session creation/join and client registration ([`session_lifecycle`])
+/// 4. PTY I/O tasks and heartbeat monitoring ([`pty_io`])
+/// 5. Main message loop dispatching Input/Resize/Ping/FileList ([`message_loop`])
+/// 6. Cleanup and disconnection ([`session_lifecycle::cleanup_client`])
+mod auth;
+mod handshake;
+mod message_loop;
+mod pty_io;
+mod session_lifecycle;
+mod utils;
+
 use crate::audit::AuditLogger;
-use crate::auth::{BasicAuth, TokenAuth};
 use crate::config::Config;
 use crate::config::ValidationConfig;
-use crate::protocol::*;
 use crate::rate_limit::RateLimiter;
-use crate::session::{Client, SessionManager, SessionMode};
+use crate::session::SessionManager;
 use axum::{
     extract::{
         ConnectInfo, State, WebSocketUpgrade,
@@ -18,34 +31,13 @@ use futures::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
+
+pub(crate) use utils::extract_real_ip;
 
 /// Type alias for the shared WebSocket sender used across tasks.
-type WsSender = Arc<tokio::sync::Mutex<SplitSink<WebSocket, WsMessage>>>;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::broadcast;
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
-
-/// Returns a human-readable name for a protocol message variant.
-fn message_type_name(msg: &Message) -> &'static str {
-    match msg {
-        Message::Auth(_) => "auth",
-        Message::Input(_) => "input",
-        Message::Resize(_) => "resize",
-        Message::Ping(_) => "ping",
-        Message::AuthOk(_) => "auth_ok",
-        Message::AuthFail(_) => "auth_fail",
-        Message::Output(_) => "output",
-        Message::Pong(_) => "pong",
-        Message::Error(_) => "error",
-        Message::Disconnect(_) => "disconnect",
-        Message::Ready(_) => "ready",
-        Message::Join(_) => "join",
-        Message::FileList(_) => "file_list",
-        Message::FileListResult(_) => "file_list_result",
-    }
-}
+pub(crate) type WsSender = Arc<tokio::sync::Mutex<SplitSink<WebSocket, WsMessage>>>;
 
 /// Shared application state
 #[derive(Clone)]
@@ -57,50 +49,6 @@ pub struct AppState {
     pub session_manager: Arc<SessionManager>,
     pub shutdown_token: CancellationToken,
     pub active_connections: Arc<AtomicUsize>,
-}
-
-/// Extract the real client IP from proxy headers.
-///
-/// When `trust_proxy` is enabled, checks (in order):
-/// 1. `X-Real-IP` header — the canonical real IP set by nginx/Caddy
-/// 2. `X-Forwarded-For` header — first entry (client IP) from the chain
-///
-/// Falls back to `connect_addr` if neither header is present or valid.
-/// Only accepts valid IP addresses from headers to prevent spoofing with
-/// arbitrary strings.
-fn extract_real_ip(
-    headers: &axum::http::HeaderMap,
-    connect_addr: std::net::IpAddr,
-    trust_proxy: bool,
-) -> String {
-    if !trust_proxy {
-        return connect_addr.to_string();
-    }
-
-    // Prefer X-Real-IP (single value, set by most reverse proxies)
-    if let Some(val) = headers.get("x-real-ip")
-        && let Ok(s) = val.to_str()
-    {
-        let trimmed = s.trim();
-        if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
-            return ip.to_string();
-        }
-    }
-
-    // Fall back to first entry of X-Forwarded-For
-    if let Some(val) = headers.get("x-forwarded-for")
-        && let Ok(s) = val.to_str()
-    {
-        // X-Forwarded-For: client, proxy1, proxy2
-        if let Some(first) = s.split(',').next() {
-            let trimmed = first.trim();
-            if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
-                return ip.to_string();
-            }
-        }
-    }
-
-    connect_addr.to_string()
 }
 
 /// Maximum allowed WebSocket message size (64 KB).
@@ -159,29 +107,6 @@ async fn handle_socket(socket: WebSocket, state: AppState, remote_addr: String) 
     }
 }
 
-/// Send a structured error message to the client via the WebSocket sender.
-///
-/// Returns `Ok(())` on success, or the serialization/send error on failure.
-/// Callers decide whether to propagate the error (`?`) or ignore it (`let _ =`).
-async fn send_ws_error(
-    sender: &WsSender,
-    code: &str,
-    message: String,
-    fatal: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let msg = Message::Error(ErrorData {
-        code: code.to_string(),
-        message,
-        fatal,
-    });
-    sender
-        .lock()
-        .await
-        .send(WsMessage::Text(msg.to_json()?.into()))
-        .await?;
-    Ok(())
-}
-
 /// Handle a terminal session using SessionManager
 async fn handle_terminal_session(
     socket: WebSocket,
@@ -199,482 +124,50 @@ async fn handle_terminal_session(
         .log_connection(&remote_addr, &client_id)
         .await;
 
-    // Handle authentication if enabled
-    let username = if let Some(auth_config) = &state.config.auth {
-        match auth_config.method.as_str() {
-            "basic"
-                if let (Some(username), Some(password)) =
-                    (&auth_config.username, &auth_config.password) =>
-            {
-                // Check rate limit before processing auth
-                if let Err(duration) = state.rate_limiter.check(&remote_addr).await {
-                    warn!("Rate limit exceeded for {}", remote_addr);
-
-                    let fail_msg = Message::AuthFail(AuthFailData {
-                        reason: format!(
-                            "Rate limit exceeded. Try again in {} seconds",
-                            duration.as_secs()
-                        ),
-                    });
-                    ws_sender
-                        .lock()
-                        .await
-                        .send(WsMessage::Text(fail_msg.to_json()?.into()))
-                        .await?;
-                    return Ok(());
-                }
-
-                let basic_auth = BasicAuth::new(username.clone(), password.clone());
-
-                // Wait for auth message
-                match ws_receiver.next().await {
-                    Some(Ok(WsMessage::Text(text))) => {
-                        let msg = Message::from_json(&text)?;
-                        match msg {
-                            Message::Auth(auth_data) => {
-                                // Validate auth method
-                                if let Err(e) =
-                                    state.validation.validate_auth_method(&auth_data.method)
-                                {
-                                    warn!("Invalid auth method: {}", e);
-                                    let fail_msg = Message::AuthFail(AuthFailData {
-                                        reason: format!("Invalid authentication method: {}", e),
-                                    });
-                                    ws_sender
-                                        .lock()
-                                        .await
-                                        .send(WsMessage::Text(fail_msg.to_json()?.into()))
-                                        .await?;
-                                    return Ok(());
-                                }
-
-                                // Validate credentials format
-                                if let Err(e) = state
-                                    .validation
-                                    .validate_credentials(&auth_data.credentials)
-                                {
-                                    warn!("Invalid credentials format: {}", e);
-                                    state
-                                        .audit_logger
-                                        .log_auth_attempt(
-                                            &remote_addr,
-                                            "unknown",
-                                            false,
-                                            &client_id,
-                                        )
-                                        .await;
-
-                                    let fail_msg = Message::AuthFail(AuthFailData {
-                                        reason: "Invalid credentials format".to_string(),
-                                    });
-                                    ws_sender
-                                        .lock()
-                                        .await
-                                        .send(WsMessage::Text(fail_msg.to_json()?.into()))
-                                        .await?;
-                                    return Ok(());
-                                }
-
-                                let valid = if auth_data.method == "basic" {
-                                    basic_auth.validate(&auth_data.credentials)
-                                } else {
-                                    false
-                                };
-
-                                if !valid {
-                                    state
-                                        .audit_logger
-                                        .log_auth_attempt(&remote_addr, username, false, &client_id)
-                                        .await;
-
-                                    let fail_msg = Message::AuthFail(AuthFailData {
-                                        reason: "Invalid credentials".to_string(),
-                                    });
-                                    ws_sender
-                                        .lock()
-                                        .await
-                                        .send(WsMessage::Text(fail_msg.to_json()?.into()))
-                                        .await?;
-                                    return Ok(());
-                                }
-
-                                state
-                                    .audit_logger
-                                    .log_auth_attempt(&remote_addr, username, true, &client_id)
-                                    .await;
-
-                                // Reset rate limit on successful auth
-                                state.rate_limiter.reset(&remote_addr).await;
-
-                                let ok_msg = Message::AuthOk(AuthOkData {
-                                    client_id: client_id.clone(),
-                                    readonly: false,
-                                });
-                                ws_sender
-                                    .lock()
-                                    .await
-                                    .send(WsMessage::Text(ok_msg.to_json()?.into()))
-                                    .await?;
-
-                                Some(username.clone())
-                            }
-                            _ => {
-                                let fail_msg = Message::AuthFail(AuthFailData {
-                                    reason: "Expected auth message".to_string(),
-                                });
-                                ws_sender
-                                    .lock()
-                                    .await
-                                    .send(WsMessage::Text(fail_msg.to_json()?.into()))
-                                    .await?;
-                                return Ok(());
-                            }
-                        }
-                    }
-                    _ => {
-                        return Ok(());
-                    }
-                }
-            }
-            "token" if let Some(token) = &auth_config.token => {
-                // Check rate limit before processing auth
-                if let Err(duration) = state.rate_limiter.check(&remote_addr).await {
-                    warn!("Rate limit exceeded for {}", remote_addr);
-
-                    let fail_msg = Message::AuthFail(AuthFailData {
-                        reason: format!(
-                            "Rate limit exceeded. Try again in {} seconds",
-                            duration.as_secs()
-                        ),
-                    });
-                    ws_sender
-                        .lock()
-                        .await
-                        .send(WsMessage::Text(fail_msg.to_json()?.into()))
-                        .await?;
-                    return Ok(());
-                }
-
-                let token_auth = TokenAuth::new(token.clone());
-
-                // Wait for auth message
-                match ws_receiver.next().await {
-                    Some(Ok(WsMessage::Text(text))) => {
-                        let msg = Message::from_json(&text)?;
-                        match msg {
-                            Message::Auth(auth_data) => {
-                                // Validate auth method
-                                if let Err(e) =
-                                    state.validation.validate_auth_method(&auth_data.method)
-                                {
-                                    warn!("Invalid auth method: {}", e);
-                                    let fail_msg = Message::AuthFail(AuthFailData {
-                                        reason: format!("Invalid authentication method: {}", e),
-                                    });
-                                    ws_sender
-                                        .lock()
-                                        .await
-                                        .send(WsMessage::Text(fail_msg.to_json()?.into()))
-                                        .await?;
-                                    return Ok(());
-                                }
-
-                                // Validate token credentials format (length only, no base64 check)
-                                if let Err(e) = state
-                                    .validation
-                                    .validate_token_credentials(&auth_data.credentials)
-                                {
-                                    warn!("Invalid credentials format: {}", e);
-                                    state
-                                        .audit_logger
-                                        .log_auth_attempt(
-                                            &remote_addr,
-                                            "token-user",
-                                            false,
-                                            &client_id,
-                                        )
-                                        .await;
-
-                                    let fail_msg = Message::AuthFail(AuthFailData {
-                                        reason: "Invalid credentials format".to_string(),
-                                    });
-                                    ws_sender
-                                        .lock()
-                                        .await
-                                        .send(WsMessage::Text(fail_msg.to_json()?.into()))
-                                        .await?;
-                                    return Ok(());
-                                }
-
-                                let valid = if auth_data.method == "token" {
-                                    token_auth.validate(&auth_data.credentials)
-                                } else {
-                                    false
-                                };
-
-                                if !valid {
-                                    state
-                                        .audit_logger
-                                        .log_auth_attempt(
-                                            &remote_addr,
-                                            "token-user",
-                                            false,
-                                            &client_id,
-                                        )
-                                        .await;
-
-                                    let fail_msg = Message::AuthFail(AuthFailData {
-                                        reason: "Invalid token".to_string(),
-                                    });
-                                    ws_sender
-                                        .lock()
-                                        .await
-                                        .send(WsMessage::Text(fail_msg.to_json()?.into()))
-                                        .await?;
-                                    return Ok(());
-                                }
-
-                                state
-                                    .audit_logger
-                                    .log_auth_attempt(&remote_addr, "token-user", true, &client_id)
-                                    .await;
-
-                                // Reset rate limit on successful auth
-                                state.rate_limiter.reset(&remote_addr).await;
-
-                                let ok_msg = Message::AuthOk(AuthOkData {
-                                    client_id: client_id.clone(),
-                                    readonly: false,
-                                });
-                                ws_sender
-                                    .lock()
-                                    .await
-                                    .send(WsMessage::Text(ok_msg.to_json()?.into()))
-                                    .await?;
-
-                                None
-                            }
-                            _ => {
-                                let fail_msg = Message::AuthFail(AuthFailData {
-                                    reason: "Expected auth message".to_string(),
-                                });
-                                ws_sender
-                                    .lock()
-                                    .await
-                                    .send(WsMessage::Text(fail_msg.to_json()?.into()))
-                                    .await?;
-                                return Ok(());
-                            }
-                        }
-                    }
-                    _ => {
-                        return Ok(());
-                    }
-                }
-            }
-            _ => {
-                // Misconfigured auth: method doesn't match available credentials
-                // Reject the connection rather than allowing unauthenticated access
-                error!(
-                    "Auth method '{}' is misconfigured — missing credentials",
-                    auth_config.method
-                );
-                let fail_msg = Message::AuthFail(AuthFailData {
-                    reason: "Server authentication misconfigured".to_string(),
-                });
-                ws_sender
-                    .lock()
-                    .await
-                    .send(WsMessage::Text(fail_msg.to_json()?.into()))
-                    .await?;
-                return Ok(());
-            }
-        }
-    } else {
-        None
+    // ── Authentication ──────────────────────────────────────────────
+    let username = match auth::authenticate(
+        &state,
+        &ws_sender,
+        &mut ws_receiver,
+        &remote_addr,
+        &client_id,
+    )
+    .await?
+    {
+        auth::AuthResult::Success(username) => username,
+        auth::AuthResult::Close => return Ok(()),
     };
 
-    // Read initial handshake messages: Resize (required) and optionally Join.
-    // The client may send them in either order, but we must not consume
-    // messages that belong to the main I/O loop (Input, Ping, etc.).
-    let mut cols: u16 = 80;
-    let mut rows: u16 = 24;
-    let mut join_session_id: Option<String> = None;
-    let mut resize_received = false;
+    // ── Handshake (Resize/Join) ─────────────────────────────────────
+    let handshake = handshake::read_handshake(
+        &state,
+        &ws_sender,
+        &mut ws_receiver,
+        &remote_addr,
+        &client_id,
+    )
+    .await
+    .map_err(|_| -> Box<dyn std::error::Error> {
+        "Handshake failed: invalid terminal size".into()
+    })?;
 
-    // Read first message
-    match ws_receiver.next().await {
-        Some(Ok(WsMessage::Text(text))) => {
-            let msg = Message::from_json(&text)?;
-            match msg {
-                Message::Resize(data) => {
-                    if let Err(e) = state
-                        .validation
-                        .validate_terminal_size(data.cols, data.rows)
-                    {
-                        warn!("Invalid terminal size: {}", e);
-                        state
-                            .audit_logger
-                            .log_error(
-                                &remote_addr,
-                                &client_id,
-                                &format!("Invalid terminal size: {}", e),
-                            )
-                            .await;
-                        send_ws_error(
-                            &ws_sender,
-                            "INVALID_SIZE",
-                            format!("Invalid terminal size: {}", e),
-                            true,
-                        )
-                        .await?;
-                        return Ok(());
-                    }
-                    cols = data.cols;
-                    rows = data.rows;
-                    resize_received = true;
-                }
-                Message::Join(data) => {
-                    join_session_id = Some(data.session_id);
-                }
-                _ => {
-                    warn!("Expected resize or join, got other message type");
-                }
-            }
-        }
-        _ => {
-            warn!("No handshake message received");
-        }
-    }
+    // ── Create or join session ──────────────────────────────────────
+    let resolved = session_lifecycle::create_or_join_session(
+        &state,
+        &ws_sender,
+        handshake.join_session_id,
+        handshake.cols,
+        handshake.rows,
+    )
+    .await
+    .map_err(|_| -> Box<dyn std::error::Error> { "Failed to create or join session".into() })?;
 
-    // If we got Join first but haven't received Resize yet, read the next
-    // message expecting Resize.
-    if join_session_id.is_some()
-        && !resize_received
-        && let Some(Ok(WsMessage::Text(text))) = ws_receiver.next().await
-        && let Ok(Message::Resize(data)) = Message::from_json(&text)
-    {
-        if let Err(e) = state
-            .validation
-            .validate_terminal_size(data.cols, data.rows)
-        {
-            warn!("Invalid terminal size: {}", e);
-            state
-                .audit_logger
-                .log_error(
-                    &remote_addr,
-                    &client_id,
-                    &format!("Invalid terminal size: {}", e),
-                )
-                .await;
-            send_ws_error(
-                &ws_sender,
-                "INVALID_SIZE",
-                format!("Invalid terminal size: {}", e),
-                true,
-            )
-            .await?;
-            return Ok(());
-        }
-        cols = data.cols;
-        rows = data.rows;
-    }
-
-    // If we got Resize first, the client may have sent a Join message right
-    // after it (e.g. on reconnect). Try to consume it with a short timeout so
-    // it doesn't leak into the main I/O loop.
-    if resize_received
-        && join_session_id.is_none()
-        && let Ok(Some(Ok(WsMessage::Text(text)))) =
-            tokio::time::timeout(Duration::from_millis(100), ws_receiver.next()).await
-        && let Ok(Message::Join(data)) = Message::from_json(&text)
-    {
-        join_session_id = Some(data.session_id);
-    }
-
-    // Create or join session based on whether a Join message was received
-    let (session, session_id, is_readonly) = if let Some(target_id) = join_session_id {
-        // Try to join an existing session
-        match state.session_manager.get_session(&target_id).await {
-            Some(existing_session) => {
-                let mode = existing_session.metadata().mode;
-                if mode == SessionMode::Isolated {
-                    send_ws_error(
-                        &ws_sender,
-                        "CANNOT_JOIN",
-                        "Cannot join an isolated session".to_string(),
-                        true,
-                    )
-                    .await?;
-                    return Ok(());
-                }
-                let readonly = mode == SessionMode::SharedReadOnly;
-                info!(
-                    "Client joining session {} (mode={}, readonly={})",
-                    target_id, mode, readonly
-                );
-                (existing_session, target_id, readonly)
-            }
-            None => {
-                // Session expired or not found — create a new one instead of erroring.
-                // This handles reconnection gracefully: the client's old session may
-                // have been cleaned up, so we silently create a fresh session.
-                info!(
-                    "Session '{}' not found, creating new session for rejoining client",
-                    target_id
-                );
-                let new_id = uuid::Uuid::new_v4().to_string();
-                let new_session = state
-                    .session_manager
-                    .create_session(
-                        new_id.clone(),
-                        &state.config.command,
-                        state
-                            .config
-                            .working_dir
-                            .as_ref()
-                            .map(|p| p.to_string_lossy().to_string()),
-                        cols,
-                        rows,
-                        None,
-                    )
-                    .await?;
-                info!("Session created: id={}", new_id);
-                (new_session, new_id, false)
-            }
-        }
-    } else {
-        // Create a new session
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let new_session = state
-            .session_manager
-            .create_session(
-                session_id.clone(),
-                &state.config.command,
-                state
-                    .config
-                    .working_dir
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string()),
-                cols,
-                rows,
-                None,
-            )
-            .await?;
-        info!("Session created: id={}", session_id);
-        (new_session, session_id, false)
-    };
+    let session = &resolved.session;
+    let session_id = &resolved.session_id;
+    let is_readonly = resolved.is_readonly;
 
     // Add this client to the session
-    let client = Client {
-        client_id: client_id.clone(),
-        remote_addr: remote_addr.to_string(),
-        username,
-        connected_at: Instant::now(),
-        readonly: is_readonly,
-    };
-
-    session.add_client(client).await?;
+    session_lifecycle::add_client(session, &client_id, &remote_addr, username, is_readonly).await?;
 
     // Log session started
     state
@@ -686,556 +179,76 @@ async fn handle_terminal_session(
                 .auth
                 .as_ref()
                 .and_then(|a| a.username.as_deref()),
-            &session_id,
+            session_id,
         )
         .await;
 
     // Send ready message
-    let ready_msg = Message::Ready(ReadyData {
+    let ready_msg = crate::protocol::Message::Ready(crate::protocol::ReadyData {
         session_id: session_id.clone(),
-        cols,
-        rows,
+        cols: handshake.cols,
+        rows: handshake.rows,
         readonly: is_readonly,
     });
-
-    ws_sender
-        .lock()
-        .await
-        .send(WsMessage::Text(ready_msg.to_json()?.into()))
-        .await?;
+    utils::send_message(&ws_sender, &ready_msg).await;
 
     // Get PTY session for I/O
     let pty_session_arc = session.pty_session();
 
-    // Duplicate the PTY master fd once for writing, so we don't need to
-    // dup/close on every keystroke.  The read task does its own dup.
-    let mut pty_writer = {
-        use std::os::fd::BorrowedFd;
-        let pty_guard = pty_session_arc.lock().await;
-        let master_fd = pty_guard.master_fd();
-        let borrowed_fd = unsafe { BorrowedFd::borrow_raw(master_fd) };
-        let dup_fd = nix::unistd::dup(borrowed_fd)
-            .map_err(|e| format!("Failed to duplicate PTY fd for write: {}", e))?;
-        let pty_file = std::fs::File::from(dup_fd);
-        tokio::fs::File::from_std(pty_file)
-    };
+    // Duplicate the PTY master fd once for writing
+    let mut pty_writer = pty_io::create_pty_writer(&pty_session_arc)
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
-    // Spawn task to read from PTY and broadcast to all subscribers
-    let pty_session_for_read = pty_session_arc.clone();
-    let session_for_broadcast = session.clone();
-    let ws_sender_for_pty = ws_sender.clone();
-    let pty_to_ws = tokio::spawn(async move {
-        use std::os::fd::BorrowedFd;
+    // Spawn PTY reader task
+    let pty_to_ws =
+        pty_io::spawn_pty_reader(pty_session_arc.clone(), session.clone(), ws_sender.clone());
 
-        let pty_guard = pty_session_for_read.lock().await;
-        let master_fd = pty_guard.master_fd();
-
-        // Duplicate the file descriptor so we have our own independent fd
-        // This prevents double-close issues when the File is dropped
-        let borrowed_fd = unsafe { BorrowedFd::borrow_raw(master_fd) };
-        let dup_fd = match nix::unistd::dup(borrowed_fd) {
-            Ok(fd) => fd,
-            Err(e) => {
-                error!("Failed to duplicate PTY fd: {}", e);
-                return;
-            }
-        };
-
-        drop(pty_guard); // Release lock before async operations
-
-        // Set the duplicated fd non-blocking and drive reads through AsyncFd.
-        // tokio::fs::File runs a synchronous read() on a spawn_blocking thread
-        // that abort() cannot interrupt; combined with a shell that outlives
-        // the connection, that thread blocks forever and hangs runtime
-        // shutdown. AsyncFd makes the read truly async and cancellable.
-        let flags = match nix::fcntl::fcntl(&dup_fd, nix::fcntl::FcntlArg::F_GETFL) {
-            Ok(f) => f,
-            Err(e) => {
-                error!("Failed to get PTY fd flags: {}", e);
-                return;
-            }
-        };
-        if let Err(e) = nix::fcntl::fcntl(
-            &dup_fd,
-            nix::fcntl::FcntlArg::F_SETFL(
-                nix::fcntl::OFlag::from_bits_truncate(flags) | nix::fcntl::OFlag::O_NONBLOCK,
-            ),
-        ) {
-            error!("Failed to set PTY fd non-blocking: {}", e);
-            return;
-        }
-
-        let async_fd = match tokio::io::unix::AsyncFd::new(dup_fd) {
-            Ok(fd) => fd,
-            Err(e) => {
-                error!("Failed to register PTY fd with the reactor: {}", e);
-                return;
-            }
-        };
-        let mut buffer = vec![0u8; 4096];
-
-        loop {
-            let mut guard = match async_fd.readable().await {
-                Ok(guard) => guard,
-                Err(e) => {
-                    error!("Error waiting for PTY readability: {}", e);
-                    break;
-                }
-            };
-
-            let read_result = guard.try_io(|inner| {
-                nix::unistd::read(inner.get_ref(), &mut buffer).map_err(std::io::Error::from)
-            });
-
-            match read_result {
-                Ok(Ok(0)) => {
-                    debug!("PTY EOF");
-                    break;
-                }
-                Ok(Ok(n)) => {
-                    // Broadcast PTY output to all connected clients
-                    session_for_broadcast.broadcast_output(buffer[..n].to_vec());
-                }
-                Ok(Err(e)) => {
-                    // EIO is expected when the shell exits (Ctrl-D closes the
-                    // slave side of the PTY). Treat it as a normal EOF.
-                    if e.raw_os_error() == Some(libc::EIO) {
-                        debug!("PTY EIO (shell exited)");
-                    } else {
-                        error!("Error reading from PTY: {}", e);
-                    }
-                    break;
-                }
-                Err(_would_block) => continue,
-            }
-        }
-
-        // Notify clients that the shell has exited
-        let disconnect = Message::Disconnect(DisconnectData {
-            reason: "Shell exited".to_string(),
-            code: 0,
-        });
-        if let Ok(json) = disconnect.to_json() {
-            let _ = ws_sender_for_pty
-                .lock()
-                .await
-                .send(WsMessage::Text(json.into()))
-                .await;
-        }
-    });
-
-    // Spawn task to receive broadcast output and forward to this client's WebSocket
-    let ws_sender_for_sub = ws_sender.clone();
-    let mut output_rx = session.subscribe_output();
-    let subscriber_task = tokio::spawn(async move {
-        let mut last_lag_notify: Option<Instant> = None;
-        const LAG_NOTIFY_COOLDOWN: Duration = Duration::from_secs(1);
-        loop {
-            match output_rx.recv().await {
-                Ok(data) => {
-                    let output = String::from_utf8_lossy(&data).to_string();
-                    let msg = Message::Output(OutputData { payload: output });
-                    if let Ok(json) = msg.to_json()
-                        && ws_sender_for_sub
-                            .lock()
-                            .await
-                            .send(WsMessage::Text(json.into()))
-                            .await
-                            .is_err()
-                    {
-                        break;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    let now = Instant::now();
-                    let should_notify = match last_lag_notify {
-                        Some(last) => now.duration_since(last) >= LAG_NOTIFY_COOLDOWN,
-                        None => true,
-                    };
-                    if should_notify {
-                        last_lag_notify = Some(now);
-                        warn!("Client lagged by {} messages, notifying", n);
-                        if send_ws_error(
-                            &ws_sender_for_sub,
-                            "OUTPUT_LAGGED",
-                            format!("{} output messages dropped due to slow client", n),
-                            false,
-                        )
-                        .await
-                        .is_err()
-                        {
-                            break;
-                        }
-                    }
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    break;
-                }
-            }
-        }
-    });
+    // Spawn output subscriber task
+    let output_rx = session.subscribe_output();
+    let subscriber_task = pty_io::spawn_output_subscriber(ws_sender.clone(), output_rx);
 
     // Heartbeat timeout tracking
-    let last_ping_time = Arc::new(tokio::sync::Mutex::new(Instant::now()));
-    let last_ping_clone = last_ping_time.clone();
-    let heartbeat_timeout = Duration::from_secs(90); // 90 seconds without ping = timeout
+    let last_ping_time = Arc::new(tokio::sync::Mutex::new(std::time::Instant::now()));
+    let mut heartbeat_task = pty_io::spawn_heartbeat_monitor(last_ping_time.clone());
 
-    // Spawn heartbeat monitor task
-    let mut heartbeat_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(15));
-        loop {
-            interval.tick().await;
-            let last = *last_ping_clone.lock().await;
-            if last.elapsed() > heartbeat_timeout {
-                warn!(
-                    "Client heartbeat timeout (no ping for {:?})",
-                    heartbeat_timeout
-                );
-                return false; // Timeout occurred
-            }
-        }
-    });
+    // ── Main message loop ───────────────────────────────────────────
+    let mut ctx = message_loop::MessageLoopContext {
+        state: &state,
+        ws_sender: &ws_sender,
+        ws_receiver: &mut ws_receiver,
+        heartbeat_task: &mut heartbeat_task,
+        session,
+        pty_session: &pty_session_arc,
+        pty_writer: &mut pty_writer,
+        last_ping_time: &last_ping_time,
+        client_id: &client_id,
+        session_id,
+        remote_addr: &remote_addr,
+    };
+    message_loop::run(&mut ctx).await;
 
-    // Handle WebSocket messages
-    loop {
-        let msg = tokio::select! {
-            msg = ws_receiver.next() => msg,
-            result = &mut heartbeat_task => {
-                if let Ok(false) = result {
-                    warn!("Heartbeat timeout for client {}", client_id);
-                    let _ = send_ws_error(
-                        &ws_sender,
-                        "HEARTBEAT_TIMEOUT",
-                        "No heartbeat received from client".to_string(),
-                        true,
-                    )
-                    .await;
-                }
-                break;
-            }
-            _ = state.shutdown_token.cancelled() => {
-                info!("Shutdown signal received, closing WebSocket connection");
-                break;
-            }
-        };
-        let Some(msg) = msg else { break };
-        match msg {
-            Ok(WsMessage::Text(text)) => {
-                match Message::from_json(&text) {
-                    Ok(Message::Input(data)) => {
-                        // Check if client can write (read-only enforcement)
-                        if !session.can_write(&client_id).await {
-                            let _ = send_ws_error(
-                                &ws_sender,
-                                "READONLY",
-                                "This session is read-only".to_string(),
-                                false,
-                            )
-                            .await;
-                            continue;
-                        }
-
-                        // Validate input payload
-                        if let Err(e) = state.validation.validate_input_payload(&data.payload) {
-                            warn!("Invalid input payload: {}", e);
-                            state
-                                .audit_logger
-                                .log_error(
-                                    &remote_addr,
-                                    &session_id,
-                                    &format!("Invalid input: {}", e),
-                                )
-                                .await;
-
-                            let _ = send_ws_error(
-                                &ws_sender,
-                                "INVALID_INPUT",
-                                format!("Invalid input: {}", e),
-                                false,
-                            )
-                            .await;
-                            continue;
-                        }
-
-                        // Write user input to PTY
-                        if let Err(e) = pty_writer.write_all(data.payload.as_bytes()).await {
-                            error!("Failed to write to PTY: {}", e);
-                        }
-                    }
-                    Ok(Message::Resize(data)) => {
-                        // Validate terminal size
-                        if let Err(e) = state
-                            .validation
-                            .validate_terminal_size(data.cols, data.rows)
-                        {
-                            warn!("Invalid resize request: {}", e);
-                            state
-                                .audit_logger
-                                .log_error(
-                                    &remote_addr,
-                                    &session_id,
-                                    &format!("Invalid resize: {}", e),
-                                )
-                                .await;
-
-                            let _ = send_ws_error(
-                                &ws_sender,
-                                "INVALID_SIZE",
-                                format!("Invalid terminal size: {}", e),
-                                false,
-                            )
-                            .await;
-                            continue;
-                        }
-
-                        // Resize PTY
-                        let mut pty_guard = pty_session_arc.lock().await;
-                        if let Err(e) = pty_guard.resize(data.cols, data.rows) {
-                            error!("Failed to resize PTY: {}", e);
-                        } else {
-                            debug!("PTY resized to {}x{}", data.cols, data.rows);
-                        }
-                    }
-                    Ok(Message::Ping(data)) => {
-                        // Update last ping time to prevent timeout
-                        *last_ping_time.lock().await = Instant::now();
-
-                        // Respond to ping
-                        let pong = Message::Pong(PongData {
-                            timestamp: data.timestamp,
-                        });
-                        if let Ok(json) = pong.to_json() {
-                            let _ = ws_sender
-                                .lock()
-                                .await
-                                .send(WsMessage::Text(json.into()))
-                                .await;
-                        }
-                    }
-                    Ok(Message::FileList(data)) => {
-                        // Handle file listing request via WebSocket
-                        if !state.config.file_transfer.enabled {
-                            let _ = send_ws_error(
-                                &ws_sender,
-                                "FILE_TRANSFER_DISABLED",
-                                "File transfer is not enabled".to_string(),
-                                false,
-                            )
-                            .await;
-                            continue;
-                        }
-
-                        let file_state = super::files::FileTransferState {
-                            config: Arc::new(state.config.file_transfer.clone()),
-                            session_manager: state.session_manager.clone(),
-                        };
-
-                        match super::files::list_directory(
-                            &file_state,
-                            Some(&session_id),
-                            &data.path,
-                            data.show_hidden,
-                        )
-                        .await
-                        {
-                            Ok((path, entries)) => {
-                                let result = Message::FileListResult(FileListResultData {
-                                    path,
-                                    entries: entries
-                                        .into_iter()
-                                        .map(|e| FileEntryData {
-                                            name: e.name,
-                                            size: e.size,
-                                            is_dir: e.is_dir,
-                                            modified: e.modified,
-                                        })
-                                        .collect(),
-                                });
-                                if let Ok(json) = result.to_json() {
-                                    let _ = ws_sender
-                                        .lock()
-                                        .await
-                                        .send(WsMessage::Text(json.into()))
-                                        .await;
-                                }
-                            }
-                            Err((_status, msg)) => {
-                                let _ =
-                                    send_ws_error(&ws_sender, "FILE_LIST_ERROR", msg, false).await;
-                            }
-                        }
-                    }
-                    Ok(other) => {
-                        warn!(
-                            "Unexpected message type in main loop: {}",
-                            message_type_name(&other)
-                        );
-                    }
-                    Err(e) => {
-                        warn!("Failed to parse message: {}", e);
-                    }
-                }
-            }
-            Ok(WsMessage::Close(_)) => {
-                info!("WebSocket close received");
-                break;
-            }
-            Err(e) => {
-                warn!("WebSocket receive error: {}", e);
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    // Cleanup
+    // ── Cleanup ─────────────────────────────────────────────────────
     heartbeat_task.abort();
     pty_to_ws.abort();
     subscriber_task.abort();
 
-    // Remove client from session.
-    session.remove_client(&client_id).await;
-
-    // For isolated sessions, immediately reclaim resources when the last
-    // client disconnects — there is no benefit to keeping the session alive
-    // for reconnection since no other client can join.
-    // For shared sessions, keep the session alive so clients can reconnect
-    // within the reconnection window.
-    if session.metadata().mode == SessionMode::Isolated {
-        if state.session_manager.remove_if_empty(&session_id).await {
-            info!(
-                "Client {} removed, isolated session {} cleaned up immediately",
-                client_id, session_id
-            );
-        }
-    } else {
-        info!(
-            "Client {} removed from session {} (session kept alive for reconnection)",
-            client_id, session_id
-        );
-    }
+    session_lifecycle::cleanup_client(&state, session, session_id, &client_id).await;
 
     // Log disconnection
     state
         .audit_logger
-        .log_disconnect(&remote_addr, &session_id, "normal closure")
+        .log_disconnect(&remote_addr, session_id, "normal closure")
         .await;
 
     // Send disconnect message
-    let disconnect = Message::Disconnect(DisconnectData {
+    let disconnect = crate::protocol::Message::Disconnect(crate::protocol::DisconnectData {
         reason: "Session ended".to_string(),
         code: 0,
     });
-    if let Ok(json) = disconnect.to_json() {
-        let _ = ws_sender
-            .lock()
-            .await
-            .send(WsMessage::Text(json.into()))
-            .await;
-    }
+    utils::send_message(&ws_sender, &disconnect).await;
 
     let _ = ws_sender.lock().await.close().await;
 
     Ok(())
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use super::*;
-    use axum::http::HeaderMap;
-    use std::net::{IpAddr, Ipv4Addr};
-
-    fn make_headers(pairs: &[(&str, &str)]) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        for (k, v) in pairs {
-            headers.insert(
-                k.parse::<axum::http::header::HeaderName>().unwrap(),
-                v.parse().unwrap(),
-            );
-        }
-        headers
-    }
-
-    #[test]
-    fn test_extract_real_ip_no_proxy() {
-        let headers = HeaderMap::new();
-        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
-        assert_eq!(extract_real_ip(&headers, addr, false), "192.168.1.100");
-    }
-
-    #[test]
-    fn test_extract_real_ip_trust_disabled_ignores_headers() {
-        let headers = make_headers(&[("x-real-ip", "10.0.0.1")]);
-        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
-        // trust_proxy = false → header ignored
-        assert_eq!(extract_real_ip(&headers, addr, false), "192.168.1.100");
-    }
-
-    #[test]
-    fn test_extract_real_ip_x_real_ip() {
-        let headers = make_headers(&[("x-real-ip", "10.0.0.1")]);
-        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        assert_eq!(extract_real_ip(&headers, addr, true), "10.0.0.1");
-    }
-
-    #[test]
-    fn test_extract_real_ip_x_forwarded_for() {
-        let headers = make_headers(&[("x-forwarded-for", "10.0.0.1, 10.0.0.2, 10.0.0.3")]);
-        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        assert_eq!(extract_real_ip(&headers, addr, true), "10.0.0.1");
-    }
-
-    #[test]
-    fn test_extract_real_ip_x_real_ip_takes_priority() {
-        let headers = make_headers(&[("x-real-ip", "10.0.0.1"), ("x-forwarded-for", "10.0.0.99")]);
-        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        assert_eq!(extract_real_ip(&headers, addr, true), "10.0.0.1");
-    }
-
-    #[test]
-    fn test_extract_real_ip_fallback_to_connect_addr() {
-        let headers = HeaderMap::new();
-        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
-        // trust_proxy = true but no headers → fallback
-        assert_eq!(extract_real_ip(&headers, addr, true), "192.168.1.100");
-    }
-
-    #[test]
-    fn test_extract_real_ip_empty_x_real_ip_falls_back() {
-        let headers = make_headers(&[("x-real-ip", ""), ("x-forwarded-for", "10.0.0.5")]);
-        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        // Empty X-Real-IP → try X-Forwarded-For
-        assert_eq!(extract_real_ip(&headers, addr, true), "10.0.0.5");
-    }
-
-    #[test]
-    fn test_extract_real_ip_whitespace_trimmed() {
-        let headers = make_headers(&[("x-real-ip", "  10.0.0.1  ")]);
-        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        assert_eq!(extract_real_ip(&headers, addr, true), "10.0.0.1");
-    }
-
-    #[test]
-    fn test_extract_real_ip_ipv6() {
-        let headers = make_headers(&[("x-real-ip", "2001:db8::1")]);
-        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        assert_eq!(extract_real_ip(&headers, addr, true), "2001:db8::1");
-    }
-
-    #[test]
-    fn test_extract_real_ip_rejects_non_ip_values() {
-        // A non-IP string in the header should be rejected
-        let headers = make_headers(&[("x-real-ip", "not-an-ip-address")]);
-        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
-        assert_eq!(extract_real_ip(&headers, addr, true), "192.168.1.100");
-    }
-
-    #[test]
-    fn test_extract_real_ip_rejects_hostname() {
-        // A hostname is not a valid IP
-        let headers = make_headers(&[("x-forwarded-for", "attacker.example.com")]);
-        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
-        assert_eq!(extract_real_ip(&headers, addr, true), "192.168.1.100");
-    }
 }

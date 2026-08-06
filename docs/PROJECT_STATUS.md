@@ -246,8 +246,3 @@ None — all blocking issues resolved.
 
 1. **No built-in TLS**: Use a reverse proxy (nginx, Caddy) for HTTPS
 2. **No session persistence**: Sessions are lost on server restart
-
----
-
-*Last updated: 2026-07-31*
-*Version: 0.4.1*
