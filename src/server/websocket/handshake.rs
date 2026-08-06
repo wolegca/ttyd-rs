@@ -10,6 +10,14 @@ use crate::protocol::Message;
 use super::utils::send_ws_error;
 use super::{AppState, WsSender};
 
+/// Mutable state accumulated while reading the handshake.
+struct HandshakeState {
+    cols: u16,
+    rows: u16,
+    resize_received: bool,
+    join_session_id: Option<String>,
+}
+
 /// Result of the initial handshake phase.
 pub(crate) struct Handshake {
     pub cols: u16,
@@ -59,10 +67,7 @@ async fn process_handshake_message(
     remote_addr: &str,
     client_id: &str,
     msg: Message,
-    cols: &mut u16,
-    rows: &mut u16,
-    resize_received: &mut bool,
-    join_session_id: &mut Option<String>,
+    hs: &mut HandshakeState,
 ) -> Result<(), ()> {
     match msg {
         Message::Resize(data) => {
@@ -75,12 +80,12 @@ async fn process_handshake_message(
                 data.rows,
             )
             .await?;
-            *cols = c;
-            *rows = r;
-            *resize_received = true;
+            hs.cols = c;
+            hs.rows = r;
+            hs.resize_received = true;
         }
         Message::Join(data) => {
-            *join_session_id = Some(data.session_id);
+            hs.join_session_id = Some(data.session_id);
         }
         _ => {
             warn!("Expected resize or join, got other message type");
@@ -100,27 +105,19 @@ pub(crate) async fn read_handshake(
     remote_addr: &str,
     client_id: &str,
 ) -> Result<Handshake, ()> {
-    let mut cols: u16 = 80;
-    let mut rows: u16 = 24;
-    let mut join_session_id: Option<String> = None;
-    let mut resize_received = false;
+    let mut hs = HandshakeState {
+        cols: 80,
+        rows: 24,
+        resize_received: false,
+        join_session_id: None,
+    };
 
     // Read first message
     match ws_receiver.next().await {
         Some(Ok(WsMessage::Text(text))) => {
             let msg = Message::from_json(&text).map_err(|_| ())?;
-            process_handshake_message(
-                state,
-                ws_sender,
-                remote_addr,
-                client_id,
-                msg,
-                &mut cols,
-                &mut rows,
-                &mut resize_received,
-                &mut join_session_id,
-            )
-            .await?;
+            process_handshake_message(state, ws_sender, remote_addr, client_id, msg, &mut hs)
+                .await?;
         }
         _ => {
             warn!("No handshake message received");
@@ -129,8 +126,8 @@ pub(crate) async fn read_handshake(
 
     // If we got Join first but haven't received Resize yet, read the next
     // message expecting Resize.
-    if join_session_id.is_some()
-        && !resize_received
+    if hs.join_session_id.is_some()
+        && !hs.resize_received
         && let Some(Ok(WsMessage::Text(text))) = ws_receiver.next().await
         && let Ok(Message::Resize(data)) = Message::from_json(&text)
     {
@@ -143,25 +140,25 @@ pub(crate) async fn read_handshake(
             data.rows,
         )
         .await?;
-        cols = c;
-        rows = r;
+        hs.cols = c;
+        hs.rows = r;
     }
 
     // If we got Resize first, the client may have sent a Join message right
     // after it (e.g. on reconnect). Try to consume it with a short timeout so
     // it doesn't leak into the main I/O loop.
-    if resize_received
-        && join_session_id.is_none()
+    if hs.resize_received
+        && hs.join_session_id.is_none()
         && let Ok(Some(Ok(WsMessage::Text(text)))) =
             tokio::time::timeout(Duration::from_millis(100), ws_receiver.next()).await
         && let Ok(Message::Join(data)) = Message::from_json(&text)
     {
-        join_session_id = Some(data.session_id);
+        hs.join_session_id = Some(data.session_id);
     }
 
     Ok(Handshake {
-        cols,
-        rows,
-        join_session_id,
+        cols: hs.cols,
+        rows: hs.rows,
+        join_session_id: hs.join_session_id,
     })
 }

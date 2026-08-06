@@ -304,6 +304,49 @@ impl PtyProcess {
     }
 }
 
+impl Drop for PtyProcess {
+    fn drop(&mut self) {
+        debug!(
+            "Cleaning up PTY process: pid={}, fd={}",
+            self.child_pid, self.master_fd
+        );
+
+        // Closing the master fd causes the slave PTY to receive a hangup,
+        // which delivers SIGHUP to the child's foreground process group.
+        // Interactive shells handle SIGHUP by flushing history and running
+        // EXIT traps before exiting.
+        if let Err(e) = close(self.master_fd) {
+            debug!("Failed to close master_fd {}: {}", self.master_fd, e);
+        }
+
+        // Send SIGHUP explicitly in case the shell did not exit due to the
+        // master fd close alone (e.g. the child ignored HUP or the session
+        // was detached from the PTY).
+        if let Err(e) = nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGHUP) {
+            // ESRCH means the process already exited — not an error worth logging.
+            if e != nix::errno::Errno::ESRCH {
+                debug!("Failed to send SIGHUP to pid {}: {}", self.child_pid, e);
+            }
+        }
+
+        // Attempt a single non-blocking reap. If the child has already exited
+        // (e.g. the user typed `exit` before the WebSocket closed), this
+        // prevents a brief zombie window between exit and SIGCHLD delivery.
+        // If the child is still running, the global SIGCHLD handler registered
+        // via `register_sigchld_handler()` will reap it as soon as it exits —
+        // no sleep, no blocking, no per-drop reaper thread needed.
+        match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
+            Ok(_) | Err(nix::errno::Errno::ECHILD) => {
+                // Child already reaped — nothing more to do.
+            }
+            Err(e) => {
+                // Unexpected error; log and let the SIGCHLD handler reap the child.
+                debug!("waitpid for pid {} failed: {}", self.child_pid, e);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -388,48 +431,5 @@ mod tests {
     fn test_register_sigchld_handler_succeeds() {
         // Registering the SIGCHLD handler should never fail on a standard Linux system.
         assert!(register_sigchld_handler().is_ok());
-    }
-}
-
-impl Drop for PtyProcess {
-    fn drop(&mut self) {
-        debug!(
-            "Cleaning up PTY process: pid={}, fd={}",
-            self.child_pid, self.master_fd
-        );
-
-        // Closing the master fd causes the slave PTY to receive a hangup,
-        // which delivers SIGHUP to the child's foreground process group.
-        // Interactive shells handle SIGHUP by flushing history and running
-        // EXIT traps before exiting.
-        if let Err(e) = close(self.master_fd) {
-            debug!("Failed to close master_fd {}: {}", self.master_fd, e);
-        }
-
-        // Send SIGHUP explicitly in case the shell did not exit due to the
-        // master fd close alone (e.g. the child ignored HUP or the session
-        // was detached from the PTY).
-        if let Err(e) = nix::sys::signal::kill(self.child_pid, nix::sys::signal::Signal::SIGHUP) {
-            // ESRCH means the process already exited — not an error worth logging.
-            if e != nix::errno::Errno::ESRCH {
-                debug!("Failed to send SIGHUP to pid {}: {}", self.child_pid, e);
-            }
-        }
-
-        // Attempt a single non-blocking reap. If the child has already exited
-        // (e.g. the user typed `exit` before the WebSocket closed), this
-        // prevents a brief zombie window between exit and SIGCHLD delivery.
-        // If the child is still running, the global SIGCHLD handler registered
-        // via `register_sigchld_handler()` will reap it as soon as it exits —
-        // no sleep, no blocking, no per-drop reaper thread needed.
-        match waitpid(self.child_pid, Some(WaitPidFlag::WNOHANG)) {
-            Ok(_) | Err(nix::errno::Errno::ECHILD) => {
-                // Child already reaped — nothing more to do.
-            }
-            Err(e) => {
-                // Unexpected error; log and let the SIGCHLD handler reap the child.
-                debug!("waitpid for pid {} failed: {}", self.child_pid, e);
-            }
-        }
     }
 }

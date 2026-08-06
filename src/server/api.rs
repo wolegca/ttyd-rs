@@ -352,14 +352,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_config_with_auth() {
-        let mut cfg = Config::default();
-        cfg.auth = Some(crate::config::AuthConfig {
-            method: "basic".to_string(),
-            username: Some("admin".to_string()),
-            password: Some("secret".to_string()),
-            token: None,
-            audit_enabled: false,
-        });
+        let cfg = Config {
+            auth: Some(crate::config::AuthConfig {
+                method: "basic".to_string(),
+                username: Some("admin".to_string()),
+                password: Some("secret".to_string()),
+                token: None,
+                audit_enabled: false,
+            }),
+            ..Default::default()
+        };
         let session_manager = Arc::new(SessionManager::new(
             Duration::from_secs(3600),
             crate::session::SessionMode::Isolated,

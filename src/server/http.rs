@@ -776,8 +776,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_max_connections_rejected_at_zero() {
-        let mut config = Config::default();
-        config.max_connections = 0; // Set limit to 0 to force rejection
+        let config = Config {
+            max_connections: 0, // Set limit to 0 to force rejection
+            ..Default::default()
+        };
         let addr = start_test_server(config).await;
 
         let url = format!("ws://{}/ws", addr);
@@ -789,8 +791,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_max_connections_allowed_under_limit() {
-        let mut config = Config::default();
-        config.max_connections = 10;
+        let config = Config {
+            max_connections: 10,
+            ..Default::default()
+        };
         let addr = start_test_server(config).await;
 
         let url = format!("ws://{}/ws", addr);
@@ -810,8 +814,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_max_connections_rejected_at_limit() {
-        let mut config = Config::default();
-        config.max_connections = 1;
+        let config = Config {
+            max_connections: 1,
+            ..Default::default()
+        };
         let addr = start_test_server(config).await;
 
         let url = format!("ws://{}/ws", addr);
@@ -835,8 +841,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_max_connections_reopens_after_close() {
-        let mut config = Config::default();
-        config.max_connections = 1;
+        let config = Config {
+            max_connections: 1,
+            ..Default::default()
+        };
         let addr = start_test_server(config).await;
 
         let url = format!("ws://{}/ws", addr);
