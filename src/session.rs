@@ -85,8 +85,14 @@ pub struct Session {
     pty_session: Arc<Mutex<PtySession>>,
     clients: Arc<RwLock<HashMap<String, Client>>>,
     last_activity: Arc<Mutex<Instant>>,
-    /// Broadcast channel for terminal output
-    output_tx: broadcast::Sender<Vec<u8>>,
+    /// Broadcast channel for terminal output.
+    ///
+    /// Wrapped in `Option` so [`Session::mark_pty_exited`] can drop the
+    /// sender when the PTY process exits: subscribers then observe
+    /// `RecvError::Closed` only after draining their queued messages, which
+    /// lets each subscriber send its "shell exited" disconnect in order
+    /// after its final output burst.
+    output_tx: std::sync::Mutex<Option<broadcast::Sender<Vec<u8>>>>,
 }
 
 impl Session {
@@ -102,7 +108,9 @@ impl Session {
         let working_dir_path = working_dir.as_ref().map(std::path::PathBuf::from);
         let pty_session = PtySession::new(command, cols, rows, working_dir_path.as_deref())?;
 
-        let (output_tx, _) = broadcast::channel(512);
+        // 1024 comfortably holds a coalesced output burst for several
+        // concurrently lagging clients without triggering Lagged drops.
+        let (output_tx, _) = broadcast::channel(1024);
 
         Ok(Self {
             metadata: SessionMetadata {
@@ -115,7 +123,7 @@ impl Session {
             pty_session: Arc::new(Mutex::new(pty_session)),
             clients: Arc::new(RwLock::new(HashMap::new())),
             last_activity: Arc::new(Mutex::new(Instant::now())),
-            output_tx,
+            output_tx: std::sync::Mutex::new(Some(output_tx)),
         })
     }
 
@@ -166,15 +174,38 @@ impl Session {
         self.pty_session.clone()
     }
 
-    /// Subscribe to terminal output
-    pub fn subscribe_output(&self) -> broadcast::Receiver<Vec<u8>> {
-        self.output_tx.subscribe()
+    /// Subscribe to terminal output.
+    ///
+    /// Returns `None` if the PTY process has already exited
+    /// (see [`Session::mark_pty_exited`]).
+    pub fn subscribe_output(&self) -> Option<broadcast::Receiver<Vec<u8>>> {
+        self.output_tx
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|tx| tx.subscribe()))
     }
 
-    /// Broadcast output to all clients
+    /// Broadcast output to all clients. No-op after the PTY process exits.
     pub fn broadcast_output(&self, data: Vec<u8>) {
         // Ignore send errors (no receivers)
-        let _ = self.output_tx.send(data);
+        let guard = match self.output_tx.lock().ok() {
+            Some(g) => g,
+            None => return,
+        };
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.send(data);
+        }
+    }
+
+    /// Mark the PTY process as exited.
+    ///
+    /// Drops the broadcast sender so every output subscriber observes
+    /// `RecvError::Closed` — only after it has drained its queued messages.
+    /// Subscribers use that signal to send their "shell exited" disconnect,
+    /// which guarantees the disconnect is ordered after the final output
+    /// burst for each client.
+    pub fn mark_pty_exited(&self) {
+        let _ = self.output_tx.lock().ok().map(|mut g| g.take());
     }
 
     /// Get last activity time
@@ -717,7 +748,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut rx = session.subscribe_output();
+        let mut rx = session.subscribe_output().unwrap();
         session.broadcast_output(b"hello".to_vec());
 
         let received = timeout(Duration::from_millis(500), rx.recv()).await;

@@ -1143,6 +1143,67 @@ mod tests {
         ws.close(None).await.unwrap();
     }
 
+    /// PTY output bursts are coalesced into fewer messages; the key
+    /// property is that every byte still arrives intact and in order.
+    ///
+    /// Uses `seq -s ,` (comma-separated, no newlines) so the output is
+    /// deterministic and unaffected by the PTY line discipline (OPOST/ONLCR
+    /// would rewrite `\n` to `\r\n` for a non-raw-mode child).
+    #[tokio::test]
+    #[allow(clippy::panic)]
+    async fn test_output_coalescing_delivers_all_data() {
+        let config = Config {
+            command: vec![
+                "seq".to_string(),
+                "-s".to_string(),
+                ",".to_string(),
+                "1".to_string(),
+                "1000".to_string(),
+            ],
+            ..Config::default()
+        };
+        let addr = start_test_server(config).await;
+
+        let url = format!("ws://{}/ws", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 120, "rows": 40 }
+        });
+        send_ws_msg(&mut ws, &resize).await;
+
+        let numbers: String = (1..=1000)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut got = String::new();
+        loop {
+            let msg = read_ws_msg(&mut ws).await;
+            let msg_type = msg["type"].as_str().unwrap();
+            match msg_type {
+                "ready" => {}
+                "output" => {
+                    got.push_str(msg["data"]["payload"].as_str().unwrap());
+                    if got.contains("1000") {
+                        break;
+                    }
+                }
+                "disconnect" => break,
+                other => panic!("unexpected message: {other}"),
+            }
+        }
+
+        // Coalescing must not lose or reorder any output byte. (seq emits a
+        // trailing newline which the PTY line discipline may rewrite to
+        // \r\n, so assert on the number sequence prefix.)
+        assert!(
+            got.starts_with(&numbers),
+            "expected the full number sequence at the start of {} bytes of output",
+            got.len()
+        );
+    }
+
     /// A normal session must also log `connection_closed`, with the
     /// client-closed reason (previously this event was hardcoded to
     /// "normal closure" even on timeout/shutdown/error).

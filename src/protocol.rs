@@ -155,6 +155,55 @@ impl Message {
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
     }
+
+    /// Serialize an `Output` message to JSON without going through serde.
+    ///
+    /// `Output` is by far the highest-volume message type (every burst of
+    /// PTY bytes), so the fast path builds the JSON in a single allocation
+    /// with no reflection and no intermediate `String` from
+    /// `from_utf8_lossy().to_string()`.
+    ///
+    /// The result is byte-identical to `to_json` for the same payload:
+    /// invalid UTF-8 is replaced with U+FFFD exactly like
+    /// `String::from_utf8_lossy`, and escaping follows the serde_json rules
+    /// (`\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`, `\u00XX`).
+    pub fn output_json(payload: &[u8]) -> String {
+        const PREFIX: &str = "{\"type\":\"output\",\"data\":{\"payload\":\"";
+        const SUFFIX: &str = "\"}}";
+
+        // Zero-copy for valid UTF-8; lossy (U+FFFD) replacement otherwise.
+        let text = String::from_utf8_lossy(payload);
+        let mut out = String::with_capacity(PREFIX.len() + text.len() + SUFFIX.len());
+        out.push_str(PREFIX);
+        Self::escape_json_payload(&mut out, &text);
+        out.push_str(SUFFIX);
+        out
+    }
+
+    /// Append `s` to `out` with serde_json-compatible string escaping.
+    fn escape_json_payload(out: &mut String, s: &str) {
+        const DIGITS: [u8; 16] = *b"0123456789abcdef";
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\u{8}' => out.push_str("\\b"),
+                '\u{c}' => out.push_str("\\f"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => {
+                    let v = c as u32;
+                    out.push_str("\\u");
+                    out.push(DIGITS[(v >> 12) as usize] as char);
+                    out.push(DIGITS[(v >> 8) as usize] as char);
+                    out.push(DIGITS[(v >> 4) as usize] as char);
+                    out.push(DIGITS[(v & 0xf) as usize] as char);
+                }
+                c => out.push(c),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -176,6 +225,50 @@ mod tests {
         match parsed {
             Message::Input(data) => assert_eq!(data.payload, "ls -la"),
             _ => panic!("Wrong message type"),
+        }
+    }
+
+    #[test]
+    fn test_output_json_matches_serde() {
+        let payloads: [&[u8]; 8] = [
+            b"",
+            b"hello world",
+            b"line1\nline2\r\nend",
+            b"quote \" and backslash \\ here",
+            b"tab\there",
+            b"ctl \x01 \x02 \x1f end",
+            "unicode: 你好 🦀".as_bytes(),
+            b"del \x7f char",
+        ];
+        for p in payloads {
+            let expected = Message::Output(OutputData {
+                payload: String::from_utf8_lossy(p).into_owned(),
+            })
+            .to_json()
+            .unwrap();
+            assert_eq!(Message::output_json(p), expected, "payload: {:?}", p);
+        }
+    }
+
+    #[test]
+    fn test_output_json_invalid_utf8_matches_lossy() {
+        let raw = b"ok \xff\xfe bad";
+        let expected = Message::Output(OutputData {
+            payload: String::from_utf8_lossy(raw).into_owned(),
+        })
+        .to_json()
+        .unwrap();
+        assert_eq!(Message::output_json(raw), expected);
+    }
+
+    #[test]
+    fn test_output_json_roundtrip() {
+        let raw = "round \n trip \"quote\" \\ back 你好".as_bytes();
+        let json = Message::output_json(raw);
+        let parsed = Message::from_json(&json).unwrap();
+        match parsed {
+            Message::Output(d) => assert_eq!(d.payload, String::from_utf8_lossy(raw)),
+            other => panic!("expected Output, got {other:?}"),
         }
     }
 

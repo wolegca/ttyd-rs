@@ -288,12 +288,29 @@ async fn run_session(
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
 
     // Spawn PTY reader task
-    let pty_to_ws =
-        pty_io::spawn_pty_reader(pty_session_arc.clone(), session.clone(), ws_sender.clone());
+    let pty_to_ws = pty_io::spawn_pty_reader(pty_session_arc.clone(), session.clone());
 
-    // Spawn output subscriber task
-    let output_rx = session.subscribe_output();
-    let subscriber_task = pty_io::spawn_output_subscriber(ws_sender.clone(), output_rx);
+    // Spawn output subscriber task. If the PTY already exited, notify this
+    // client directly and use a dummy handle so cleanup can abort it
+    // uniformly.
+    let subscriber_task = match session.subscribe_output() {
+        Some(output_rx) => pty_io::spawn_output_subscriber(ws_sender.clone(), output_rx),
+        None => {
+            let disconnect =
+                crate::protocol::Message::Disconnect(crate::protocol::DisconnectData {
+                    reason: "Shell exited".to_string(),
+                    code: 0,
+                });
+            if let Ok(json) = disconnect.to_json() {
+                let _ = ws_sender
+                    .lock()
+                    .await
+                    .send(axum::extract::ws::Message::Text(json.into()))
+                    .await;
+            }
+            tokio::task::spawn(async {})
+        }
+    };
 
     // Heartbeat timeout tracking
     let last_ping_time = Arc::new(tokio::sync::Mutex::new(std::time::Instant::now()));

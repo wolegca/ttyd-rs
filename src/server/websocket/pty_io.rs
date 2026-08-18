@@ -6,7 +6,7 @@ use futures::SinkExt;
 use tokio::sync::broadcast;
 use tracing::{debug, error, warn};
 
-use crate::protocol::{DisconnectData, Message, OutputData};
+use crate::protocol::{DisconnectData, Message};
 use crate::session::Session;
 
 use super::WsSender;
@@ -32,11 +32,15 @@ pub(crate) async fn create_pty_writer(
 
 /// Spawn a task to read from the PTY and broadcast output to all subscribers.
 ///
+/// When the PTY reaches EOF (or EIO, which the kernel reports when the shell
+/// closes the slave side), the task calls [`Session::mark_pty_exited`] so
+/// each subscriber can send an ordered "shell exited" disconnect after its
+/// final output burst.
+///
 /// Returns a `JoinHandle` that should be aborted when the session ends.
 pub(crate) fn spawn_pty_reader(
     pty_session: Arc<tokio::sync::Mutex<crate::pty::PtySession>>,
     session: Arc<Session>,
-    ws_sender: WsSender,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         use std::os::fd::BorrowedFd;
@@ -86,7 +90,11 @@ pub(crate) fn spawn_pty_reader(
                 return;
             }
         };
-        let mut buffer = vec![0u8; 4096];
+        let mut tmp = [0u8; 16 * 1024];
+        // Cap a single coalesced burst so a runaway process cannot grow one
+        // WebSocket frame unboundedly; the loop then drains more on the next
+        // readiness wakeup.
+        const MAX_BURST: usize = 256 * 1024;
 
         loop {
             let mut guard = match async_fd.readable().await {
@@ -97,45 +105,57 @@ pub(crate) fn spawn_pty_reader(
                 }
             };
 
-            let read_result = guard.try_io(|inner| {
-                nix::unistd::read(inner.get_ref(), &mut buffer).map_err(std::io::Error::from)
-            });
-
-            match read_result {
-                Ok(Ok(0)) => {
-                    debug!("PTY EOF");
-                    break;
-                }
-                Ok(Ok(n)) => {
-                    // Broadcast PTY output to all connected clients
-                    session.broadcast_output(buffer[..n].to_vec());
-                }
-                Ok(Err(e)) => {
-                    // EIO is expected when the shell exits (Ctrl-D closes the
-                    // slave side of the PTY). Treat it as a normal EOF.
-                    if e.raw_os_error() == Some(libc::EIO) {
-                        debug!("PTY EIO (shell exited)");
-                    } else {
-                        error!("Error reading from PTY: {}", e);
+            // Drain everything currently available and broadcast it as a
+            // single message. Without this, bursty output (cat, builds, ...)
+            // costs one epoll wakeup, one channel send, one JSON
+            // serialization, and one WebSocket write per 4 KiB chunk.
+            let mut burst: Vec<u8> = Vec::with_capacity(4096);
+            let mut terminated = false;
+            loop {
+                match guard.try_io(|inner| {
+                    nix::unistd::read(inner.get_ref(), &mut tmp).map_err(std::io::Error::from)
+                }) {
+                    Ok(Ok(0)) => {
+                        debug!("PTY EOF");
+                        terminated = true;
+                        break;
                     }
-                    break;
+                    Ok(Ok(n)) => {
+                        burst.extend_from_slice(&tmp[..n]);
+                        if burst.len() >= MAX_BURST {
+                            break;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        // EIO is expected when the shell exits (Ctrl-D closes the
+                        // slave side of the PTY). Treat it as a normal EOF.
+                        if e.raw_os_error() == Some(libc::EIO) {
+                            debug!("PTY EIO (shell exited)");
+                        } else {
+                            error!("Error reading from PTY: {}", e);
+                        }
+                        terminated = true;
+                        break;
+                    }
+                    Err(_would_block) => break,
                 }
-                Err(_would_block) => continue,
+            }
+
+            if !burst.is_empty() {
+                // Broadcast PTY output to all connected clients
+                session.broadcast_output(burst);
+            }
+            if terminated {
+                break;
             }
         }
 
-        // Notify clients that the shell has exited
-        let disconnect = Message::Disconnect(DisconnectData {
-            reason: "Shell exited".to_string(),
-            code: 0,
-        });
-        if let Ok(json) = disconnect.to_json() {
-            let _ = ws_sender
-                .lock()
-                .await
-                .send(axum::extract::ws::Message::Text(json.into()))
-                .await;
-        }
+        // Notify subscribers that the shell exited. Dropping the broadcast
+        // sender (rather than sending the disconnect directly here) lets each
+        // subscriber emit its own disconnect *after* its final output burst —
+        // a direct send from this task could race the subscribers' pending
+        // sends and reach clients before their last output.
+        session.mark_pty_exited();
     })
 }
 
@@ -152,15 +172,16 @@ pub(crate) fn spawn_output_subscriber(
         loop {
             match output_rx.recv().await {
                 Ok(data) => {
-                    let output = String::from_utf8_lossy(&data).to_string();
-                    let msg = Message::Output(OutputData { payload: output });
-                    if let Ok(json) = msg.to_json()
-                        && ws_sender
-                            .lock()
-                            .await
-                            .send(axum::extract::ws::Message::Text(json.into()))
-                            .await
-                            .is_err()
+                    // Fast path: build the Output JSON without serde (see
+                    // Message::output_json). Byte-identical to the old
+                    // from_utf8_lossy + Message::Output + to_json path.
+                    let json = Message::output_json(&data);
+                    if ws_sender
+                        .lock()
+                        .await
+                        .send(axum::extract::ws::Message::Text(json.into()))
+                        .await
+                        .is_err()
                     {
                         break;
                     }
@@ -188,6 +209,22 @@ pub(crate) fn spawn_output_subscriber(
                     }
                 }
                 Err(broadcast::error::RecvError::Closed) => {
+                    // The PTY process exited (or the session was cleaned up):
+                    // the session dropped its broadcast sender after all
+                    // queued output was delivered. Send the disconnect here,
+                    // in this task, so it is ordered after this client's
+                    // final output burst.
+                    let disconnect = Message::Disconnect(DisconnectData {
+                        reason: "Shell exited".to_string(),
+                        code: 0,
+                    });
+                    if let Ok(json) = disconnect.to_json() {
+                        let _ = ws_sender
+                            .lock()
+                            .await
+                            .send(axum::extract::ws::Message::Text(json.into()))
+                            .await;
+                    }
                     break;
                 }
             }
