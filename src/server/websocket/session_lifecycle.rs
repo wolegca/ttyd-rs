@@ -86,7 +86,6 @@ pub(crate) async fn create_or_join_session(
             warn!("Failed to create session: {}", e);
         })?;
 
-    info!("Session created: id={}", session_id);
     Ok(ResolvedSession {
         session: new_session,
         session_id,

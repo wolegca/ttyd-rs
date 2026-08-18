@@ -1,15 +1,20 @@
 /// Audit logging module
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 #[derive(Clone)]
 pub struct AuditLogger {
     log_file: Option<PathBuf>,
     enabled: bool,
+    /// Open audit log file handle, shared across all clones of the logger.
+    /// Opened once during [`Self::prepare`] (or lazily on first write);
+    /// `None` when file logging is disabled or no path is configured.
+    file: Arc<tokio::sync::Mutex<Option<tokio::fs::File>>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,7 +44,11 @@ pub enum AuditEventType {
 
 impl AuditLogger {
     pub fn new(log_file: Option<PathBuf>, enabled: bool) -> Self {
-        Self { log_file, enabled }
+        Self {
+            log_file,
+            enabled,
+            file: Arc::new(tokio::sync::Mutex::new(None)),
+        }
     }
 
     /// Prepare the audit log for use: create the parent directory (if any)
@@ -60,12 +69,16 @@ impl AuditLogger {
         }
 
         // Open (creating if needed) so permission/path problems surface at
-        // startup instead of on every audit event.
-        OpenOptions::new()
+        // startup instead of on every audit event. Hold the file open for the
+        // lifetime of the logger so each event is a single write() instead of
+        // a fresh open() on every event.
+        let file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(log_file)
             .await?;
+
+        *self.file.lock().await = Some(file);
 
         Ok(())
     }
@@ -161,42 +174,74 @@ impl AuditLogger {
             return;
         }
 
-        // Log to tracing
-        info!(
-            event_type = ?event.event_type,
-            remote_addr = %event.remote_addr,
-            session_id = ?event.session_id,
-            username = ?event.username,
-            "Audit event: {}",
-            event.details
-        );
+        // Log to tracing. When a log file is configured the event is also
+        // written there, so the tracing mirror is demoted to debug to avoid
+        // duplicating every event at info level.
+        if self.log_file.is_some() {
+            debug!(
+                event_type = ?event.event_type,
+                remote_addr = %event.remote_addr,
+                session_id = %event.session_id.as_deref().unwrap_or("-"),
+                username = %event.username.as_deref().unwrap_or("-"),
+                "Audit event: {}",
+                event.details
+            );
+        } else {
+            info!(
+                event_type = ?event.event_type,
+                remote_addr = %event.remote_addr,
+                session_id = %event.session_id.as_deref().unwrap_or("-"),
+                username = %event.username.as_deref().unwrap_or("-"),
+                "Audit event: {}",
+                event.details
+            );
+        }
 
         // Write to file if configured
-        if let Some(log_file) = &self.log_file
-            && let Err(e) = self.write_to_file(log_file, &event).await
+        if self.log_file.is_some()
+            && let Err(e) = self.write_to_file(&event).await
         {
             error!("Failed to write audit log to file: {}", e);
         }
     }
 
-    /// Write event to log file
-    async fn write_to_file(&self, log_file: &Path, event: &AuditEvent) -> std::io::Result<()> {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_file)
-            .await?;
-
+    /// Write event to the audit log file.
+    ///
+    /// Reuses the file handle opened by [`Self::prepare`] so each event is a
+    /// single `write()` instead of `open()` + `write()` + `flush()`. If
+    /// `prepare` was not called (e.g. in unit tests), the file is opened
+    /// lazily on first write and cached for subsequent writes.
+    ///
+    /// The mutex serializes concurrent writes so each JSONL line is emitted
+    /// atomically (no interleaving between tasks).
+    async fn write_to_file(&self, event: &AuditEvent) -> std::io::Result<()> {
         // Serialize the event and append the newline into a single buffer so
-        // the JSONL line is written with one write() call. This keeps each
-        // line atomic even when multiple tasks log events concurrently.
+        // the JSONL line is written with one write() call.
         let mut line = serde_json::to_string(event)
             .map_err(|e| std::io::Error::other(format!("JSON error: {}", e)))?
             .into_bytes();
         line.push(b'\n');
 
+        let mut guard = self.file.lock().await;
+
+        // Open lazily if prepare() hasn't already opened the file.
+        if guard.is_none()
+            && let Some(log_file) = &self.log_file
+        {
+            *guard = Some(
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(log_file)
+                    .await?,
+            );
+        }
+
+        let Some(file) = guard.as_mut() else {
+            return Err(std::io::Error::other("no audit log file configured"));
+        };
+
         file.write_all(&line).await?;
-        file.flush().await?;
 
         Ok(())
     }
