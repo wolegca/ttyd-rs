@@ -12,7 +12,7 @@ use crate::protocol::*;
 use crate::session::Session;
 
 use super::utils::{message_type_name, send_message, send_ws_error};
-use super::{AppState, WsSender};
+use super::{AppState, CloseReason, WsSender};
 
 /// Context shared across all message handlers in the main loop.
 pub(crate) struct MessageLoopContext<'a> {
@@ -31,9 +31,9 @@ pub(crate) struct MessageLoopContext<'a> {
 
 /// Run the main WebSocket message loop.
 ///
-/// Returns when the connection should close (client disconnect, heartbeat
+/// Returns the reason the connection ended (client disconnect, heartbeat
 /// timeout, or shutdown signal).
-pub(crate) async fn run(ctx: &mut MessageLoopContext<'_>) {
+pub(crate) async fn run(ctx: &mut MessageLoopContext<'_>) -> CloseReason {
     loop {
         let msg = tokio::select! {
             msg = ctx.ws_receiver.next() => msg,
@@ -48,14 +48,16 @@ pub(crate) async fn run(ctx: &mut MessageLoopContext<'_>) {
                     )
                     .await;
                 }
-                break;
+                return CloseReason::HeartbeatTimeout;
             }
             _ = ctx.state.shutdown_token.cancelled() => {
                 info!("Shutdown signal received, closing WebSocket connection");
-                break;
+                return CloseReason::Shutdown;
             }
         };
-        let Some(msg) = msg else { break };
+        let Some(msg) = msg else {
+            return CloseReason::ClientClosed;
+        };
         match msg {
             Ok(WsMessage::Text(text)) => match Message::from_json(&text) {
                 Ok(Message::Input(data)) => {
@@ -82,11 +84,11 @@ pub(crate) async fn run(ctx: &mut MessageLoopContext<'_>) {
             },
             Ok(WsMessage::Close(_)) => {
                 info!("WebSocket close received");
-                break;
+                return CloseReason::ClientClosed;
             }
             Err(e) => {
                 warn!("WebSocket receive error: {}", e);
-                break;
+                return CloseReason::IoError;
             }
             _ => {}
         }

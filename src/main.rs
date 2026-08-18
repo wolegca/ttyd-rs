@@ -5,7 +5,7 @@ use ttyd_rs::{
 
 use clap::Parser;
 use std::path::PathBuf;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser, Debug)]
 #[command(name = "ttyd-rs")]
@@ -32,9 +32,11 @@ struct Args {
     #[arg(short = 'w', long)]
     working_dir: Option<PathBuf>,
 
-    /// Log level (trace, debug, info, warn, error)
-    #[arg(long, default_value = "info")]
-    log_level: String,
+    /// Log level (trace, debug, info, warn, error).
+    /// Defaults to the `log_level` value from the configuration file
+    /// (or `info` when no config file is used).
+    #[arg(long)]
+    log_level: Option<String>,
 
     /// Session mode: isolated, shared-ro, shared-rw
     #[arg(long, default_value = "isolated")]
@@ -80,20 +82,23 @@ struct Args {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    // Initialize tracing/logging
-    if let Err(e) = init_logging(&args.log_level) {
-        eprintln!("Failed to initialize logging: {}", e);
-        std::process::exit(1);
-    }
 
-    // Load configuration
+    // Load the configuration before initializing logging: the global
+    // tracing subscriber can only be installed once, and the config file's
+    // `log_level` must influence it.
     let config = match load_config(&args) {
         Ok(config) => config,
         Err(e) => {
-            tracing::error!("Failed to load configuration: {}", e);
+            eprintln!("Failed to load configuration: {}", e);
             std::process::exit(1);
         }
     };
+
+    // Initialize tracing/logging
+    if let Err(e) = init_logging(args.log_level.as_deref(), &config.log_level) {
+        eprintln!("Failed to initialize logging: {}", e);
+        std::process::exit(1);
+    }
 
     tracing::info!("Starting ttyd-rs v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Configuration: {:?}", config);
@@ -111,13 +116,24 @@ async fn main() {
     }
 }
 
-/// Initialize the tracing subscriber for logging
-fn init_logging(log_level: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .or_else(|_| tracing_subscriber::EnvFilter::try_new(log_level))?;
+/// Initialize the tracing subscriber for logging.
+///
+/// The log filter is resolved with the following precedence:
+/// 1. explicit `--log-level` flag
+/// 2. `RUST_LOG` environment variable
+/// 3. `log_level` from the configuration file
+fn init_logging(
+    cli_log_level: Option<&str>,
+    config_log_level: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let filter = if let Some(level) = cli_log_level {
+        EnvFilter::try_new(level)?
+    } else {
+        EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new(config_log_level))?
+    };
 
     tracing_subscriber::registry()
-        .with(env_filter)
+        .with(filter)
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -127,7 +143,6 @@ fn init_logging(log_level: &str) -> Result<(), Box<dyn std::error::Error>> {
 /// Load configuration from file or command line arguments
 fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
     let mut config = if let Some(config_path) = &args.config {
-        tracing::info!("Loading configuration from {:?}", config_path);
         Config::from_file(config_path)?
     } else {
         // Try to load config.toml from executable directory
@@ -137,7 +152,6 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
             .filter(|path| path.exists());
 
         if let Some(config_path) = default_config {
-            tracing::info!("Loading configuration from {:?}", config_path);
             Config::from_file(&config_path)?
         } else {
             Config::default()
@@ -153,7 +167,12 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
     if let Some(working_dir) = &args.working_dir {
         config.working_dir = Some(working_dir.clone());
     }
-    config.log_level = args.log_level.clone();
+    // Only override `log_level` when the flag was explicitly provided, so
+    // the value from the configuration file (or the built-in default) is
+    // preserved otherwise.
+    if let Some(log_level) = &args.log_level {
+        config.log_level = log_level.clone();
+    }
     config.max_connections = args.max_connections;
 
     // Session configuration
@@ -183,7 +202,6 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
             username: Some(username.clone()),
             password: Some(password.clone()),
             token: None,
-            audit_enabled: true,
         });
     }
 
@@ -206,7 +224,7 @@ mod tests {
             config: None,
             shell: Some("bash --login".to_string()),
             working_dir: None,
-            log_level: "info".to_string(),
+            log_level: Some("info".to_string()),
             session_mode: "isolated".to_string(),
             session_timeout: 3600,
             reconnect_window: 60,
@@ -235,7 +253,7 @@ mod tests {
             config: None,
             shell: Some("/bin/zsh".to_string()),
             working_dir: Some(PathBuf::from("/tmp")),
-            log_level: "debug".to_string(),
+            log_level: Some("debug".to_string()),
             session_mode: "shared_readwrite".to_string(),
             session_timeout: 7200,
             reconnect_window: 60,
@@ -270,7 +288,7 @@ mod tests {
             config: None,
             shell: Some("bash".to_string()),
             working_dir: None,
-            log_level: "info".to_string(),
+            log_level: Some("info".to_string()),
             session_mode: "isolated".to_string(),
             session_timeout: 3600,
             reconnect_window: 60,
@@ -330,7 +348,7 @@ enabled = false
             config: Some(config_path),
             shell: Some("bash".to_string()),
             working_dir: None,
-            log_level: "info".to_string(),
+            log_level: Some("info".to_string()),
             session_mode: "isolated".to_string(),
             session_timeout: 3600,
             reconnect_window: 60,
@@ -351,6 +369,67 @@ enabled = false
         // File values that are NOT overridden by CLI
         assert_eq!(config.session.mode, "isolated"); // CLI overrides
         assert!(config.validate().is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_config_file_log_level_without_cli_override() {
+        let dir = std::env::temp_dir().join("ttyd-rs-main-loglevel");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("config.toml");
+
+        std::fs::write(
+            &config_path,
+            r#"
+bind = "0.0.0.0:9090"
+command = ["/bin/zsh"]
+log_level = "warn"
+max_connections = 50
+
+[session]
+mode = "isolated"
+timeout = 3600
+
+[validation]
+max_cols = 500
+min_cols = 10
+max_rows = 200
+min_rows = 5
+max_input_size = 16384
+max_credentials_length = 1024
+
+[rate_limit]
+max_requests = 10
+window_seconds = 60
+
+[audit]
+enabled = false
+"#,
+        )
+        .unwrap();
+
+        let args = Args {
+            port: 7681,
+            bind: "127.0.0.1".to_string(),
+            config: Some(config_path),
+            shell: None,
+            working_dir: None,
+            log_level: None,
+            session_mode: "isolated".to_string(),
+            session_timeout: 3600,
+            reconnect_window: 60,
+            max_connections: 100,
+            auth: false,
+            username: None,
+            password: None,
+            audit: false,
+            audit_file: None,
+            trust_proxy: false,
+        };
+
+        let config = load_config(&args).unwrap();
+        assert_eq!(config.log_level, "warn");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -24,6 +24,11 @@ use tracing::{error, info};
 /// Start the HTTP/WebSocket server
 pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let audit_logger = AuditLogger::new(config.audit.log_file.clone(), config.audit.enabled);
+    if config.audit.enabled {
+        audit_logger.prepare().await.map_err(|e| {
+            format!("audit logging is enabled but its log file cannot be prepared: {e}")
+        })?;
+    }
     let validation = config.validation.clone();
     let rate_limiter = RateLimiter::new(
         config.rate_limit.max_requests,
@@ -478,7 +483,6 @@ mod tests {
             username: Some("admin".to_string()),
             password: Some("secret".to_string()),
             token: None,
-            audit_enabled: false,
         });
         let session_manager = Arc::new(SessionManager::new(
             Duration::from_secs(3600),
@@ -540,7 +544,6 @@ mod tests {
             username: Some("admin".to_string()),
             password: Some("secret".to_string()),
             token: None,
-            audit_enabled: false,
         });
         let session_manager = Arc::new(SessionManager::new(
             Duration::from_secs(3600),
@@ -573,7 +576,6 @@ mod tests {
             username: None,
             password: None,
             token: Some("test-secret-token".to_string()),
-            audit_enabled: false,
         });
         let session_manager = Arc::new(SessionManager::new(
             Duration::from_secs(3600),
@@ -1025,7 +1027,6 @@ mod tests {
             username: Some("admin".to_string()),
             password: Some("secret".to_string()),
             token: None,
-            audit_enabled: false,
         });
         let addr = start_test_server(config).await;
 
@@ -1068,7 +1069,6 @@ mod tests {
             username: Some("admin".to_string()),
             password: Some("secret".to_string()),
             token: None,
-            audit_enabled: false,
         });
         let addr = start_test_server(config).await;
 
@@ -1111,7 +1111,6 @@ mod tests {
             username: None,
             password: None,
             token: Some(token.to_string()),
-            audit_enabled: false,
         });
         let addr = start_test_server(config).await;
 
@@ -1142,5 +1141,138 @@ mod tests {
         assert_eq!(ready["data"]["rows"], 40);
 
         ws.close(None).await.unwrap();
+    }
+
+    /// A normal session must also log `connection_closed`, with the
+    /// client-closed reason (previously this event was hardcoded to
+    /// "normal closure" even on timeout/shutdown/error).
+    #[tokio::test]
+    async fn test_audit_logs_connection_closed_on_normal_close() {
+        let dir = std::env::temp_dir().join("ttyd-rs-audit-normal-ws");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log_path = dir.join("audit.log");
+
+        let mut config = Config::default();
+        config.audit = crate::config::AuditConfig {
+            enabled: true,
+            log_file: Some(log_path.clone()),
+        };
+        let addr = start_test_server(config).await;
+
+        let url = format!("ws://{}/ws", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // resize → ready, then close the session normally
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 120, "rows": 40 }
+        });
+        send_ws_msg(&mut ws, &resize).await;
+        let ready = read_ws_msg(&mut ws).await;
+        assert_eq!(ready["type"], "ready");
+
+        ws.close(None).await.unwrap();
+
+        // Let the audit write flush before reading the file
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let content = std::fs::read_to_string(&log_path).unwrap();
+
+        assert!(content.contains("connection_opened"));
+        assert!(content.contains("session_started"));
+        assert!(content.contains("connection_closed"));
+        assert!(content.contains("client closed the connection"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The audit log must record a `connection_closed` event even when
+    /// authentication fails (previously the close event was only logged on
+    /// the happy path), carrying the actual reason.
+    #[tokio::test]
+    async fn test_audit_logs_connection_closed_on_auth_failure() {
+        let dir = std::env::temp_dir().join("ttyd-rs-audit-authfail-ws");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log_path = dir.join("audit.log");
+
+        let mut config = Config::default();
+        config.auth = Some(crate::config::AuthConfig {
+            method: "basic".to_string(),
+            username: Some("admin".to_string()),
+            password: Some("secret".to_string()),
+            token: None,
+        });
+        config.audit = crate::config::AuditConfig {
+            enabled: true,
+            log_file: Some(log_path.clone()),
+        };
+        let addr = start_test_server(config).await;
+
+        let url = format!("ws://{}/ws", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // Send auth with a wrong password → auth_fail, then the server closes
+        use base64::Engine as _;
+        let creds = base64::engine::general_purpose::STANDARD.encode("admin:wrong-password");
+        let auth = serde_json::json!({
+            "type": "auth",
+            "data": { "method": "basic", "credentials": creds }
+        });
+        send_ws_msg(&mut ws, &auth).await;
+        let auth_fail = read_ws_msg(&mut ws).await;
+        assert_eq!(auth_fail["type"], "auth_fail");
+
+        // Let the audit write flush before reading the file
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let content = std::fs::read_to_string(&log_path).unwrap();
+
+        assert!(content.contains("connection_opened"));
+        assert!(content.contains("auth_failure"));
+        assert!(content.contains("connection_closed"));
+        assert!(content.contains("authentication failed"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The audit log must also record `connection_closed` (with the
+    /// handshake-failed reason) when the client sends an invalid terminal
+    /// size during the handshake.
+    #[tokio::test]
+    async fn test_audit_logs_connection_closed_on_handshake_failure() {
+        let dir = std::env::temp_dir().join("ttyd-rs-audit-handshake-ws");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log_path = dir.join("audit.log");
+
+        let mut config = Config::default();
+        config.audit = crate::config::AuditConfig {
+            enabled: true,
+            log_file: Some(log_path.clone()),
+        };
+        let addr = start_test_server(config).await;
+
+        let url = format!("ws://{}/ws", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // Below the minimum allowed size (default min_cols = 10)
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 5, "rows": 24 }
+        });
+        send_ws_msg(&mut ws, &resize).await;
+        let err = read_ws_msg(&mut ws).await;
+        assert_eq!(err["type"], "error");
+        assert_eq!(err["data"]["code"], "INVALID_SIZE");
+
+        // Let the audit write flush before reading the file
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let content = std::fs::read_to_string(&log_path).unwrap();
+
+        assert!(content.contains("connection_opened"));
+        assert!(content.contains("connection_closed"));
+        assert!(content.contains("handshake failed"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

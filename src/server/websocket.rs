@@ -26,7 +26,7 @@ use axum::{
     },
     response::Response,
 };
-use futures::stream::SplitSink;
+use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -88,31 +88,69 @@ pub async fn websocket_handler(
         .on_upgrade(move |socket| handle_socket(socket, state, remote_addr))
 }
 
+/// Why a WebSocket connection ended.
+///
+/// Carried through the session handler so the `ConnectionClosed` audit
+/// event records the actual cause instead of a generic "normal closure".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloseReason {
+    /// The client closed the connection (or dropped it before we finished).
+    ClientClosed,
+    /// Authentication failed, was rejected, or server auth is misconfigured.
+    AuthFailed,
+    /// The initial Resize/Join handshake failed.
+    HandshakeFailed,
+    /// Creating/joining the session or registering the client failed.
+    SessionSetupFailed,
+    /// The heartbeat monitor detected a silent client.
+    HeartbeatTimeout,
+    /// The server was shutting down.
+    Shutdown,
+    /// An I/O or protocol error terminated the connection.
+    IoError,
+}
+
+impl CloseReason {
+    /// Human-readable description used in audit and server logs.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ClientClosed => "client closed the connection",
+            Self::AuthFailed => "authentication failed",
+            Self::HandshakeFailed => "handshake failed",
+            Self::SessionSetupFailed => "session setup failed",
+            Self::HeartbeatTimeout => "heartbeat timeout",
+            Self::Shutdown => "server shutdown",
+            Self::IoError => "I/O error",
+        }
+    }
+}
+
 /// Handle a WebSocket connection
 async fn handle_socket(socket: WebSocket, state: AppState, remote_addr: String) {
     info!("New WebSocket connection from {}", remote_addr);
 
-    let result = handle_terminal_session(socket, state.clone(), remote_addr).await;
+    let reason = handle_terminal_session(socket, state.clone(), remote_addr).await;
 
     // Decrement active connection count
     state.active_connections.fetch_sub(1, Ordering::Relaxed);
 
     // Only log non-shutdown closures — shutdown already logs its own messages,
-    // and the "closed normally" log just adds noise after "Shutdown complete".
+    // and the "closed" log just adds noise after "Shutdown complete".
     if !state.shutdown_token.is_cancelled() {
-        match result {
-            Ok(()) => info!("WebSocket connection closed normally"),
-            Err(e) => warn!("WebSocket connection error: {}", e),
-        }
+        info!("WebSocket connection closed: {}", reason.as_str());
     }
 }
 
-/// Handle a terminal session using SessionManager
+/// Handle a terminal session using SessionManager.
+///
+/// Guarantees that a `ConnectionClosed` audit event is recorded no matter
+/// how the session ends (auth failure, handshake failure, setup error,
+/// heartbeat timeout, shutdown), and that it carries the actual reason.
 async fn handle_terminal_session(
     socket: WebSocket,
     state: AppState,
     remote_addr: String,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloseReason {
     let (ws_sender, mut ws_receiver) = socket.split();
     let ws_sender = Arc::new(tokio::sync::Mutex::new(ws_sender));
 
@@ -124,22 +162,7 @@ async fn handle_terminal_session(
         .log_connection(&remote_addr, &client_id)
         .await;
 
-    // ── Authentication ──────────────────────────────────────────────
-    let username = match auth::authenticate(
-        &state,
-        &ws_sender,
-        &mut ws_receiver,
-        &remote_addr,
-        &client_id,
-    )
-    .await?
-    {
-        auth::AuthResult::Success(username) => username,
-        auth::AuthResult::Close => return Ok(()),
-    };
-
-    // ── Handshake (Resize/Join) ─────────────────────────────────────
-    let handshake = handshake::read_handshake(
+    let reason = match run_session(
         &state,
         &ws_sender,
         &mut ws_receiver,
@@ -147,33 +170,97 @@ async fn handle_terminal_session(
         &client_id,
     )
     .await
-    .map_err(|_| -> Box<dyn std::error::Error> {
-        "Handshake failed: invalid terminal size".into()
-    })?;
+    {
+        Ok(reason) => reason,
+        Err(e) => {
+            warn!("WebSocket connection error: {}", e);
+            state
+                .audit_logger
+                .log_error(
+                    &remote_addr,
+                    &client_id,
+                    &format!("WebSocket connection error: {e}"),
+                )
+                .await;
+            CloseReason::IoError
+        }
+    };
+
+    // Always record the closing event with the actual reason. The
+    // `session_id` field carries the same client id as `ConnectionOpened`
+    // so the two events can be paired; the terminal session id is recorded
+    // separately in `SessionStarted` events.
+    state
+        .audit_logger
+        .log_disconnect(&remote_addr, &client_id, reason.as_str())
+        .await;
+
+    reason
+}
+
+/// Run the session body: auth, handshake, session setup, message loop, cleanup.
+///
+/// Returns the reason the connection ended, or an error for I/O and other
+/// unexpected failures.
+async fn run_session(
+    state: &AppState,
+    ws_sender: &WsSender,
+    ws_receiver: &mut SplitStream<WebSocket>,
+    remote_addr: &str,
+    client_id: &str,
+) -> Result<CloseReason, Box<dyn std::error::Error + Send + Sync>> {
+    // ── Authentication ──────────────────────────────────────────────
+    let username =
+        match auth::authenticate(state, ws_sender, ws_receiver, remote_addr, client_id).await? {
+            auth::AuthResult::Success(username) => username,
+            auth::AuthResult::Close(reason) => return Ok(reason),
+        };
+
+    // ── Handshake (Resize/Join) ─────────────────────────────────────
+    let handshake = match handshake::read_handshake(
+        state,
+        ws_sender,
+        ws_receiver,
+        remote_addr,
+        client_id,
+    )
+    .await
+    {
+        Ok(handshake) => handshake,
+        Err(()) => return Ok(CloseReason::HandshakeFailed),
+    };
 
     // ── Create or join session ──────────────────────────────────────
-    let resolved = session_lifecycle::create_or_join_session(
-        &state,
-        &ws_sender,
+    let resolved = match session_lifecycle::create_or_join_session(
+        state,
+        ws_sender,
         handshake.join_session_id,
         handshake.cols,
         handshake.rows,
     )
     .await
-    .map_err(|_| -> Box<dyn std::error::Error> { "Failed to create or join session".into() })?;
+    {
+        Ok(resolved) => resolved,
+        Err(()) => return Ok(CloseReason::SessionSetupFailed),
+    };
 
     let session = &resolved.session;
     let session_id = &resolved.session_id;
     let is_readonly = resolved.is_readonly;
 
     // Add this client to the session
-    session_lifecycle::add_client(session, &client_id, &remote_addr, username, is_readonly).await?;
+    if let Err(e) =
+        session_lifecycle::add_client(session, client_id, remote_addr, username, is_readonly).await
+    {
+        warn!("Failed to register client in session: {}", e);
+        return Ok(CloseReason::SessionSetupFailed);
+    }
 
     // Log session started
     state
         .audit_logger
         .log_session_started(
-            &remote_addr,
+            remote_addr,
             state
                 .config
                 .auth
@@ -190,7 +277,7 @@ async fn handle_terminal_session(
         rows: handshake.rows,
         readonly: is_readonly,
     });
-    utils::send_message(&ws_sender, &ready_msg).await;
+    utils::send_message(ws_sender, &ready_msg).await;
 
     // Get PTY session for I/O
     let pty_session_arc = session.pty_session();
@@ -198,7 +285,7 @@ async fn handle_terminal_session(
     // Duplicate the PTY master fd once for writing
     let mut pty_writer = pty_io::create_pty_writer(&pty_session_arc)
         .await
-        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
 
     // Spawn PTY reader task
     let pty_to_ws =
@@ -214,41 +301,35 @@ async fn handle_terminal_session(
 
     // ── Main message loop ───────────────────────────────────────────
     let mut ctx = message_loop::MessageLoopContext {
-        state: &state,
-        ws_sender: &ws_sender,
-        ws_receiver: &mut ws_receiver,
+        state,
+        ws_sender,
+        ws_receiver,
         heartbeat_task: &mut heartbeat_task,
         session,
         pty_session: &pty_session_arc,
         pty_writer: &mut pty_writer,
         last_ping_time: &last_ping_time,
-        client_id: &client_id,
+        client_id,
         session_id,
-        remote_addr: &remote_addr,
+        remote_addr,
     };
-    message_loop::run(&mut ctx).await;
+    let reason = message_loop::run(&mut ctx).await;
 
     // ── Cleanup ─────────────────────────────────────────────────────
     heartbeat_task.abort();
     pty_to_ws.abort();
     subscriber_task.abort();
 
-    session_lifecycle::cleanup_client(&state, session, session_id, &client_id).await;
-
-    // Log disconnection
-    state
-        .audit_logger
-        .log_disconnect(&remote_addr, session_id, "normal closure")
-        .await;
+    session_lifecycle::cleanup_client(state, session, session_id, client_id).await;
 
     // Send disconnect message
     let disconnect = crate::protocol::Message::Disconnect(crate::protocol::DisconnectData {
         reason: "Session ended".to_string(),
         code: 0,
     });
-    utils::send_message(&ws_sender, &disconnect).await;
+    utils::send_message(ws_sender, &disconnect).await;
 
     let _ = ws_sender.lock().await.close().await;
 
-    Ok(())
+    Ok(reason)
 }

@@ -39,7 +39,6 @@ timeout = 3600
 method = "basic"  # "basic" or "token"
 username = "admin"
 password = "changeme"
-audit_enabled = true
 
 # Audit logging configuration
 [audit]

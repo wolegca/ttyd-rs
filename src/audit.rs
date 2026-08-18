@@ -1,7 +1,7 @@
 /// Audit logging module
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info};
@@ -40,6 +40,34 @@ pub enum AuditEventType {
 impl AuditLogger {
     pub fn new(log_file: Option<PathBuf>, enabled: bool) -> Self {
         Self { log_file, enabled }
+    }
+
+    /// Prepare the audit log for use: create the parent directory (if any)
+    /// and verify the log file can be opened for appending.
+    ///
+    /// Call once at startup. Failing fast here is intentional: an operator
+    /// who enabled file-based audit logging should not have events silently
+    /// dropped (or every event spam an error) because of a bad path.
+    pub async fn prepare(&self) -> std::io::Result<()> {
+        let Some(log_file) = &self.log_file else {
+            return Ok(());
+        };
+
+        if let Some(parent) = log_file.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        // Open (creating if needed) so permission/path problems surface at
+        // startup instead of on every audit event.
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_file)
+            .await?;
+
+        Ok(())
     }
 
     /// Log a connection event
@@ -152,18 +180,22 @@ impl AuditLogger {
     }
 
     /// Write event to log file
-    async fn write_to_file(&self, log_file: &PathBuf, event: &AuditEvent) -> std::io::Result<()> {
+    async fn write_to_file(&self, log_file: &Path, event: &AuditEvent) -> std::io::Result<()> {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(log_file)
             .await?;
 
-        let json = serde_json::to_string(event)
-            .map_err(|e| std::io::Error::other(format!("JSON error: {}", e)))?;
+        // Serialize the event and append the newline into a single buffer so
+        // the JSONL line is written with one write() call. This keeps each
+        // line atomic even when multiple tasks log events concurrently.
+        let mut line = serde_json::to_string(event)
+            .map_err(|e| std::io::Error::other(format!("JSON error: {}", e)))?
+            .into_bytes();
+        line.push(b'\n');
 
-        file.write_all(json.as_bytes()).await?;
-        file.write_all(b"\n").await?;
+        file.write_all(&line).await?;
         file.flush().await?;
 
         Ok(())
@@ -382,5 +414,53 @@ mod tests {
                 json
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_prepare_creates_parent_directory() {
+        let dir = std::env::temp_dir()
+            .join("ttyd-rs-audit-prepare")
+            .join("nested")
+            .join("deep");
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+
+        let log_path = dir.join("audit.log");
+        let logger = AuditLogger::new(Some(log_path.clone()), true);
+
+        // Directory does not exist yet
+        assert!(!dir.exists());
+
+        // Should create the full directory chain and the log file
+        logger.prepare().await.unwrap();
+
+        assert!(dir.exists());
+        assert!(log_path.exists());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_prepare_noop_when_no_file() {
+        let logger = AuditLogger::new(None, true);
+        // Should not panic or error when no log_file is set
+        logger.prepare().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_prepare_fails_when_parent_path_is_a_file() {
+        let base = std::env::temp_dir().join("ttyd-rs-audit-prepare-fail");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        // Block the parent path with a regular file
+        let parent_file = base.join("blocker");
+        std::fs::write(&parent_file, "blocker").unwrap();
+
+        let logger = AuditLogger::new(Some(parent_file.join("audit.log")), true);
+        assert!(logger.prepare().await.is_err());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

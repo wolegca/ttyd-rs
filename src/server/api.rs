@@ -358,7 +358,6 @@ mod tests {
                 username: Some("admin".to_string()),
                 password: Some("secret".to_string()),
                 token: None,
-                audit_enabled: false,
             }),
             ..Default::default()
         };

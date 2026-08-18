@@ -80,9 +80,6 @@ pub struct AuthConfig {
 
     /// Token for token-based auth
     pub token: Option<String>,
-
-    /// Enable audit logging for auth events
-    pub audit_enabled: bool,
 }
 
 impl std::fmt::Debug for AuthConfig {
@@ -92,7 +89,6 @@ impl std::fmt::Debug for AuthConfig {
             .field("username", &self.username)
             .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
             .field("token", &self.token.as_ref().map(|_| "[REDACTED]"))
-            .field("audit_enabled", &self.audit_enabled)
             .finish()
     }
 }
@@ -205,7 +201,6 @@ impl Default for AuthConfig {
             username: None,
             password: None,
             token: None,
-            audit_enabled: true,
         }
     }
 }

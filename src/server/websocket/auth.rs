@@ -11,7 +11,7 @@ use futures::stream::SplitStream;
 use futures::{SinkExt, StreamExt};
 use tracing::{error, warn};
 
-use super::{AppState, WsSender};
+use super::{AppState, CloseReason, WsSender};
 
 /// Outcome of the authentication process.
 pub(crate) enum AuthResult {
@@ -19,8 +19,9 @@ pub(crate) enum AuthResult {
     /// (`Some` for basic auth, `None` for token auth).
     Success(Option<String>),
     /// Connection should be closed (auth failed, client disconnected,
-    /// or auth is misconfigured).
-    Close,
+    /// or auth is misconfigured); carries the reason for the
+    /// `ConnectionClosed` audit event.
+    Close(CloseReason),
 }
 
 /// The configured authentication method and its validator.
@@ -92,7 +93,7 @@ impl AuthMethod {
 async fn send_auth_fail(
     ws_sender: &WsSender,
     reason: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let msg = Message::AuthFail(AuthFailData {
         reason: reason.to_string(),
     });
@@ -108,7 +109,7 @@ async fn send_auth_fail(
 async fn send_auth_ok(
     ws_sender: &WsSender,
     client_id: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let msg = Message::AuthOk(AuthOkData {
         client_id: client_id.to_string(),
         readonly: false,
@@ -125,7 +126,7 @@ async fn send_auth_ok(
 ///
 /// - If auth is not configured, returns `Success(None)`.
 /// - If auth is configured but the client fails authentication (or disconnects),
-///   returns `Close` — the caller should return `Ok(())` to end the session.
+///   returns `Close` — the caller ends the session with the given reason.
 /// - On success, returns `Success(Some(username))` for basic auth or
 ///   `Success(None)` for token auth.
 pub(crate) async fn authenticate(
@@ -134,7 +135,7 @@ pub(crate) async fn authenticate(
     ws_receiver: &mut SplitStream<WebSocket>,
     remote_addr: &str,
     client_id: &str,
-) -> Result<AuthResult, Box<dyn std::error::Error>> {
+) -> Result<AuthResult, Box<dyn std::error::Error + Send + Sync>> {
     let Some(auth_config) = &state.config.auth else {
         return Ok(AuthResult::Success(None));
     };
@@ -159,7 +160,7 @@ pub(crate) async fn authenticate(
                 auth_config.method
             );
             send_auth_fail(ws_sender, "Server authentication misconfigured").await?;
-            return Ok(AuthResult::Close);
+            return Ok(AuthResult::Close(CloseReason::AuthFailed));
         }
     };
 
@@ -182,7 +183,7 @@ async fn perform_auth(
     remote_addr: &str,
     client_id: &str,
     auth_method: &AuthMethod,
-) -> Result<AuthResult, Box<dyn std::error::Error>> {
+) -> Result<AuthResult, Box<dyn std::error::Error + Send + Sync>> {
     // 1. Check rate limit before processing auth
     if let Err(duration) = state.rate_limiter.check(remote_addr).await {
         warn!("Rate limit exceeded for {}", remote_addr);
@@ -194,7 +195,7 @@ async fn perform_auth(
             ),
         )
         .await?;
-        return Ok(AuthResult::Close);
+        return Ok(AuthResult::Close(CloseReason::AuthFailed));
     }
 
     // 2. Wait for auth message from client
@@ -203,12 +204,12 @@ async fn perform_auth(
             Message::Auth(auth_data) => auth_data,
             _ => {
                 send_auth_fail(ws_sender, "Expected auth message").await?;
-                return Ok(AuthResult::Close);
+                return Ok(AuthResult::Close(CloseReason::AuthFailed));
             }
         },
         _ => {
             // Connection closed or non-text message
-            return Ok(AuthResult::Close);
+            return Ok(AuthResult::Close(CloseReason::ClientClosed));
         }
     };
 
@@ -216,7 +217,7 @@ async fn perform_auth(
     if let Err(e) = state.validation.validate_auth_method(&auth_data.method) {
         warn!("Invalid auth method: {}", e);
         send_auth_fail(ws_sender, &format!("Invalid authentication method: {}", e)).await?;
-        return Ok(AuthResult::Close);
+        return Ok(AuthResult::Close(CloseReason::AuthFailed));
     }
 
     // 4. Validate credentials format
@@ -227,7 +228,7 @@ async fn perform_auth(
             .log_auth_attempt(remote_addr, auth_method.audit_name(), false, client_id)
             .await;
         send_auth_fail(ws_sender, "Invalid credentials format").await?;
-        return Ok(AuthResult::Close);
+        return Ok(AuthResult::Close(CloseReason::AuthFailed));
     }
 
     // 5. Validate credentials (only accept the expected method)
@@ -243,7 +244,7 @@ async fn perform_auth(
             .log_auth_attempt(remote_addr, auth_method.audit_name(), false, client_id)
             .await;
         send_auth_fail(ws_sender, auth_method.invalid_message()).await?;
-        return Ok(AuthResult::Close);
+        return Ok(AuthResult::Close(CloseReason::AuthFailed));
     }
 
     // 6. Success — log, reset rate limit, send AuthOk
