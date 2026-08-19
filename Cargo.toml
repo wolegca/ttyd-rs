@@ -4,7 +4,7 @@ version = "0.5.1"
 edition = "2024"
 authors = ["wcx"]
 description = "A Rust rewrite of ttyd - Share your terminal over the web"
-license = "AGPL"
+license = "AGPL-3.0-only"
 
 [lints.clippy]
 unwrap-used = "deny"
