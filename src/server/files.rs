@@ -5,7 +5,7 @@ use axum::{
     Json,
     body::Body,
     extract::{Multipart, Query, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::Response,
 };
 use serde::{Deserialize, Serialize};
@@ -49,6 +49,36 @@ pub struct ListResponse {
 pub struct UploadResponse {
     pub filename: String,
     pub size: usize,
+}
+
+/// RAII guard that removes the upload target file if the upload does not
+/// complete successfully. Call `disarm()` on success to keep the file.
+///
+/// This ensures that no matter which error path is taken (read failure,
+/// write failure, size exceeded, connection abort, etc.), the partially
+/// written file is cleaned up.
+struct UploadFileGuard(PathBuf);
+
+impl UploadFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self(path)
+    }
+
+    /// Disarm the guard, keeping the file on disk.
+    /// Must be called when the upload has completed successfully.
+    fn disarm(&mut self) {
+        self.0 = PathBuf::new();
+    }
+}
+
+impl Drop for UploadFileGuard {
+    fn drop(&mut self) {
+        if !self.0.as_os_str().is_empty() {
+            // Best-effort cleanup; the file may have already been removed
+            // or the path may be invalid. Ignore errors.
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
 }
 
 /// Query parameters for download/list
@@ -220,12 +250,36 @@ fn safe_resolve(base: &Path, relative: &str) -> Result<PathBuf, (StatusCode, Str
 pub async fn upload_file(
     State(state): State<FileTransferState>,
     Query(query): Query<UploadQuery>,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<UploadResponse>, (StatusCode, Json<FileErrorResponse>)> {
     let base = resolve_base_dir(&state, query.session_id.as_deref())
         .await
         .map_err(|(status, msg)| (status, Json(FileErrorResponse { error: msg })))?;
     let max_size = state.config.max_upload_size;
+
+    // Fast-path rejection: if the client provided Content-Length and it
+    // already exceeds the limit, reject immediately without reading any body.
+    if let Some(cl) = headers.get(header::CONTENT_LENGTH)
+        && let Some(len) = cl.to_str().ok().and_then(|s| s.parse::<u64>().ok())
+        && len > max_size as u64
+    {
+        // Drain the multipart body to allow a clean connection close.
+        // Without this, the browser gets ERR_CONNECTION_ABORTED because
+        // the server closes while the client is still sending data.
+        while let Ok(Some(mut drain_field)) = multipart.next_field().await {
+            while let Ok(Some(_)) = drain_field.chunk().await {}
+        }
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(FileErrorResponse {
+                error: format!(
+                    "File too large: Content-Length {} exceeds max {} bytes",
+                    len, max_size
+                ),
+            }),
+        ));
+    }
 
     // Ensure base directory exists
     if !base.exists() {
@@ -242,7 +296,7 @@ pub async fn upload_file(
     let mut uploaded_filename = String::new();
     let mut uploaded_size: usize = 0;
 
-    while let Some(field) = multipart.next_field().await.map_err(|e| {
+    while let Some(mut field) = multipart.next_field().await.map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             Json(FileErrorResponse {
@@ -279,8 +333,18 @@ pub async fn upload_file(
         let target = safe_resolve(&base, &sanitized)
             .map_err(|(status, msg)| (status, Json(FileErrorResponse { error: msg })))?;
 
-        // Overwrite protection: reject if file exists and overwrite not requested
+        // Overwrite protection: reject if file exists and overwrite not requested.
+        // IMPORTANT: We must drain the remaining body before returning the error
+        // response. If we don't, the browser is still uploading when the server
+        // closes the connection, causing a TCP RST (ERR_CONNECTION_ABORTED)
+        // instead of delivering the 409 response.
         if !query.overwrite && target.exists() {
+            // Drain the current field data
+            while let Ok(Some(_)) = field.chunk().await {}
+            // Drain any remaining multipart fields
+            while let Ok(Some(mut remaining)) = multipart.next_field().await {
+                while let Ok(Some(_)) = remaining.chunk().await {}
+            }
             return Err((
                 StatusCode::CONFLICT,
                 Json(FileErrorResponse {
@@ -302,8 +366,11 @@ pub async fn upload_file(
             )
         })?;
 
+        // RAII guard: ensures the partial file is removed on any error path
+        // (read failure, write failure, size exceeded, connection abort, etc.)
+        let mut guard = UploadFileGuard::new(target.clone());
+
         let mut total_size: usize = 0;
-        let mut field = field;
         while let Some(chunk) = field.chunk().await.map_err(|e| {
             (
                 StatusCode::BAD_REQUEST,
@@ -314,9 +381,14 @@ pub async fn upload_file(
         })? {
             total_size += chunk.len();
             if total_size > max_size {
-                // Abort: close and remove partial file
+                // Abort: drop file handle; the guard will remove the partial file
                 drop(file);
-                let _ = tokio::fs::remove_file(&target).await;
+                // Drain the remaining field data to avoid TCP RST
+                while let Ok(Some(_)) = field.chunk().await {}
+                // Drain any remaining multipart fields
+                while let Ok(Some(mut remaining)) = multipart.next_field().await {
+                    while let Ok(Some(_)) = remaining.chunk().await {}
+                }
                 return Err((
                     StatusCode::PAYLOAD_TOO_LARGE,
                     Json(FileErrorResponse {
@@ -342,6 +414,9 @@ pub async fn upload_file(
                 }),
             )
         })?;
+
+        // Upload completed successfully — disarm the guard to keep the file
+        guard.disarm();
 
         uploaded_filename = sanitized;
         uploaded_size = total_size;
@@ -828,6 +903,264 @@ mod tests {
         assert!(result.is_err());
         let (status, _) = result.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── Upload integration tests ─────────────────────────────────────
+
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::routing::post;
+    use tower::ServiceExt;
+
+    /// Build a multipart/form-data body for upload testing
+    fn multipart_body(boundary: &str, field_name: &str, filename: &str, content: &str) -> String {
+        format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"{field_name}\"; filename=\"{filename}\"\r\n\
+             Content-Type: application/octet-stream\r\n\
+             \r\n\
+             {content}\r\n\
+             --{boundary}--\r\n"
+        )
+    }
+
+    /// Build a router with the upload endpoint for testing.
+    /// The DefaultBodyLimit is set high so that our streaming size check
+    /// (not the axum body limit) enforces the upload limit.
+    fn upload_router(state: FileTransferState, max_size: usize) -> Router {
+        let state_with_size = FileTransferState {
+            config: Arc::new(FileTransferConfig {
+                enabled: true,
+                dir: state.config.dir.clone(),
+                max_upload_size: max_size,
+            }),
+            session_manager: state.session_manager.clone(),
+        };
+        // Set body limit well above max_size so the multipart parser
+        // can read the full body; our streaming check enforces the real limit.
+        let body_limit = std::cmp::max(max_size, 1024 * 1024);
+        Router::new()
+            .route("/upload", post(upload_file).with_state(state_with_size))
+            .layer(axum::extract::DefaultBodyLimit::max(body_limit))
+    }
+
+    #[tokio::test]
+    async fn test_upload_success() {
+        let dir = std::env::temp_dir().join("ttyd-rs-files-test-upload-ok");
+        let _ = fs::create_dir_all(&dir);
+
+        let state = test_state(dir.clone());
+        let app = upload_router(state, 1024 * 1024); // 1MB limit
+
+        let boundary = "testboundary123";
+        let body = multipart_body(boundary, "file", "hello.txt", "Hello, World!");
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("Content-Type", content_type)
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["filename"], "hello.txt");
+        assert_eq!(json["size"], 13);
+
+        // Verify file is on disk
+        let file_path = dir.join("hello.txt");
+        assert!(file_path.exists());
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "Hello, World!");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_upload_conflict() {
+        let dir = std::env::temp_dir().join("ttyd-rs-files-test-upload-conflict");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(dir.join("existing.txt"), "old content").unwrap();
+
+        let state = test_state(dir.clone());
+        let app = upload_router(state, 1024 * 1024);
+
+        let boundary = "testboundary456";
+        let body = multipart_body(boundary, "file", "existing.txt", "new content");
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("Content-Type", content_type)
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("already exists"));
+
+        // Original file should be unchanged
+        assert_eq!(
+            fs::read_to_string(dir.join("existing.txt")).unwrap(),
+            "old content"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_upload_conflict_overwrite() {
+        let dir = std::env::temp_dir().join("ttyd-rs-files-test-upload-ow");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(dir.join("existing.txt"), "old content").unwrap();
+
+        let state = test_state(dir.clone());
+        let app = upload_router(state, 1024 * 1024);
+
+        let boundary = "testboundary789";
+        let body = multipart_body(boundary, "file", "existing.txt", "new content");
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/upload?overwrite=true")
+            .header("Content-Type", content_type)
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // File should be overwritten
+        assert_eq!(
+            fs::read_to_string(dir.join("existing.txt")).unwrap(),
+            "new content"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_upload_size_exceeded() {
+        let dir = std::env::temp_dir().join("ttyd-rs-files-test-upload-size");
+        let _ = fs::create_dir_all(&dir);
+
+        let state = test_state(dir.clone());
+        // Very small limit: 10 bytes
+        let app = upload_router(state, 10);
+
+        let boundary = "testboundarysize";
+        let content = "This content is way too long for the 10 byte limit";
+        let body = multipart_body(boundary, "file", "big.txt", content);
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("Content-Type", content_type)
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("too large"));
+
+        // No partial file should remain
+        assert!(!dir.join("big.txt").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_upload_no_file_field() {
+        let dir = std::env::temp_dir().join("ttyd-rs-files-test-upload-nofile");
+        let _ = fs::create_dir_all(&dir);
+
+        let state = test_state(dir.clone());
+        let app = upload_router(state, 1024 * 1024);
+
+        let boundary = "testboundarynofile";
+        let body = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"text\"\r\n\
+             \r\n\
+             just text\r\n\
+             --{boundary}--\r\n"
+        );
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("Content-Type", content_type)
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("No file"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_upload_binary_content() {
+        let dir = std::env::temp_dir().join("ttyd-rs-files-test-upload-bin");
+        let _ = fs::create_dir_all(&dir);
+
+        let state = test_state(dir.clone());
+        let app = upload_router(state, 1024 * 1024);
+
+        let boundary = "testboundarybin";
+        let binary_content: Vec<u8> = vec![0x00, 0x01, 0x02, 0xFF, 0xFE];
+        let header = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"file\"; filename=\"data.bin\"\r\n\
+             Content-Type: application/octet-stream\r\n\
+             \r\n"
+        );
+        let footer = format!("\r\n--{boundary}--\r\n");
+        let mut body_bytes = header.into_bytes();
+        body_bytes.extend_from_slice(&binary_content);
+        body_bytes.extend_from_slice(footer.as_bytes());
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("Content-Type", content_type)
+            .body(Body::from(body_bytes))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let file_content = fs::read(dir.join("data.bin")).unwrap();
+        assert_eq!(file_content, binary_content);
 
         let _ = fs::remove_dir_all(&dir);
     }

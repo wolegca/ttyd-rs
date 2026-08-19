@@ -1,7 +1,7 @@
 # ttyd-rs Project Status
 
-**Last Updated**: 2026-08-04
-**Version**: 0.4.3
+**Last Updated**: 2026-08-19
+**Version**: 0.5.1
 **Status**: Production Ready
 
 ---
@@ -12,7 +12,7 @@
 |-------|--------|
 | `cargo fmt -- --check` | ✅ Pass |
 | `cargo clippy -- -D warnings` | ✅ Pass |
-| `cargo test` | ✅ 190 tests passing |
+| `cargo test` | ✅ 219 tests passing |
 | `cargo build --release` | ✅ Success |
 
 ---
@@ -20,7 +20,7 @@
 ## Project Statistics
 
 - **Rust source**: ~7,000 lines across 19 .rs files
-- **Tests**: 190 (unit + integration)
+- **Tests**: 219 (unit + integration)
 - **Frontend**: index.html with xterm.js integration
 - **Dependencies**: See Cargo.toml for current list
 
@@ -104,6 +104,9 @@
 
 ### File Transfer ✅
 - HTTP multipart upload with streaming size limit enforcement
+- Upload error handling: drains multipart body before returning 409/413 (prevents `ERR_CONNECTION_ABORTED`)
+- Frontend pre-checks file size and existence before upload (avoids unnecessary request)
+- `max_upload_size` and `file_transfer_enabled` exposed via `/api/config`
 - Streaming file download with path traversal protection
 - Directory listing via WebSocket (`file_list` / `file_list_result` messages)
 - File panel with subdirectory navigation and hidden file toggle
@@ -113,6 +116,8 @@
 - Hidden file filtering (default off, user-toggleable)
 - Content-Disposition filename sanitization
 - Session isolation: invalid session_id returns 404 (no fallback)
+- `UploadFileGuard` (RAII): automatic partial-file cleanup on all error paths
+- 6 dedicated upload integration tests (success, conflict, overwrite, size-exceeded, missing field, binary)
 - Configurable: enable/disable, fixed directory override, max upload size
 
 ---
@@ -152,7 +157,7 @@ src/
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | /api/health | Health check |
-| GET | /api/config | Client-facing config (auth method) |
+| GET | /api/config | Client-facing config (auth method, max_upload_size, file_transfer_enabled) |
 | GET | /api/sessions | List active sessions |
 | GET | /api/sessions/:id | Get session info |
 | DELETE | /api/sessions/:id | Terminate session |
@@ -160,6 +165,19 @@ src/
 | POST | /api/files/upload | Upload file (multipart, auth required) |
 | GET | /api/files/download?path= | Download file (auth required) |
 | GET | /api/files/list | List files in working dir (auth required) |
+
+### Examples
+
+```bash
+curl http://localhost:7681/api/health
+curl http://localhost:7681/api/sessions
+curl http://localhost:7681/api/stats
+
+# File operations (with auth)
+curl -u admin:secret -F "file=@myfile.txt" http://localhost:7681/api/files/upload
+curl -u admin:secret -o out.txt "http://localhost:7681/api/files/download?path=myfile.txt"
+curl -u admin:secret http://localhost:7681/api/files/list
+```
 
 ---
 

@@ -205,11 +205,17 @@ fn create_router(config: &Config, app_state: AppState, api_state: ApiState) -> R
             config: Arc::new(config.file_transfer.clone()),
             session_manager: app_state.session_manager.clone(),
         };
-        protected_api
+        // The upload route needs a larger body limit than axum's 2MB default.
+        // We set it to max_upload_size since we do our own incremental checking.
+        let upload_router = Router::new()
             .route(
                 "/api/files/upload",
                 post(super::files::upload_file).with_state(file_state.clone()),
             )
+            .layer(axum::extract::DefaultBodyLimit::max(
+                config.file_transfer.max_upload_size,
+            ));
+        let other_file_routes = Router::new()
             .route(
                 "/api/files/download",
                 get(super::files::download_file).with_state(file_state.clone()),
@@ -217,7 +223,8 @@ fn create_router(config: &Config, app_state: AppState, api_state: ApiState) -> R
             .route(
                 "/api/files/list",
                 get(super::files::list_files).with_state(file_state),
-            )
+            );
+        protected_api.merge(upload_router).merge(other_file_routes)
     } else {
         protected_api
     };

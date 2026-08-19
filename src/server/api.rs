@@ -192,12 +192,20 @@ pub async fn health_check() -> Json<HealthResponse> {
 #[derive(Debug, Serialize)]
 pub struct ConfigResponse {
     pub auth_method: Option<String>,
+    pub max_upload_size: Option<usize>,
+    pub file_transfer_enabled: bool,
 }
 
 /// Get client-facing configuration
 pub async fn get_config(State(state): State<ApiState>) -> Json<ConfigResponse> {
     Json(ConfigResponse {
         auth_method: state.config.auth.as_ref().map(|a| a.method.clone()),
+        max_upload_size: if state.config.file_transfer.enabled {
+            Some(state.config.file_transfer.max_upload_size)
+        } else {
+            None
+        },
+        file_transfer_enabled: state.config.file_transfer.enabled,
     })
 }
 

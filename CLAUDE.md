@@ -4,67 +4,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ttyd-rs is a Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd), a tool for sharing terminals over the web using WebSocket. This project focuses on enhanced security, memory safety, and modern async architecture.
+ttyd-rs is a Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd) — a tool for sharing terminals over the web via WebSocket. Focused on security, memory safety, and modern async architecture.
 
-**Target Platforms**: Linux only (no Windows or macOS support)
+**Platform**: Linux only
+**Status**: Production ready. See [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) for full technical reference.
 
-**Current Status**: Production ready. 190 tests passing, all clippy lints clean. See [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) for detailed readiness assessment.
-
-## Build & Development Commands
+## Build & Development
 
 ```bash
-# Build the project
-cargo build
-
-# Run in development mode
-cargo run
-
-# Run with release optimizations
-cargo run --release
-
-# Run tests
-cargo test
-
-# Run a specific test
-cargo test test_name
-
-# Check code without building
-cargo check
-
-# Run clippy lints (strict mode)
-cargo clippy -- -D warnings
-
-# Format code
-cargo fmt
-
-# Check formatting without modifying files
-cargo fmt -- --check
-
-# Add dependencies (always use latest version)
-cargo add <crate_name>
-cargo add <crate_name> --features <feature1>,<feature2>
+cargo build              # Debug build
+cargo build --release    # Release build
+cargo run                # Run in dev mode
+cargo test               # Run all tests
+cargo test test_name     # Run a specific test
+cargo check              # Type-check without building
+cargo clippy -- -D warnings  # Lint (strict mode)
+cargo fmt -- --check     # Format check
+cargo fmt                # Auto-format
 ```
 
-## Code Quality Requirements (Must Pass Before Commit)
-
-Before committing any code, ensure these commands pass:
+### Code Quality Gates (Must Pass Before Commit)
 
 ```bash
-# 1. Format check
 cargo fmt -- --check
-
-# 2. Clippy with zero warnings
 cargo clippy -- -D warnings
-
-# 3. All tests pass
 cargo test
 ```
 
-**All three must be green before code is considered complete.**
+**All three must be green.**
 
-## Code Quality Requirements
+### Lint Rules
 
-This project has **strict lint rules** configured in `Cargo.toml`:
+Configured in `Cargo.toml`:
 
 ```toml
 [lints.clippy]
@@ -73,161 +44,111 @@ expect-used = "deny"
 panic = "deny"
 ```
 
-**Critical**: Never use `.unwrap()`, `.expect()`, or `panic!()` in production code. Always use proper error handling with `Result` and `?` operator, or handle `Option` values explicitly with `match`, `if let`, or combinators like `.ok_or()`.
+**Never** use `.unwrap()`, `.expect()`, or `panic!()` in production code. Use `Result` + `?`, or handle `Option` with `match`/`if let`/`.ok_or()`.
 
-**Test code exception**: Test modules (`#[cfg(test)]`) may use `.unwrap()` for brevity, but must annotate the test module with `#[allow(clippy::unwrap_used)]`. Other error-discarding patterns (`let _ =`, `.ok()`, `.unwrap_or()`) are acceptable in production code only when:
-- The error is genuinely non-actionable (e.g., best-effort cleanup in `Drop`, WebSocket send to a possibly-disconnected client)
-- A fallback value is provided (e.g., `.ok().unwrap_or_else(|| 500_response)`)
-- The context makes the safety invariant clear and a comment explains why the error is ignored
+**Test exception**: `#[cfg(test)]` modules may use `.unwrap()` with `#[allow(clippy::unwrap_used)]`.
 
-When discarding a `Result`, prefer an explicit comment over a bare `let _ =`.
+### Dependency Management
 
-## Dependency Management
-
-**Always use `cargo add` to add dependencies** - never manually edit `Cargo.toml` for dependencies.
+Always use `cargo add` — never manually edit `Cargo.toml` for dependencies:
 
 ```bash
-# Add a dependency (latest version)
-cargo add tokio --features full
-
-# Add a dev dependency
-cargo add --dev criterion
-
-# Add a build dependency
-cargo add --build cc
+cargo add <crate> --features <feat1>,<feat2>
+cargo add --dev <crate>
+cargo add --build <crate>
 ```
-
-This ensures:
-- Latest stable versions are used
-- Proper version resolution
-- Consistent dependency management
 
 ## Architecture
 
+```
+┌─────────────────┐
+│   Web Browser   │
+│   (xterm.js)    │
+└────────┬────────┘
+         │ WebSocket
+         ▼
+┌─────────────────┐
+│  HTTP Server    │
+│  (axum)         │
+├─────────────────┤
+│ SessionManager  │
+│  └─ Sessions    │
+│     └─ PTY      │
+└─────────────────┘
+```
+
 ### Technology Stack
 
-- **Async runtime**: tokio
-- **Web framework**: axum (with WebSocket support)
-- **PTY management**: nix crate (Unix-specific PTY operations)
-- **Frontend**: xterm.js (embedded via rust-embed)
-- **CLI parsing**: clap
-- **Serialization**: serde / serde_json
-- **Logging**: tracing / tracing-subscriber
+| Component | Choice |
+|-----------|--------|
+| Async runtime | tokio |
+| Web framework | axum (WebSocket support) |
+| PTY management | nix (Unix-specific) |
+| Frontend | xterm.js (embedded via rust-embed) |
+| CLI parsing | clap |
+| Serialization | serde / serde_json |
+| Logging | tracing / tracing-subscriber |
+| Error handling | thiserror |
 
-### Module Structure
-
-**Important**: Use the new module style (Rust 2018+) without `mod.rs` files.
+### Project Structure
 
 ```
 src/
-├── main.rs           # Entry point, CLI parsing, config loading
-├── config.rs         # Configuration types and validation
-├── server.rs         # Server module declaration
+├── main.rs              # Entry point, CLI, config loading
+├── config.rs            # Configuration types and validation
+├── server.rs            # Server module declaration
 ├── server/
-│   ├── http.rs       # HTTP server, routing, static files
-│   ├── websocket.rs  # WebSocket handler, session management
-│   ├── api.rs        # REST API endpoints
-│   └── files.rs      # File transfer (upload/download/list)
-├── pty.rs            # PTY module declaration
+│   ├── http.rs          # HTTP server, routing, static files, body limits
+│   ├── websocket.rs     # WebSocket handler, session management
+│   ├── api.rs           # REST API endpoints
+│   └── files.rs         # File transfer (upload/download/list)
+├── pty.rs               # PTY module declaration
 ├── pty/
-│   ├── process.rs    # PTY process spawning and management
-│   └── session.rs    # PTY session wrapper
-├── auth.rs           # Auth module declaration
+│   ├── process.rs       # PTY process spawning and management
+│   └── session.rs       # PTY session wrapper
+├── auth.rs              # Auth module declaration
 ├── auth/
-│   ├── basic.rs      # Basic authentication
-│   └── token.rs      # Token authentication
-├── protocol.rs       # WebSocket message types
-├── session.rs        # Session manager, multi-client support
-├── audit.rs          # Audit logging
-├── rate_limit.rs     # Rate limiting
-├── validation.rs     # Input validation
-└── assets.rs         # Static asset embedding
+│   ├── basic.rs         # Basic authentication
+│   └── token.rs         # Token authentication
+├── protocol.rs          # WebSocket message types
+├── session.rs           # Session manager, multi-client support
+├── audit.rs             # Audit logging
+├── rate_limit.rs        # Rate limiting
+├── validation.rs        # Input validation
+└── assets.rs            # Static asset embedding
 ```
 
-**Module organization rule**: Instead of `module/mod.rs`, use `module.rs` at the parent level to declare the module and its submodules.
+### Key Design Decisions
 
-### Key Design Principles
-
-1. **Security-first**: Default configurations must be secure. Authentication is supported via Basic Auth and Token Auth with constant-time comparison.
-
-2. **Memory safety**: Leverage Rust's ownership system. Any `unsafe` code must be thoroughly documented and reviewed.
-
-3. **Async I/O**: All I/O operations use tokio's async runtime for performance.
-
-4. **PTY handling**: Use the `nix` crate for Unix PTY operations. Handle signals properly (SIGHUP for graceful shutdown, SIGKILL as fallback, TIOCSWINSZ for terminal resize).
-
-5. **Error handling**: All errors must be properly typed (using `thiserror`) and propagated. Never silence errors.
-
-## Security Implementation
-
-All security features are implemented:
-
-- **Authentication**: Basic Auth and Token Auth with constant-time comparison via `subtle` crate. Passwords are stored as SHA-256 hashes.
-- **Input validation**: Terminal size bounds, payload size limits, credential length limits
-- **Rate limiting**: Sliding window algorithm, per-IP tracking
-- **Audit logging**: Connection events, authentication attempts, session lifecycle
-- **Proxy support**: When `trust_proxy = true`, reads real client IP from `X-Real-IP` / `X-Forwarded-For` headers. Disabled by default to prevent IP spoofing when not behind a reverse proxy. Use `--trust-proxy` to enable.
-- **Reconnection**: Clients can reconnect within a configurable window (default 60s) without losing session state. Controlled by `--reconnect-window` / `session.reconnect_window`.
+- **Error handling**: All errors typed via `thiserror`, propagated with `?`. Never silenced.
+- **Concurrent I/O**: PTY output coalesced to reduce syscall frequency.
+- **Memory**: `broadcast::channel(512)` bounds per-session memory. `Arc` for shared state.
+- **PTY cleanup**: 5-stage process cleanup (SIGHUP → poll → SIGKILL → reap → background reaper).
+- **Upload safety**: `UploadFileGuard` (RAII) ensures partial files are removed on all error paths.
 
 ## WebSocket Protocol
 
-The WebSocket protocol uses JSON messages with the following types:
-- `auth` / `auth_ok` / `auth_fail` - Authentication flow
-- `input` / `output` - Terminal I/O
-- `resize` - Terminal resize
-- `ping` / `pong` - Keepalive
-- `error` / `disconnect` - Error handling
-- `ready` - Session ready notification
-- `join` - Join an existing session by ID
-- `file_list` / `file_list_result` - Directory listing via WebSocket
+JSON messages with these types: `auth`/`auth_ok`/`auth_fail`, `input`/`output`, `resize`, `ping`/`pong`, `error`/`disconnect`, `ready`, `join`, `file_list`/`file_list_result`.
 
-## REST API Endpoints
+Full spec: [docs/PROTOCOL.md](docs/PROTOCOL.md)
 
-```
-GET    /api/health            - Health check
-GET    /api/config            - Client-facing configuration (auth method)
-GET    /api/sessions          - List all active sessions
-GET    /api/sessions/:id      - Get session info
-DELETE /api/sessions/:id      - Terminate session
-GET    /api/stats             - Server statistics
-POST   /api/files/upload      - Upload file (multipart, auth required)
-GET    /api/files/download    - Download file (?path=, auth required)
-GET    /api/files/list        - List files in working dir (auth required)
-```
+## REST API
 
-## Development Stage
+See [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) for the complete endpoint reference with examples.
 
-**Current Status**: Production ready. All core milestones (M1-M6) completed. File transfer feature with security hardening. 190 tests passing.
+## Security
 
-For detailed status, known issues, and deployment recommendations, see [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md).
+See [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) for the full security assessment.
 
-**Implemented Features**:
-- CLI with all flags from original ttyd
-- Configuration file support (TOML)
-- HTTP server with static file serving
-- WebSocket terminal communication
-- PTY process management
-- Basic Auth and Token Auth
-- Rate limiting
-- Audit logging
-- Session management (isolated/shared modes)
-- REST API for session management
-- xterm.js frontend
-- HTTP file transfer (upload/download/list) with dynamic `$PWD` tracking
-- File transfer security: streaming I/O, overwrite protection, hidden file filtering, session isolation
-- WebSocket file listing (`file_list` / `file_list_result`) with subdirectory navigation
-- Frontend: three-dot kebab menu, connection status indicator, file panel with directory browsing
-
-## Reference Material
-
-- Original ttyd source code is in the `ttyd/` directory (for reference only)
-- See `DEVELOPMENT_GOALS.md` for detailed roadmap and feature matrix
-- Example configuration: `config.example.toml`
-- Project documentation: `docs/` directory
+Key implementation notes:
+- Constant-time comparison via `subtle` crate (timing-attack resistant)
+- SHA-256 password hashing (single-user in-memory scenario)
+- `trust_proxy` disabled by default to prevent IP spoofing
+- Reconnection window (default 60s) preserves session state
 
 ## Important Notes
 
 - The `ttyd/` directory contains the original C implementation for reference only
-- Focus on Linux only; explicitly no Windows or macOS support to simplify PTY handling
-- Performance targets: <50ms startup, <10MB idle memory, <5ms latency, >1000 concurrent connections
-- TLS is not planned; use a reverse proxy (nginx, Caddy) for HTTPS
+- Linux only; no Windows or macOS support (simplifies PTY handling)
+- TLS is not built-in; use a reverse proxy (nginx, Caddy) for HTTPS
+- Performance targets: <50ms startup, <10MB idle memory, >1000 concurrent connections

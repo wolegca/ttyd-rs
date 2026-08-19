@@ -1697,6 +1697,8 @@
             try {
                 const resp = await fetch('/api/config');
                 const config = await resp.json();
+                // Store upload limit for pre-flight checks
+                maxUploadSize = config.max_upload_size || null;
                 if (config.auth_method) {
                     authRequired = true;
                     if (config.auth_method === 'token') {
@@ -2053,6 +2055,8 @@
         /** @type {File[]} */
         let uploadQueue = [];
         let uploadQueueTotal = 0;
+        /** Maximum upload size in bytes (from server config, null if not set) */
+        let maxUploadSize = null;
 
         /** Queue files for sequential upload.
          *  @param {File[]|FileList} files
@@ -2080,11 +2084,52 @@
         }
 
         /**
+         * Check if a file already exists on the server.
+         * @param {string} filename
+         * @returns {Promise<boolean>}
+         */
+        async function checkFileExists(filename) {
+            try {
+                const url = '/api/files/list?session_id=' + encodeURIComponent(currentSessionId || '');
+                const headers = {};
+                const authHeader = getAuthHeader();
+                if (authHeader) headers['Authorization'] = authHeader;
+                const resp = await fetch(url, { headers });
+                if (!resp.ok) return false;
+                const data = await resp.json();
+                return data.entries.some(e => e.name === filename);
+            } catch {
+                return false; // If we can't check, let the server handle it
+            }
+        }
+
+        /**
          * Upload a file with progress tracking.
          * @param {File} file
          * @param {boolean} [overwrite=false]
          */
-        function uploadFile(file, overwrite = false) {
+        async function uploadFile(file, overwrite = false) {
+            // Pre-flight: check file size against server limit
+            if (maxUploadSize && file.size > maxUploadSize) {
+                showToast(`${file.name}: file size (${formatSize(file.size)}) exceeds limit (${formatSize(maxUploadSize)})`, 'error');
+                processUploadQueue();
+                return;
+            }
+
+            // Pre-flight: check if file already exists to avoid ERR_CONNECTION_ABORTED
+            if (!overwrite) {
+                const exists = await checkFileExists(file.name);
+                if (exists) {
+                    const ok = await showConfirm(`"${file.name}" already exists. Overwrite it?`);
+                    if (ok) {
+                        uploadFile(file, true);
+                    } else {
+                        processUploadQueue();
+                    }
+                    return;
+                }
+            }
+
             btnUpload.disabled = true;
             const position = uploadQueueTotal - uploadQueue.length;
             btnUpload.textContent = uploadQueueTotal > 1
