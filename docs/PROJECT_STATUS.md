@@ -1,7 +1,7 @@
 # ttyd-rs Project Status
 
 **Last Updated**: 2026-08-19
-**Version**: 0.5.1
+**Version**: 0.5.2
 **Status**: Production Ready
 
 ---
@@ -12,7 +12,7 @@
 |-------|--------|
 | `cargo fmt -- --check` | ✅ Pass |
 | `cargo clippy -- -D warnings` | ✅ Pass |
-| `cargo test` | ✅ 219 tests passing |
+| `cargo test` | ✅ 228 tests passing |
 | `cargo build --release` | ✅ Success |
 
 ---
@@ -20,7 +20,7 @@
 ## Project Statistics
 
 - **Rust source**: ~7,000 lines across 19 .rs files
-- **Tests**: 219 (unit + integration)
+- **Tests**: 228 (unit + integration)
 - **Frontend**: index.html with xterm.js integration
 - **Dependencies**: See Cargo.toml for current list
 
@@ -55,6 +55,7 @@
 
 - Lock ordering consistent: sessions → clients (no deadlock risk)
 - Session cleanup uses atomic operations to eliminate TOCTOU races
+- Connection limit enforced atomically (`compare_exchange` loop in `AppState::try_acquire_connection`), so `active_connections` can never exceed `max_connections` under concurrency
 - `CancellationToken` for coordinated graceful shutdown
 
 ---
@@ -228,8 +229,6 @@ None — all blocking issues resolved.
 
 | Severity | Issue | Location | Description |
 |----------|-------|----------|-------------|
-| Low | Connection counter race | `websocket.rs:96-109` | `load` + `fetch_add` with `Relaxed` ordering is not atomic. Use `compare_exchange`. |
-| Low | Audit log reopened on every write | `audit.rs:155-170` | No persistent file handle or log rotation. Risk of syscall overhead and disk exhaustion. |
 | Low | SHA-256 without salt | `auth/basic.rs:22-29` | Acceptable for single-user in-memory scenario, but bcrypt/argon2 more robust against hash leaks. |
 | Info | `Box<dyn Error>` for top-level handlers | `http.rs:25`, `websocket.rs:161` | Typed error enums would improve debuggability. |
 
@@ -238,6 +237,8 @@ None — all blocking issues resolved.
 | Issue | Resolution |
 |-------|------------|
 | Token validation rejects valid tokens | Fixed in v0.2.10: separated `validate_token_credentials` (length-only) from `validate_credentials` (base64 charset for basic auth) |
+| Connection counter race (`active_connections` could exceed `max_connections`) | Fixed: `load` + `fetch_add` replaced by atomic `compare_exchange` loop in `AppState::try_acquire_connection`; covered by concurrency regression tests in `websocket.rs` |
+| Audit log reopened on every write | Fixed: `AuditLogger` holds a persistent `Arc<tokio::sync::Mutex<Option<tokio::fs::File>>>` handle opened once at startup via `prepare()` |
 
 ---
 

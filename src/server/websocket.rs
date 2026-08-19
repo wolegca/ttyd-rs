@@ -51,6 +51,35 @@ pub struct AppState {
     pub active_connections: Arc<AtomicUsize>,
 }
 
+impl AppState {
+    /// Atomically claim a connection slot if the connection limit has not
+    /// been reached.
+    ///
+    /// Uses a `compare_exchange` loop so the limit check and the counter
+    /// increment happen as one atomic step: concurrent connections can
+    /// never both pass the check and both increment, so
+    /// `active_connections` can never exceed `max_connections`. Returns
+    /// `false` without touching the counter when the limit is reached.
+    pub(crate) fn try_acquire_connection(&self) -> bool {
+        let max = self.config.max_connections;
+        let mut current = self.active_connections.load(Ordering::Relaxed);
+        loop {
+            if current >= max {
+                return false;
+            }
+            match self.active_connections.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(next) => current = next,
+            }
+        }
+    }
+}
+
 /// Maximum allowed WebSocket message size (64 KB).
 ///
 /// The largest legitimate message is an `Input` payload (capped by
@@ -68,9 +97,9 @@ pub async fn websocket_handler(
 ) -> Response {
     let remote_addr = extract_real_ip(&headers, addr.ip(), state.config.trust_proxy);
 
-    // Check max connections limit
-    let current = state.active_connections.load(Ordering::Relaxed);
-    if current >= state.config.max_connections {
+    // Check max connections limit and increment the counter atomically
+    if !state.try_acquire_connection() {
+        let current = state.active_connections.load(Ordering::Relaxed);
         warn!(
             "Connection limit reached ({}/{}), rejecting {}",
             current, state.config.max_connections, remote_addr
@@ -80,9 +109,6 @@ pub async fn websocket_handler(
             .body(axum::body::Body::from("Connection limit reached"))
             .unwrap_or_default();
     }
-
-    // Increment active connection count
-    state.active_connections.fetch_add(1, Ordering::Relaxed);
 
     ws.max_message_size(MAX_WS_MESSAGE_SIZE)
         .on_upgrade(move |socket| handle_socket(socket, state, remote_addr))
@@ -349,4 +375,105 @@ async fn run_session(
     let _ = ws_sender.lock().await.close().await;
 
     Ok(reason)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::SessionMode;
+    use std::time::Duration;
+
+    fn test_state(max_connections: usize) -> AppState {
+        let config = Config {
+            max_connections,
+            ..Config::default()
+        };
+        let audit_logger = AuditLogger::new(config.audit.log_file.clone(), config.audit.enabled);
+        let validation = config.validation.clone();
+        let rate_limiter = RateLimiter::new(
+            config.rate_limit.max_requests,
+            config.rate_limit.window_seconds,
+        );
+        let session_mode: SessionMode = config.session.mode.parse().unwrap();
+        let session_manager = Arc::new(SessionManager::new(
+            Duration::from_secs(config.session.timeout),
+            session_mode,
+        ));
+
+        AppState {
+            config: Arc::new(config),
+            audit_logger: Arc::new(audit_logger),
+            validation: Arc::new(validation),
+            rate_limiter: Arc::new(rate_limiter),
+            session_manager,
+            shutdown_token: CancellationToken::new(),
+            active_connections: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Concurrency regression test for the connection limit: when many
+    /// connections race to claim slots, exactly `max` may succeed and the
+    /// counter must never exceed the limit. A check-then-increment that
+    /// yields between the two steps would let far more than `max` tasks
+    /// succeed and fail these assertions.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_try_acquire_connection_never_exceeds_limit() {
+        const MAX: usize = 100;
+        const TASKS: usize = 500;
+        let state = test_state(MAX);
+
+        let handles: Vec<_> = (0..TASKS)
+            .map(|_| {
+                let state = state.clone();
+                tokio::spawn(async move {
+                    if state.try_acquire_connection() {
+                        Some(state.active_connections.load(Ordering::Relaxed))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        let mut acquired = 0;
+        for handle in handles {
+            if let Some(count) = handle.await.unwrap() {
+                acquired += 1;
+                assert!(
+                    count <= MAX,
+                    "connection counter exceeded limit: {} > {}",
+                    count,
+                    MAX
+                );
+            }
+        }
+
+        assert_eq!(acquired, MAX, "exactly {} tasks should acquire a slot", MAX);
+        assert_eq!(
+            state.active_connections.load(Ordering::Relaxed),
+            MAX,
+            "final counter should equal the limit"
+        );
+    }
+
+    /// When the limit is reached, `try_acquire_connection` must reject
+    /// without touching the counter; a released slot can be claimed again.
+    #[tokio::test]
+    async fn test_try_acquire_connection_rejects_at_limit() {
+        let state = test_state(2);
+
+        assert!(state.try_acquire_connection());
+        assert!(state.try_acquire_connection());
+        assert!(!state.try_acquire_connection());
+
+        // The counter must be exactly 2 — a rejected attempt must not
+        // increment it.
+        assert_eq!(state.active_connections.load(Ordering::Relaxed), 2);
+
+        // A released slot (simulated by the handler's fetch_sub on close)
+        // can be claimed again.
+        state.active_connections.fetch_sub(1, Ordering::Relaxed);
+        assert!(state.try_acquire_connection());
+        assert_eq!(state.active_connections.load(Ordering::Relaxed), 2);
+    }
 }
