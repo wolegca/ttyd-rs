@@ -756,6 +756,10 @@
             border-radius: var(--radius-lg);
             width: 480px;
             max-width: 100%;
+            /* Fixed height so the panel doesn't collapse when the body is
+               swapped for the slim loading placeholder (e.g. toggling
+               "Show hidden" re-fetches the listing). */
+            height: min(74vh, 640px);
             max-height: 74vh;
             display: flex;
             flex-direction: column;
@@ -780,18 +784,44 @@
             flex: 1 1 auto;
         }
         #file-panel-header .fp-title .menu-item-icon { color: var(--accent); }
-        #file-panel-close {
+        #file-panel-close, #file-panel-refresh {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
             background: none;
             border: none;
             color: var(--text-muted);
-            font-size: 20px;
             line-height: 1;
             cursor: pointer;
-            padding: 3px 8px;
+            padding: 3px;
             border-radius: var(--radius-sm);
             transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
         }
-        #file-panel-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+        #file-panel-close { font-size: 20px; padding: 3px 8px; }
+        #file-panel-refresh { font-size: 0; }
+        #file-panel-refresh svg { display: block; }
+        #file-panel-close:hover, #file-panel-refresh:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+
+        .fp-hidden-toggle {
+            font-size: 12px;
+            color: var(--text-muted);
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: color var(--t-fast) var(--ease);
+        }
+        .fp-hidden-toggle:hover { color: var(--text-secondary); }
+        /* Compact variant of the .switch toggle for the file panel header */
+        .fp-hidden-toggle .switch { width: 34px; height: 20px; }
+        .fp-hidden-toggle .switch-slider::before { width: 14px; height: 14px; }
+        .fp-hidden-toggle .switch input:checked + .switch-slider::before {
+            transform: translateX(14px);
+        }
 
         #file-panel-breadcrumb {
             padding: 9px 18px;
@@ -1192,9 +1222,16 @@
                     </span>
                     Files
                 </span>
-                <label style="font-size:12px;color:var(--text-muted);cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px;">
-                    <input type="checkbox" id="show-hidden-toggle" style="vertical-align:middle;" /> Show hidden
+                <label class="fp-hidden-toggle">
+                    Show hidden
+                    <span class="switch">
+                        <input type="checkbox" id="show-hidden-toggle" aria-label="Show hidden files" />
+                        <span class="switch-slider"></span>
+                    </span>
                 </label>
+                <button id="file-panel-refresh" aria-label="Refresh file list" title="Refresh">
+                    <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v2.6h-2.6"/></svg>
+                </button>
                 <button id="file-panel-close" aria-label="Close file panel">&times;</button>
             </div>
             <div id="file-panel-breadcrumb"></div>
@@ -1264,6 +1301,8 @@
         // Persisted user preferences
         let fontSize = parseInt(localStorage.getItem('ttyd.fontSize') || String(DEFAULT_FONT_SIZE), 10);
         if (isNaN(fontSize)) fontSize = DEFAULT_FONT_SIZE;
+        // Clamp persisted value to the valid range (handles corrupt localStorage)
+        fontSize = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, fontSize));
         let cursorBlink = localStorage.getItem('ttyd.cursorBlink') !== 'false';
 
         const term = new Terminal({
@@ -1786,6 +1825,10 @@
             fontSizeLabel.textContent = String(fontSize);
         }
 
+        // Sync the label with the persisted font size on load so the
+        // displayed value always matches the actual terminal font size.
+        updateFontSizeLabel();
+
         function applyFontSize() {
             term.options.fontSize = fontSize;
             fitAddon.fit();
@@ -2275,9 +2318,18 @@
         const filePanelOverlay = document.getElementById('file-panel-overlay');
         const filePanelBody = document.getElementById('file-panel-body');
         const filePanelClose = document.getElementById('file-panel-close');
+        const filePanelRefresh = document.getElementById('file-panel-refresh');
         const filePanelBreadcrumb = document.getElementById('file-panel-breadcrumb');
         const showHiddenToggle = document.getElementById('show-hidden-toggle');
+        // Restore persisted "show hidden" preference (default: unchecked)
+        showHiddenToggle.checked = localStorage.getItem('ttyd.showHidden') === 'true';
         let currentFilePath = '.';
+        showHiddenToggle.addEventListener('change', () => {
+            // Persist the "show hidden" preference, then refresh the listing
+            localStorage.setItem('ttyd.showHidden', String(showHiddenToggle.checked));
+            showLoading();
+            requestFileList(currentFilePath);
+        });
 
         btnDownload.addEventListener('click', () => {
             openFilePanel();
@@ -2285,6 +2337,11 @@
 
         filePanelClose.addEventListener('click', () => {
             filePanelOverlay.classList.add('hidden');
+        });
+
+        filePanelRefresh.addEventListener('click', () => {
+            showLoading();
+            requestFileList(currentFilePath);
         });
 
         filePanelOverlay.addEventListener('click', (e) => {
@@ -2346,11 +2403,6 @@
             requestFileList('.');
             requestAnimationFrame(() => filePanelClose.focus());
         }
-
-        showHiddenToggle.addEventListener('change', () => {
-            showLoading();
-            requestFileList(currentFilePath);
-        });
 
         function joinPath(base, name) {
             if (base === '.' || base === '') return name;
