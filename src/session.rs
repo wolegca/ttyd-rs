@@ -58,11 +58,8 @@ impl std::fmt::Display for SessionMode {
 #[derive(Debug, Clone)]
 pub struct Client {
     pub client_id: String,
-    #[allow(dead_code)]
     pub remote_addr: String,
-    #[allow(dead_code)]
     pub username: Option<String>,
-    #[allow(dead_code)]
     pub connected_at: Instant,
     pub readonly: bool,
 }
@@ -73,9 +70,7 @@ pub struct SessionMetadata {
     pub session_id: String,
     pub mode: SessionMode,
     pub created_at: Instant,
-    #[allow(dead_code)]
     pub command: Vec<String>,
-    #[allow(dead_code)]
     pub working_dir: Option<String>,
 }
 
@@ -230,7 +225,6 @@ impl Session {
     }
 
     /// Get list of connected clients
-    #[allow(dead_code)]
     pub async fn list_clients(&self) -> Vec<Client> {
         self.clients.read().await.values().cloned().collect()
     }
@@ -336,7 +330,6 @@ impl SessionManager {
     }
 
     /// Get the total number of sessions
-    #[allow(dead_code)]
     pub async fn session_count(&self) -> usize {
         self.sessions.read().await.len()
     }

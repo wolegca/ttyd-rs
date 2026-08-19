@@ -117,7 +117,6 @@ impl RateLimiter {
     }
 
     /// Get current stats (for monitoring)
-    #[allow(dead_code)]
     pub async fn stats(&self) -> RateLimiterStats {
         let store = self.store.read().await;
         let now = Instant::now();
@@ -143,7 +142,6 @@ impl RateLimiter {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RateLimiterStats {
     pub active_clients: usize,

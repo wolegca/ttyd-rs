@@ -34,10 +34,8 @@ pub enum AuditEventType {
     ConnectionClosed,
     AuthSuccess,
     AuthFailure,
-    #[allow(dead_code)]
     CommandExecuted,
     SessionStarted,
-    #[allow(dead_code)]
     SessionEnded,
     ErrorOccurred,
 }

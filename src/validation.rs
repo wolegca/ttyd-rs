@@ -10,7 +10,6 @@ pub enum ValidationError {
     #[error("Input payload too large: {0} bytes (max: {1} bytes)")]
     PayloadTooLarge(usize, usize),
 
-    #[allow(dead_code)]
     #[error("Invalid UTF-8 in input")]
     InvalidUtf8,
 
@@ -20,7 +19,6 @@ pub enum ValidationError {
     #[error("Invalid message format: {0}")]
     InvalidFormat(String),
 
-    #[allow(dead_code)]
     #[error("Rate limit exceeded")]
     RateLimitExceeded,
 }

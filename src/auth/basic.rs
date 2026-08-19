@@ -56,7 +56,6 @@ impl BasicAuth {
     }
 
     /// Extract credentials from Authorization header
-    #[allow(dead_code)]
     pub fn extract_from_header(header: &str) -> Option<String> {
         header
             .strip_prefix("Basic ")
