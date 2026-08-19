@@ -21,25 +21,37 @@ mod tests {
 
     #[test]
     fn test_assets_get_xterm_js() {
-        let asset = Assets::get("vendor/xterm.js");
+        let asset = Assets::get("vendor/scripts/xterm.js");
         assert!(asset.is_some());
     }
 
     #[test]
     fn test_assets_get_xterm_css() {
-        let asset = Assets::get("vendor/xterm.css");
+        let asset = Assets::get("vendor/scripts/xterm.css");
         assert!(asset.is_some());
     }
 
     #[test]
     fn test_assets_get_fit_addon() {
-        let asset = Assets::get("vendor/xterm-addon-fit.js");
+        let asset = Assets::get("vendor/scripts/xterm-addon-fit.js");
         assert!(asset.is_some());
     }
 
     #[test]
     fn test_assets_get_web_links_addon() {
-        let asset = Assets::get("vendor/xterm-addon-web-links.js");
+        let asset = Assets::get("vendor/scripts/xterm-addon-web-links.js");
+        assert!(asset.is_some());
+    }
+
+    #[test]
+    fn test_assets_get_font_regular() {
+        let asset = Assets::get("vendor/fonts/0xProtoNerdFontMono-Regular.woff2");
+        assert!(asset.is_some());
+    }
+
+    #[test]
+    fn test_assets_get_font_bold() {
+        let asset = Assets::get("vendor/fonts/0xProtoNerdFontMono-Bold.woff2");
         assert!(asset.is_some());
     }
 

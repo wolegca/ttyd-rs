@@ -32,12 +32,24 @@ All dependencies are hosted locally instead of using CDN links to:
 - **License**: MIT
 - **Source**: https://github.com/xtermjs/xterm.js
 
+## Fonts
+
+Located in `fonts/`:
+
+### 0xProto Nerd Font Mono
+- **Files**: `0xProtoNerdFontMono-Regular.woff2`, `0xProtoNerdFontMono-Bold.woff2`
+- **Purpose**: Self-hosted terminal font (Nerd Font icons + ligatures)
+- **License**: OFL-1.1
+- **Source**: https://github.com/ryanoasis/nerd-fonts
+
+Referenced via `@font-face` in `index.html` and set as the xterm.js `fontFamily`.
+
 ## Updating Libraries
 
 To update these libraries to newer versions:
 
 ```bash
-cd static/vendor
+cd static/vendor/scripts
 
 # Download new versions
 curl -L -o xterm.js "https://cdn.jsdelivr.net/npm/@xterm/xterm@VERSION/lib/xterm.min.js"

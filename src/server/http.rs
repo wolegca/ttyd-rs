@@ -618,7 +618,7 @@ mod tests {
         let app = create_router(&config, app_state, api_state);
 
         let req = Request::builder()
-            .uri("/vendor/xterm.css")
+            .uri("/vendor/scripts/xterm.css")
             .body(Body::empty())
             .unwrap();
 
@@ -634,7 +634,7 @@ mod tests {
         let app = create_router(&config, app_state, api_state);
 
         let req = Request::builder()
-            .uri("/vendor/xterm.js")
+            .uri("/vendor/scripts/xterm.js")
             .header("accept-encoding", "gzip")
             .body(Body::empty())
             .unwrap();
@@ -657,7 +657,7 @@ mod tests {
         let mut decompressed = Vec::new();
         std::io::Read::read_to_end(&mut decoder, &mut decompressed).unwrap();
 
-        let original = crate::assets::Assets::get("vendor/xterm.js")
+        let original = crate::assets::Assets::get("vendor/scripts/xterm.js")
             .map(|f| f.data)
             .unwrap_or_default();
         assert_eq!(original, decompressed);
