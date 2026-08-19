@@ -96,7 +96,7 @@ CLI arguments override config file values. Run `ttyd-rs --help` for all options.
 
 ## License
 
-MIT License
+GNU AFFERO GENERAL PUBLIC LICENSE
 
 ## Contributing
 
