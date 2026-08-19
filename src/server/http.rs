@@ -111,6 +111,14 @@ pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Erro
     );
     info!("Session mode: {}", config.session.mode);
     info!("Session timeout: {}s", config.session.timeout);
+    if config.compression.enabled {
+        info!(
+            "Compression: gzip enabled (level {}, static assets only)",
+            config.compression.level
+        );
+    } else {
+        info!("Compression: disabled");
+    }
 
     // Spawn task to cancel token when shutdown signal is received.
     // This must happen before with_graceful_shutdown so that WebSocket handlers
@@ -242,12 +250,25 @@ fn create_router(config: &Config, app_state: AppState, api_state: ApiState) -> R
         protected_api
     };
 
-    Router::new()
+    // Static asset routes (index page + embedded fallback files).
+    // Gzip compression is applied only to these routes — API and WebSocket
+    // responses are intentionally left uncompressed.
+    let mut static_router = Router::new()
         .route("/", get(index_handler))
+        .fallback(static_handler);
+
+    if config.compression.enabled {
+        static_router =
+            static_router.layer(tower_http::compression::CompressionLayer::new().quality(
+                tower_http::compression::CompressionLevel::Precise(config.compression.level as i32),
+            ));
+    }
+
+    Router::new()
         .route("/ws", get(super::websocket::websocket_handler))
         .merge(public_api)
         .merge(protected_api)
-        .fallback(static_handler)
+        .merge(static_router)
         .with_state(app_state)
 }
 
@@ -539,6 +560,145 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── Compression tests ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_static_index_gzip_when_requested() {
+        let config = Config::default();
+        let (app_state, api_state) = test_state();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/")
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-encoding")
+                .and_then(|v| v.to_str().ok()),
+            Some("gzip")
+        );
+        let vary = resp
+            .headers()
+            .get("vary")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            vary.to_ascii_lowercase().contains("accept-encoding"),
+            "Vary header should include Accept-Encoding, got: {vary}"
+        );
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!body.is_empty());
+
+        // Compressed body must be smaller than the embedded original
+        let original = crate::assets::Assets::get("index.html")
+            .map(|f| f.data.len())
+            .unwrap_or(0);
+        assert!(
+            body.len() < original,
+            "compressed body ({}) should be smaller than original ({})",
+            body.len(),
+            original
+        );
+    }
+
+    #[tokio::test]
+    async fn test_static_no_gzip_when_not_requested() {
+        let config = Config::default();
+        let (app_state, api_state) = test_state();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/vendor/xterm.css")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().get("content-encoding").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_static_gzip_body_is_valid() {
+        let config = Config::default();
+        let (app_state, api_state) = test_state();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/vendor/xterm.js")
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-encoding")
+                .and_then(|v| v.to_str().ok()),
+            Some("gzip")
+        );
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+
+        // Decompress and verify it matches the embedded original byte-for-byte
+        let mut decoder = flate2::read::GzDecoder::new(&body[..]);
+        let mut decompressed = Vec::new();
+        std::io::Read::read_to_end(&mut decoder, &mut decompressed).unwrap();
+
+        let original = crate::assets::Assets::get("vendor/xterm.js")
+            .map(|f| f.data)
+            .unwrap_or_default();
+        assert_eq!(original, decompressed);
+    }
+
+    #[tokio::test]
+    async fn test_compression_disabled_in_config() {
+        let mut config = Config::default();
+        config.compression.enabled = false;
+        let (app_state, api_state) = test_state();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/")
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().get("content-encoding").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_api_not_compressed() {
+        let config = Config::default();
+        let (app_state, api_state) = test_state();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/api/health")
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            resp.headers().get("content-encoding").is_none(),
+            "API responses must not be compressed"
+        );
     }
 
     // ── API auth middleware tests ───────────────────────────────────

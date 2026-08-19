@@ -24,6 +24,9 @@ pub enum ConfigError {
 
     #[error("Invalid auth configuration: {0}")]
     InvalidAuth(String),
+
+    #[error("Invalid compression configuration: {0}")]
+    InvalidCompression(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +64,10 @@ pub struct Config {
     /// File transfer configuration
     #[serde(default)]
     pub file_transfer: FileTransferConfig,
+
+    /// HTTP response compression (gzip) for static assets
+    #[serde(default)]
+    pub compression: CompressionConfig,
 
     /// Trust proxy headers (X-Real-IP / X-Forwarded-For) for client IP
     #[serde(default)]
@@ -164,6 +171,34 @@ pub struct FileTransferConfig {
     pub max_upload_size: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionConfig {
+    /// Whether gzip compression is enabled for static asset responses
+    #[serde(default = "default_compression_enabled")]
+    pub enabled: bool,
+
+    /// gzip compression level (1 = fastest, 9 = best compression)
+    #[serde(default = "default_compression_level")]
+    pub level: u32,
+}
+
+fn default_compression_enabled() -> bool {
+    true
+}
+
+fn default_compression_level() -> u32 {
+    6
+}
+
+impl Default for CompressionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_compression_enabled(),
+            level: default_compression_level(),
+        }
+    }
+}
+
 fn default_file_transfer_enabled() -> bool {
     true
 }
@@ -189,6 +224,7 @@ impl Default for Config {
             validation: ValidationConfig::default(),
             rate_limit: RateLimitConfig::default(),
             file_transfer: FileTransferConfig::default(),
+            compression: CompressionConfig::default(),
             trust_proxy: false,
         }
     }
@@ -294,6 +330,14 @@ impl Config {
             return Err(ConfigError::InvalidRateLimit(
                 "window_seconds must be greater than 0".to_string(),
             ));
+        }
+
+        // Validate compression level (gzip levels are 1..=9)
+        if self.compression.enabled && !(1..=9).contains(&self.compression.level) {
+            return Err(ConfigError::InvalidCompression(format!(
+                "compression level must be between 1 and 9, got {}",
+                self.compression.level
+            )));
         }
 
         // Validate auth configuration consistency
