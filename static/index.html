@@ -842,6 +842,11 @@
             padding: 6px 0;
             flex: 1 1 auto;
         }
+        /* Soft fade-in when a new listing is rendered, so content swaps feel
+           smooth instead of a hard cut. */
+        #file-panel-body .file-item {
+            animation: fade-in 120ms var(--ease) both;
+        }
         .file-item {
             display: flex;
             align-items: center;
@@ -1580,6 +1585,7 @@
                         case 'error':
                             console.error('Error:', msg.data);
                             if (msg.data.code === 'FILE_LIST_ERROR' && !filePanelOverlay.classList.contains('hidden')) {
+                                cancelLoading();
                                 filePanelBody.innerHTML = `<div class="fp-empty">${escapeHtml(msg.data.message)}</div>`;
                             } else {
                                 writeErrorMessage(`Error: ${msg.data.message}`);
@@ -2324,6 +2330,7 @@
         // Restore persisted "show hidden" preference (default: unchecked)
         showHiddenToggle.checked = localStorage.getItem('ttyd.showHidden') === 'true';
         let currentFilePath = '.';
+        let loadingTimer = null;
         showHiddenToggle.addEventListener('change', () => {
             // Persist the "show hidden" preference, then refresh the listing
             localStorage.setItem('ttyd.showHidden', String(showHiddenToggle.checked));
@@ -2350,8 +2357,24 @@
             }
         });
 
+        // Show the loading spinner, but only after a short delay. If the
+        // listing arrives quickly we keep the previous content and render the
+        // new list directly — this avoids the spinner flashing for a few ms
+        // (the "flicker" seen on fast loads). Slow loads still get feedback.
+        const LOADING_DELAY = 250;
         function showLoading() {
-            filePanelBody.innerHTML = '<div class="fp-loading"><div class="spinner"></div>Loading...</div>';
+            if (loadingTimer !== null) return; // already pending
+            loadingTimer = setTimeout(() => {
+                loadingTimer = null;
+                filePanelBody.innerHTML = '<div class="fp-loading"><div class="spinner"></div>Loading...</div>';
+            }, LOADING_DELAY);
+        }
+
+        function cancelLoading() {
+            if (loadingTimer !== null) {
+                clearTimeout(loadingTimer);
+                loadingTimer = null;
+            }
         }
 
         function renderBreadcrumb(path) {
@@ -2393,6 +2416,7 @@
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: 'file_list', data: { path: currentFilePath, show_hidden: showHiddenToggle.checked } }));
             } else {
+                cancelLoading();
                 filePanelBody.innerHTML = '<div class="fp-empty">Not connected</div>';
             }
         }
@@ -2416,6 +2440,7 @@
         }
 
         function renderFileList(data) {
+            cancelLoading();
             const files = data.entries || [];
             filePanelBody.innerHTML = '';
 
