@@ -338,9 +338,12 @@ async fn run_session(
         }
     };
 
-    // Heartbeat timeout tracking
+    // Heartbeat timeout tracking. The monitor actively sends protocol-level
+    // ping frames (see pty_io::spawn_heartbeat_monitor) and treats a pong or
+    // app-level ping as proof of life.
     let last_ping_time = Arc::new(tokio::sync::Mutex::new(std::time::Instant::now()));
-    let mut heartbeat_task = pty_io::spawn_heartbeat_monitor(last_ping_time.clone());
+    let mut heartbeat_task =
+        pty_io::spawn_heartbeat_monitor(ws_sender.clone(), last_ping_time.clone());
 
     // ── Main message loop ───────────────────────────────────────────
     let mut ctx = message_loop::MessageLoopContext {

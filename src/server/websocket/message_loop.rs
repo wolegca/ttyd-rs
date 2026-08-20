@@ -82,6 +82,11 @@ pub(crate) async fn run(ctx: &mut MessageLoopContext<'_>) -> CloseReason {
                     warn!("Failed to parse message: {}", e);
                 }
             },
+            Ok(WsMessage::Pong(_)) => {
+                // Protocol-level pong: the client is alive. Refresh the
+                // heartbeat timestamp so the monitor does not time us out.
+                *ctx.last_ping_time.lock().await = Instant::now();
+            }
             Ok(WsMessage::Close(_)) => {
                 info!("WebSocket close received");
                 return CloseReason::ClientClosed;

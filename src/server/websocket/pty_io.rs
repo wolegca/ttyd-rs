@@ -234,21 +234,55 @@ pub(crate) fn spawn_output_subscriber(
 
 /// Spawn a heartbeat monitor task.
 ///
-/// Returns a `JoinHandle` that resolves to `false` if the heartbeat times out,
-/// or is aborted by the caller. The shared `last_ping_time` is updated by the
-/// main message loop when a Ping is received.
+/// The server periodically sends a **WebSocket protocol-level ping frame**.
+/// Per the WebSocket spec the client must answer with a pong frame, and
+/// browsers do this in their network stack — *independently of page JS* — so
+/// the connection stays alive even when the tab is backgrounded and its
+/// `setInterval` timers are throttled. This is what fixes the "idle tab drops
+/// after a while" problem.
+///
+/// Liveness is measured by `last_ping_time`, which is refreshed by *either*
+/// a protocol pong (handled in the main message loop) or an app-level JSON
+/// ping (kept for backward compatibility). If neither arrives within
+/// `heartbeat_timeout`, the client is considered dead and the handle
+/// resolves to `false`.
+///
+/// Returns a `JoinHandle` that resolves to `false` on timeout, or is aborted
+/// by the caller.
 pub(crate) fn spawn_heartbeat_monitor(
+    ws_sender: WsSender,
     last_ping_time: Arc<tokio::sync::Mutex<Instant>>,
 ) -> tokio::task::JoinHandle<bool> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(15));
-        let heartbeat_timeout = Duration::from_secs(90); // 90 seconds without ping = timeout
+        // Send a protocol ping every 30s; allow up to 90s of silence (3 missed
+        // pongs) before declaring the connection dead.
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        let heartbeat_timeout = Duration::from_secs(90);
+        // The first tick of a tokio interval fires immediately. Consume it so
+        // the first ping is actually delayed by a full interval — sending a
+        // ping at t=0 would race the client's initial reads (e.g. the
+        // handshake/ready exchange) and surface as a spurious non-text frame.
+        interval.tick().await;
         loop {
             interval.tick().await;
+
+            // Actively probe the client. A send failure means the socket is
+            // already gone — treat it as a timeout so we clean up promptly.
+            if ws_sender
+                .lock()
+                .await
+                .send(axum::extract::ws::Message::Ping(Default::default()))
+                .await
+                .is_err()
+            {
+                warn!("Heartbeat ping send failed, closing connection");
+                return false;
+            }
+
             let last = *last_ping_time.lock().await;
             if last.elapsed() > heartbeat_timeout {
                 warn!(
-                    "Client heartbeat timeout (no ping for {:?})",
+                    "Client heartbeat timeout (no ping/pong for {:?})",
                     heartbeat_timeout
                 );
                 return false; // Timeout occurred
