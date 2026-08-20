@@ -1445,6 +1445,31 @@
         /** @type {number | null} */
         let pongCheckTimer = null;
         let lastPongTime = Date.now();
+        // Timestamp of the most recent transition to document.hidden === true.
+        // Used to make pongCheckTimer immune to the tab-freeze race: if the
+        // tab went hidden more recently than our last pong, `elapsed` in
+        // pongCheckTimer reflects wall-clock time that includes a frozen
+        // stretch, not real silence from the server, so it must not be
+        // trusted until the foreground probe re-validates. This check is
+        // ordering-independent - it doesn't matter whether pongCheckTimer's
+        // post-freeze catch-up tick fires before or after the
+        // visibilitychange-to-visible handler runs, because lastHiddenAt was
+        // already recorded earlier, when the tab *went* hidden.
+        let lastHiddenAt = 0;
+        // True while we're waiting on a response to the foreground probe
+        // ping (see the visibilitychange handler below). Using a flag
+        // instead of comparing Date.now() timestamps avoids a same-
+        // millisecond false positive if the pong round-trip completes
+        // within 1ms (e.g. on localhost).
+        let probeAwaitingPong = false;
+        // One-off timer used to verify the connection right after the tab
+        // becomes visible again (see the visibilitychange handler below).
+        // Kept separate from heartbeatTimer/pongCheckTimer because those are
+        // setInterval-based and, after being throttled or fully frozen by
+        // the browser while backgrounded, their next tick time is
+        // unpredictable - not suitable for a "check right now" probe.
+        /** @type {number | null} */
+        let visibilityProbeTimer = null;
         let retryCount = 0;
         let serverDisconnected = false;
         let authFailed = false;
@@ -1458,6 +1483,10 @@
         const MAX_DELAY = 30000;
         const HEARTBEAT_INTERVAL = 30000;
         const PONG_TIMEOUT = 90000;
+        // Short timeout used only for the foreground probe below - the tab
+        // is actively being looked at, so we want a fast verdict rather than
+        // waiting out the full PONG_TIMEOUT.
+        const FOREGROUND_PROBE_TIMEOUT = 5000;
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/ws`;
 
@@ -1523,6 +1552,17 @@
 
                 // Pong timeout checker
                 pongCheckTimer = setInterval(() => {
+                    // Skip the check while the tab is hidden: timers are
+                    // throttled/frozen, so `elapsed` reflects wall-clock
+                    // silence (including the frozen stretch), not real
+                    // server silence. The foreground probe (visibilitychange
+                    // handler) does the real verification when we come back.
+                    //
+                    // The `document.hidden` check also covers the edge case
+                    // where the page was loaded in a background tab and
+                    // `visibilitychange` never fired, leaving `lastHiddenAt`
+                    // at its initial 0.
+                    if (document.hidden || lastHiddenAt > lastPongTime) return;
                     const elapsed = Date.now() - lastPongTime;
                     if (elapsed > PONG_TIMEOUT) {
                         console.error('Server pong timeout, forcing reconnect');
@@ -1569,6 +1609,7 @@
                             break;
                         case 'pong':
                             lastPongTime = Date.now();
+                            probeAwaitingPong = false;
                             break;
                         case 'disconnect':
                             console.log('Disconnected:', msg.data.reason);
@@ -1652,6 +1693,62 @@
             };
         }
 
+        // When a backgrounded tab becomes visible again, don't trust the
+        // socket's reported state at face value:
+        //  - Desktop browsers throttle/freeze setInterval while hidden, so
+        //    heartbeatTimer/pongCheckTimer may not have run in a long time;
+        //    lastPongTime can be stale even though the connection is fine.
+        //  - iOS Safari (and other mobile browsers) can silently kill the
+        //    underlying socket while backgrounded without ever firing
+        //    onclose/onerror, so readyState can still read OPEN on a dead
+        //    connection.
+        // Either way, the fix is the same: record when the tab goes hidden
+        // (so pongCheckTimer can ignore stale elapsed time - see its guard
+        // above) and, on return to visibility, actively probe the
+        // connection with a short, fresh one-off timer instead of waiting
+        // on the (possibly frozen) interval timers.
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                lastHiddenAt = Date.now();
+                return;
+            }
+
+            // Tab just became visible.
+            if (visibilityProbeTimer !== null) {
+                clearTimeout(visibilityProbeTimer);
+                visibilityProbeTimer = null;
+            }
+
+            if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+                // Already known to be down. Reconnect right away instead of
+                // waiting out the backoff timer, since the user is looking
+                // at the page now.
+                if (!serverDisconnected && !authFailed && (!authRequired || hasAuthenticated)) {
+                    if (reconnectTimer !== null) {
+                        clearTimeout(reconnectTimer);
+                        reconnectTimer = null;
+                    }
+                    retryCount = 0;
+                    connect();
+                }
+                return;
+            }
+
+            if (ws.readyState !== WebSocket.OPEN) return; // still connecting; leave it be
+
+            probeAwaitingPong = true;
+            sendMsg('ping', { timestamp: Date.now() });
+
+            visibilityProbeTimer = setTimeout(() => {
+                visibilityProbeTimer = null;
+                if (probeAwaitingPong) {
+                    probeAwaitingPong = false;
+                    console.warn('Foreground probe got no response, forcing reconnect');
+                    if (ws) ws.close();
+                }
+            }, FOREGROUND_PROBE_TIMEOUT);
+        });
+
         function stopHeartbeat() {
             if (heartbeatTimer !== null) {
                 clearInterval(heartbeatTimer);
@@ -1661,6 +1758,11 @@
                 clearInterval(pongCheckTimer);
                 pongCheckTimer = null;
             }
+            if (visibilityProbeTimer !== null) {
+                clearTimeout(visibilityProbeTimer);
+                visibilityProbeTimer = null;
+            }
+            probeAwaitingPong = false;
         }
 
         // Manual reconnect: reset retry/backoff and the session-ended flag,
