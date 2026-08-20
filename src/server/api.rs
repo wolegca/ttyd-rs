@@ -230,17 +230,72 @@ fn format_instant(instant: std::time::Instant) -> String {
     }
 }
 
+/// Pre-built authenticator for the API auth middleware.
+///
+/// Built once at router construction: Argon2 password hashing is
+/// expensive (~100 ms), so it must never run per request.
+#[derive(Clone)]
+pub(crate) enum ApiAuth {
+    Basic {
+        authenticator: crate::auth::BasicAuth,
+    },
+    Token {
+        authenticator: crate::auth::TokenAuth,
+    },
+}
+
+impl ApiAuth {
+    /// Build from the configured auth method.
+    ///
+    /// Returns `None` when the method is unknown, credentials are missing,
+    /// or password hashing fails — the middleware then denies every request
+    /// (fail closed).
+    pub(crate) fn from_config(config: &AuthConfig) -> Option<Self> {
+        match config.method.as_str() {
+            "basic" => match (&config.username, &config.password) {
+                (Some(username), Some(password)) => {
+                    match crate::auth::BasicAuth::new(username.clone(), password.clone()) {
+                        Ok(authenticator) => Some(Self::Basic { authenticator }),
+                        Err(e) => {
+                            tracing::error!("Failed to hash configured password: {}", e);
+                            None
+                        }
+                    }
+                }
+                _ => None,
+            },
+            "token" => config.token.as_ref().map(|token| Self::Token {
+                authenticator: crate::auth::TokenAuth::new(token.clone()),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Validate an `Authorization` header value against the configured method.
+    ///
+    /// Supports:
+    /// - Basic auth: `Authorization: Basic <base64(user:pass)>`
+    /// - Token auth: `Authorization: Bearer <token>`
+    fn validate_header(&self, header: &str) -> bool {
+        match self {
+            Self::Basic { authenticator } => header
+                .strip_prefix("Basic ")
+                .is_some_and(|credentials| authenticator.validate(credentials)),
+            Self::Token { authenticator } => header
+                .strip_prefix("Bearer ")
+                .is_some_and(|token| authenticator.validate(token)),
+        }
+    }
+}
+
 /// State for the API auth middleware
 #[derive(Clone)]
 pub(crate) struct ApiAuthState {
-    pub auth_config: AuthConfig,
+    /// Pre-built authenticator; `None` means auth is misconfigured — deny all.
+    pub auth: Option<ApiAuth>,
 }
 
 /// Middleware: validate Authorization header against configured credentials.
-///
-/// Supports:
-/// - Basic auth: `Authorization: Basic <base64(user:pass)>`
-/// - Token auth: `Authorization: Bearer <token>`
 pub(crate) async fn api_auth_middleware(
     State(auth_state): State<ApiAuthState>,
     request: Request,
@@ -251,37 +306,12 @@ pub(crate) async fn api_auth_middleware(
         .get("authorization")
         .and_then(|v| v.to_str().ok());
 
-    let authorized = match auth_header {
-        Some(header) => match auth_state.auth_config.method.as_str() {
-            "basic" => {
-                let credentials = header.strip_prefix("Basic ").map(String::from);
-                match (
-                    credentials,
-                    &auth_state.auth_config.username,
-                    &auth_state.auth_config.password,
-                ) {
-                    (Some(creds), Some(username), Some(password)) => {
-                        let authenticator =
-                            crate::auth::BasicAuth::new(username.clone(), password.clone());
-                        authenticator.validate(&creds)
-                    }
-                    _ => false,
-                }
-            }
-            "token" => {
-                let credentials = header.strip_prefix("Bearer ").map(String::from);
-                match (credentials, &auth_state.auth_config.token) {
-                    (Some(creds), Some(token)) => {
-                        let authenticator = crate::auth::TokenAuth::new(token.clone());
-                        authenticator.validate(&creds)
-                    }
-                    _ => false,
-                }
-            }
-            _ => false,
-        },
-        None => false,
-    };
+    let authorized = auth_header.is_some_and(|header| {
+        auth_state
+            .auth
+            .as_ref()
+            .is_some_and(|auth| auth.validate_header(header))
+    });
 
     if authorized {
         Ok(next.run(request).await)

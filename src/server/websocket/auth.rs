@@ -36,6 +36,35 @@ enum AuthMethod {
 }
 
 impl AuthMethod {
+    /// Build the validator from configuration.
+    ///
+    /// Returns `Err` with a reason when the method is unknown, credentials
+    /// are missing, or password hashing fails.
+    fn build(config: &crate::config::AuthConfig) -> Result<Self, String> {
+        match config.method.as_str() {
+            "basic" => {
+                let (Some(username), Some(password)) = (&config.username, &config.password) else {
+                    return Err("basic auth requires both username and password".to_string());
+                };
+                let validator = BasicAuth::new(username.clone(), password.clone())
+                    .map_err(|e| format!("failed to hash password: {e}"))?;
+                Ok(Self::Basic {
+                    validator,
+                    username: username.clone(),
+                })
+            }
+            "token" => {
+                let Some(token) = &config.token else {
+                    return Err("token auth requires a token".to_string());
+                };
+                Ok(Self::Token {
+                    validator: TokenAuth::new(token.clone()),
+                })
+            }
+            other => Err(format!("unknown auth method '{other}'")),
+        }
+    }
+
     /// Validate credentials against the stored auth method.
     fn validate(&self, credentials: &str) -> bool {
         match self {
@@ -140,49 +169,29 @@ pub(crate) async fn authenticate(
         return Ok(AuthResult::Success(None));
     };
 
-    // Build the auth method from config, or reject if misconfigured
-    let auth_method = match auth_config.method.as_str() {
-        "basic"
-            if let (Some(username), Some(password)) =
-                (&auth_config.username, &auth_config.password) =>
-        {
-            AuthMethod::Basic {
-                validator: BasicAuth::new(username.clone(), password.clone()),
-                username: username.clone(),
-            }
-        }
-        "token" if let Some(token) = &auth_config.token => AuthMethod::Token {
-            validator: TokenAuth::new(token.clone()),
-        },
-        _ => {
-            error!(
-                "Auth method '{}' is misconfigured — missing credentials",
-                auth_config.method
-            );
-            send_auth_fail(ws_sender, "Server authentication misconfigured").await?;
-            return Ok(AuthResult::Close(CloseReason::AuthFailed));
-        }
-    };
-
     perform_auth(
         state,
         ws_sender,
         ws_receiver,
         remote_addr,
         client_id,
-        &auth_method,
+        auth_config,
     )
     .await
 }
 
 /// Common authentication flow shared by all auth methods.
+///
+/// The authenticator is built lazily (after the rate-limit check and the
+/// client's auth message) because Argon2 hashing is expensive — connections
+/// that never attempt authentication must not trigger it.
 async fn perform_auth(
     state: &AppState,
     ws_sender: &WsSender,
     ws_receiver: &mut SplitStream<WebSocket>,
     remote_addr: &str,
     client_id: &str,
-    auth_method: &AuthMethod,
+    auth_config: &crate::config::AuthConfig,
 ) -> Result<AuthResult, Box<dyn std::error::Error + Send + Sync>> {
     // 1. Check rate limit before processing auth
     if let Err(duration) = state.rate_limiter.check(remote_addr).await {
@@ -220,7 +229,18 @@ async fn perform_auth(
         return Ok(AuthResult::Close(CloseReason::AuthFailed));
     }
 
-    // 4. Validate credentials format
+    // 4. Build the authenticator from configuration (misconfigured auth
+    //    rejects the connection)
+    let auth_method = match AuthMethod::build(auth_config) {
+        Ok(method) => method,
+        Err(reason) => {
+            error!("Failed to build authenticator: {}", reason);
+            send_auth_fail(ws_sender, "Server authentication misconfigured").await?;
+            return Ok(AuthResult::Close(CloseReason::AuthFailed));
+        }
+    };
+
+    // 5. Validate credentials format
     if let Err(e) = auth_method.validate_format(&state.validation, &auth_data.credentials) {
         warn!("Invalid credentials format: {}", e);
         state
@@ -231,7 +251,7 @@ async fn perform_auth(
         return Ok(AuthResult::Close(CloseReason::AuthFailed));
     }
 
-    // 5. Validate credentials (only accept the expected method)
+    // 6. Validate credentials (only accept the expected method)
     let valid = if auth_data.method == auth_method.method_name() {
         auth_method.validate(&auth_data.credentials)
     } else {
@@ -247,7 +267,7 @@ async fn perform_auth(
         return Ok(AuthResult::Close(CloseReason::AuthFailed));
     }
 
-    // 6. Success — log, reset rate limit, send AuthOk
+    // 7. Success — log, reset rate limit, send AuthOk
     state
         .audit_logger
         .log_auth_attempt(remote_addr, auth_method.audit_name(), true, client_id)

@@ -237,10 +237,12 @@ fn create_router(config: &Config, app_state: AppState, api_state: ApiState) -> R
         protected_api
     };
 
-    // Apply auth middleware to protected routes when auth is configured
+    // Apply auth middleware to protected routes when auth is configured.
+    // The authenticator (including the expensive Argon2 hashing) is built
+    // once here rather than per request.
     let protected_api = if let Some(ref auth_config) = config.auth {
         let auth_state = super::api::ApiAuthState {
-            auth_config: auth_config.clone(),
+            auth: super::api::ApiAuth::from_config(auth_config),
         };
         protected_api.layer(middleware::from_fn_with_state(
             auth_state,

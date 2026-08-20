@@ -1,6 +1,7 @@
 /// Token-based authentication implementation
 use sha2::{Digest, Sha256};
 
+#[derive(Clone)]
 pub struct TokenAuth {
     /// SHA-256 hex digest of the configured token
     token_hash: String,

@@ -2,7 +2,7 @@
 
 A Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd) — Share your terminal over the web using WebSocket.
 
-**Version**: v0.6.0
+**Version**: v0.6.1
 **Status**: Production-ready
 **Platform**: Linux only
 

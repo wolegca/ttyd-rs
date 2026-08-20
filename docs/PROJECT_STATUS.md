@@ -1,7 +1,7 @@
 # ttyd-rs Project Status
 
-**Last Updated**: 2026-08-19
-**Version**: 0.6.0
+**Last Updated**: 2026-08-20
+**Version**: 0.6.1
 **Status**: Production Ready
 
 ---
@@ -12,7 +12,7 @@
 |-------|--------|
 | `cargo fmt -- --check` | ✅ Pass |
 | `cargo clippy -- -D warnings` | ✅ Pass |
-| `cargo test` | ✅ 228 tests passing |
+| `cargo test` | ✅ 230 tests passing |
 | `cargo build --release` | ✅ Success |
 
 ---
@@ -20,7 +20,7 @@
 ## Project Statistics
 
 - **Rust source**: ~7,000 lines across 19 .rs files
-- **Tests**: 228 (unit + integration)
+- **Tests**: 230 (unit + integration)
 - **Frontend**: index.html with xterm.js integration
 - **Dependencies**: See Cargo.toml for current list
 
@@ -38,7 +38,7 @@
 ### 2. Security — Good
 
 - **Authentication**: Constant-time comparison via `subtle` crate (prevents timing attacks)
-- **Password storage**: SHA-256 hashed, raw credentials never persist beyond construction
+- **Password storage**: Argon2id hashed (random salt per instance), raw credentials never persist beyond construction
 - **Input validation**: Terminal size bounds, payload size limits, credential format checks
 - **No path traversal**: Static files embedded at compile time via `rust-embed`
 - **No XSS risk**: Server does not reflect user input into HTML
@@ -81,7 +81,7 @@
 - Zombie process reaping
 
 ### M4: Security Layer ✅
-- Basic Auth with SHA-256 password hashing
+- Basic Auth with Argon2id password hashing (random salt)
 - Token Auth with constant-time comparison (subtle crate)
 - Rate limiting (sliding window, per-IP)
 - Input validation (terminal size, payload, credentials)
@@ -227,15 +227,16 @@ None — all blocking issues resolved.
 
 ### Non-Blocking (Fix in Next Release)
 
-| Severity | Issue | Location | Description |
-|----------|-------|----------|-------------|
-| Low | SHA-256 without salt | `auth/basic.rs:22-29` | Acceptable for single-user in-memory scenario, but bcrypt/argon2 more robust against hash leaks. |
-| Info | `Box<dyn Error>` for top-level handlers | `http.rs:25`, `websocket.rs:161` | Typed error enums would improve debuggability. |
+None. Previously listed items have been resolved or reclassified:
+
+- **SHA-256 without salt** — Resolved in v0.6.1 (see below).
+- **`Box<dyn Error>` for top-level handlers** — Reclassified as an accepted design decision: `start_server` (`http.rs`) is the process entry point and its error is only logged by `main`; all lower layers already use typed `thiserror` enums, so a top-level error type would add no actionable information.
 
 ### Resolved
 
 | Issue | Resolution |
 |-------|------------|
+| SHA-256 without salt (basic auth) | Fixed in v0.6.1: password hashing migrated to Argon2id with a per-instance random salt (`argon2` crate). To keep authentication cheap under load, the API middleware now builds its authenticator once at router construction instead of on every request, and WebSocket auth defers hashing until after the rate-limit check and the client's auth message (connection spam that never authenticates costs no hashing). |
 | Token validation rejects valid tokens | Fixed in v0.2.10: separated `validate_token_credentials` (length-only) from `validate_credentials` (base64 charset for basic auth) |
 | Connection counter race (`active_connections` could exceed `max_connections`) | Fixed: `load` + `fetch_add` replaced by atomic `compare_exchange` loop in `AppState::try_acquire_connection`; covered by concurrency regression tests in `websocket.rs` |
 | Audit log reopened on every write | Fixed: `AuditLogger` holds a persistent `Arc<tokio::sync::Mutex<Option<tokio::fs::File>>>` handle opened once at startup via `prepare()` |

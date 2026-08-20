@@ -142,7 +142,7 @@ See [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) for the full security asses
 
 Key implementation notes:
 - Constant-time comparison via `subtle` crate (timing-attack resistant)
-- SHA-256 password hashing (single-user in-memory scenario)
+- Argon2id password hashing with random salt (basic auth); SHA-256 + constant-time comparison for token auth
 - `trust_proxy` disabled by default to prevent IP spoofing
 - Reconnection window (default 60s) preserves session state
 
