@@ -1,7 +1,7 @@
 # ttyd-rs Project Status
 
 **Last Updated**: 2026-08-21
-**Version**: 0.6.1
+**Version**: 0.7.0
 **Status**: Production Ready
 
 ---
@@ -12,7 +12,7 @@
 |-------|--------|
 | `cargo fmt -- --check` | ✅ Pass |
 | `cargo clippy -- -D warnings` | ✅ Pass |
-| `cargo test` | ✅ 234 tests passing |
+| `cargo test` | ✅ 242 tests passing |
 | `cargo build --release` | ✅ Success |
 
 ---
@@ -20,7 +20,7 @@
 ## Project Statistics
 
 - **Rust source**: ~7,000 lines across 19 .rs files
-- **Tests**: 234 (unit + integration)
+- **Tests**: 242 (unit + integration)
 - **Frontend**: index.html with xterm.js integration
 - **Dependencies**: See Cargo.toml for current list
 
@@ -38,7 +38,7 @@
 ### 2. Security — Good
 
 - **Authentication**: Constant-time comparison via `subtle` crate (prevents timing attacks)
-- **Password storage**: Argon2id hashed (random salt per instance), raw credentials never persist beyond construction
+- **Password storage**: Argon2id hashed (random salt per instance), raw credentials never persist beyond construction; the config file / CLI accepts either a plaintext password (logged with a startup warning) or a pre-hashed Argon2id PHC string generated via `ttyd-rs --hash-password`
 - **Input validation**: Terminal size bounds, payload size limits, credential format checks
 - **No path traversal**: Static files embedded at compile time via `rust-embed`; `..` path segments are explicitly rejected
 - **No XSS risk**: Server does not reflect user input into HTML
@@ -83,6 +83,7 @@
 
 ### M4: Security Layer ✅
 - Basic Auth with Argon2id password hashing (random salt)
+- Password can be configured as an Argon2id PHC hash (`ttyd-rs --hash-password` generates it; plaintext triggers a startup warning)
 - Token Auth with constant-time comparison (subtle crate)
 - Rate limiting (sliding window, per-IP)
 - Input validation (terminal size, payload, credentials)
@@ -226,6 +227,7 @@ curl -u admin:secret http://localhost:7681/api/files/list
 | --auth | false | Enable authentication |
 | --trust-proxy | false | Trust proxy headers |
 | --audit | false | Enable audit logging |
+| --hash-password | — | Read a password from stdin, print its Argon2id hash, and exit |
 
 ---
 
@@ -246,6 +248,7 @@ None. Previously listed items have been resolved or reclassified:
 
 | Issue | Resolution |
 |-------|------------|
+| Plaintext password in configuration file | Fixed in v0.7.0: the `[auth]` password value (and `--password`) may be an Argon2id PHC hash string starting with `$argon2id$`; it is validated at startup (malformed hashes fail fast) and stored as-is, so the plaintext password never touches the config file. `ttyd-rs --hash-password` reads a password from stdin and prints the hash. Plaintext remains supported for backward compatibility but logs a startup warning. |
 | SHA-256 without salt (basic auth) | Fixed in v0.6.1: password hashing migrated to Argon2id with a per-instance random salt (`argon2` crate). To keep authentication cheap under load, the API middleware now builds its authenticator once at router construction instead of on every request, and WebSocket auth defers hashing until after the rate-limit check and the client's auth message (connection spam that never authenticates costs no hashing). |
 | Token validation rejects valid tokens | Fixed in v0.2.10: separated `validate_token_credentials` (length-only) from `validate_credentials` (base64 charset for basic auth) |
 | Connection counter race (`active_connections` could exceed `max_connections`) | Fixed: `load` + `fetch_add` replaced by atomic `compare_exchange` loop in `AppState::try_acquire_connection`; covered by concurrency regression tests in `websocket.rs` |
@@ -256,11 +259,12 @@ None. Previously listed items have been resolved or reclassified:
 ## Deployment Recommendations
 
 1. **Enable authentication** — configure `[auth]` section in config
-2. **Enable audit logging** — configure `[audit]` section for security monitoring
-3. **Use reverse proxy** — nginx/Caddy for HTTPS termination (TLS not built-in)
-4. **Tune limits** — adjust `max_connections` and rate limit parameters for expected load
-5. **Set `trust_proxy`** — enable only when behind a trusted reverse proxy
-6. **Configure file transfer** — set `[file_transfer]` dir or rely on dynamic `$PWD` tracking
+2. **Store the password as an Argon2id hash** — `printf 'secret\n' | ttyd-rs --hash-password`, use the output as the `password` value; keep the config file readable only by the service user (`chmod 600`)
+3. **Enable audit logging** — configure `[audit]` section for security monitoring
+4. **Use reverse proxy** — nginx/Caddy for HTTPS termination (TLS not built-in)
+5. **Tune limits** — adjust `max_connections` and rate limit parameters for expected load
+6. **Set `trust_proxy`** — enable only when behind a trusted reverse proxy
+7. **Configure file transfer** — set `[file_transfer]` dir or rely on dynamic `$PWD` tracking
 
 ---
 

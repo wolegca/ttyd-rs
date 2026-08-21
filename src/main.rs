@@ -1,9 +1,11 @@
 use ttyd_rs::{
+    auth::BasicAuth,
     config::{AuthConfig, Config},
     pty, server,
 };
 
 use clap::Parser;
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -77,11 +79,27 @@ struct Args {
     /// Trust proxy headers (X-Real-IP / X-Forwarded-For) for client IP
     #[arg(long)]
     trust_proxy: bool,
+
+    /// Read a password from stdin, print its Argon2id hash (PHC string) for
+    /// the configuration file, and exit. The hash can replace the plaintext
+    /// value of `password` in `[auth]` (or `--password`).
+    #[arg(long)]
+    hash_password: bool,
 }
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+
+    // `--hash-password` is a standalone utility mode: hash the password
+    // read from stdin and exit without starting the server.
+    if args.hash_password {
+        if let Err(e) = run_hash_password() {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
 
     // Load the configuration before initializing logging: the global
     // tracing subscriber can only be installed once, and the config file's
@@ -103,6 +121,18 @@ async fn main() {
     tracing::info!("Starting ttyd-rs v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Configuration: {:?}", config);
 
+    if config
+        .auth
+        .as_ref()
+        .is_some_and(AuthConfig::uses_plaintext_password)
+    {
+        tracing::warn!(
+            "The basic-auth password is stored in plaintext (config file or \
+             --password). Run `ttyd-rs --hash-password` to generate an \
+             Argon2id hash and use it as the `password` value instead."
+        );
+    }
+
     // Register the global SIGCHLD handler.
     if let Err(e) = pty::process::register_sigchld_handler() {
         tracing::error!("Failed to register SIGCHLD handler: {}", e);
@@ -114,6 +144,37 @@ async fn main() {
         tracing::error!("Server error: {}", e);
         std::process::exit(1);
     }
+}
+
+/// Hash a password read from stdin and print the PHC string to stdout.
+///
+/// Usage: `printf 'pass\n' | ttyd-rs --hash-password`
+fn run_hash_password() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::IsTerminal;
+
+    // Prompt only when stdin is a terminal, so piped usage keeps stdout/stderr
+    // clean and scriptable. The prompt goes to stderr (never stdout) so the
+    // hash remains the only thing written to stdout.
+    if std::io::stdin().is_terminal() {
+        eprint!(
+            "Enter password (input will be echoed; to avoid that, pipe it \
+             instead, e.g.: echo my-password | ttyd-rs --hash-password): "
+        );
+        std::io::stderr().flush()?;
+    }
+
+    let mut password = String::new();
+    std::io::stdin().lock().read_line(&mut password)?;
+    // Trim the trailing newline (and an optional carriage return on CRLF).
+    let password = password.trim_end_matches(['\r', '\n']);
+    if password.is_empty() {
+        return Err("password must not be empty".into());
+    }
+    let hash =
+        BasicAuth::hash_password(password).map_err(|e| format!("failed to hash password: {e}"))?;
+    let mut stdout = std::io::stdout().lock();
+    writeln!(stdout, "{}", hash)?;
+    Ok(())
 }
 
 /// Initialize the tracing subscriber for logging.
@@ -235,6 +296,7 @@ mod tests {
             audit: false,
             audit_file: None,
             trust_proxy: false,
+            hash_password: false,
         };
 
         let config = load_config(&args).unwrap();
@@ -264,6 +326,7 @@ mod tests {
             audit: false,
             audit_file: None,
             trust_proxy: false,
+            hash_password: false,
         };
 
         let config = load_config(&args).unwrap();
@@ -299,6 +362,7 @@ mod tests {
             audit: true,
             audit_file: Some(PathBuf::from("/tmp/audit.log")),
             trust_proxy: false,
+            hash_password: false,
         };
 
         let config = load_config(&args).unwrap();
@@ -359,6 +423,7 @@ enabled = false
             audit: false,
             audit_file: None,
             trust_proxy: false,
+            hash_password: false,
         };
 
         let config = load_config(&args).unwrap();
@@ -426,6 +491,7 @@ enabled = false
             audit: false,
             audit_file: None,
             trust_proxy: false,
+            hash_password: false,
         };
 
         let config = load_config(&args).unwrap();

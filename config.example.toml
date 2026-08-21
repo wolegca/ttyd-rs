@@ -38,7 +38,23 @@ timeout = 3600
 [auth]
 method = "basic"  # "basic" or "token"
 username = "admin"
-password = "changeme"
+
+# Recommended: store an Argon2id PHC hash instead of the plaintext password,
+# so the plaintext never appears in this file (which may be backed up,
+# synced, or packaged into images). Generate one and paste the output here:
+#
+#   printf 'your-password\n' | ttyd-rs --hash-password
+#
+# (interactive: run `ttyd-rs --hash-password`; you will be prompted)
+password = "$argon2id$v=19$m=19456,t=2,p=1$REPLACE_WITH_YOUR_GENERATED_HASH"
+
+# Plaintext passwords are still accepted for backward compatibility, but
+# trigger a startup warning recommending migration to the hash above:
+# password = "changeme"
+#
+# Note: any value starting with `$argon2id$` is treated as a pre-hashed
+# credential and validated at startup, so a literal plaintext password that
+# happens to begin with that prefix is not supported.
 
 # Audit logging configuration
 [audit]

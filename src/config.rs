@@ -89,6 +89,18 @@ pub struct AuthConfig {
     pub token: Option<String>,
 }
 
+impl AuthConfig {
+    /// Returns true when basic auth is configured with a plaintext password
+    /// (i.e. the value is not an Argon2id PHC hash).
+    pub fn uses_plaintext_password(&self) -> bool {
+        self.method == "basic"
+            && self
+                .password
+                .as_ref()
+                .is_some_and(|password| !password.starts_with(crate::auth::ARGON2ID_PREFIX))
+    }
+}
+
 impl std::fmt::Debug for AuthConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AuthConfig")
@@ -349,6 +361,19 @@ impl Config {
                             "basic auth requires both username and password".to_string(),
                         ));
                     }
+                    // A configured value that looks like a hash must be a
+                    // well-formed Argon2id PHC string; fail fast at startup
+                    // instead of silently failing every verification later.
+                    if let Some(password) = &auth.password
+                        && password.starts_with(crate::auth::ARGON2ID_PREFIX)
+                        && !crate::auth::is_valid_argon2_hash(password)
+                    {
+                        return Err(ConfigError::InvalidAuth(
+                            "basic auth password looks like an Argon2id hash but is malformed; \
+                             generate one with `ttyd-rs --hash-password`"
+                                .to_string(),
+                        ));
+                    }
                 }
                 "token" => {
                     if auth.token.is_none() {
@@ -427,6 +452,58 @@ mod tests {
         let mut config = Config::default();
         config.rate_limit.window_seconds = 0;
         assert!(config.validate().is_err());
+    }
+
+    /// Build a basic-auth config with the given password value.
+    fn basic_auth_config(password: Option<String>) -> AuthConfig {
+        AuthConfig {
+            method: "basic".to_string(),
+            username: Some("admin".to_string()),
+            password,
+            token: None,
+        }
+    }
+
+    #[test]
+    fn test_config_validation_invalid_auth_missing_password() {
+        let config = Config {
+            auth: Some(basic_auth_config(None)),
+            ..Config::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_validation_accepts_valid_password_hash() {
+        let hash = crate::auth::BasicAuth::hash_password("secret").unwrap();
+        let config = Config {
+            auth: Some(basic_auth_config(Some(hash))),
+            ..Config::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_validation_rejects_malformed_password_hash() {
+        let config = Config {
+            auth: Some(basic_auth_config(Some("$argon2id$malformed".to_string()))),
+            ..Config::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_uses_plaintext_password() {
+        let mut auth = basic_auth_config(Some("secret".to_string()));
+        assert!(auth.uses_plaintext_password());
+
+        auth.password = Some("$argon2id$malformed".to_string());
+        assert!(!auth.uses_plaintext_password());
+
+        auth.method = "token".to_string();
+        auth.token = Some("token".to_string());
+        auth.password = Some("secret".to_string());
+        assert!(!auth.uses_plaintext_password());
     }
 
     #[test]

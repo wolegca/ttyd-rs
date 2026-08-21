@@ -112,6 +112,7 @@
    - Docker container support
    - systemd service file
    - Reverse proxy configuration examples
+   - Credential injection via environment variables / systemd `LoadCredential` (e.g. `TTYD_RS_AUTH_PASSWORD`), complementing the v0.7.0 Argon2id hash-in-config support
 
 3. **Performance Optimizations**
    - Connection pooling
@@ -138,4 +139,4 @@
 
 ---
 
-Last Updated: 2026-08-20
+Last Updated: 2026-08-21

@@ -5,6 +5,32 @@ use argon2::password_hash::{
 };
 use base64::{Engine as _, engine::general_purpose};
 
+/// PHC prefix identifying an Argon2id hash. A configured `password` value
+/// starting with this prefix is treated as a pre-hashed credential instead
+/// of plaintext.
+pub const ARGON2ID_PREFIX: &str = "$argon2id$";
+
+/// Returns true if the string is a well-formed Argon2id PHC hash.
+pub fn is_valid_argon2_hash(s: &str) -> bool {
+    s.starts_with(ARGON2ID_PREFIX) && parse_argon2id_hash(s).is_ok()
+}
+
+/// Parse and structurally validate an Argon2id PHC string.
+///
+/// `PasswordHash::new` alone is lenient (it accepts partial strings such as
+/// `$argon2id$malformed`), so the salt and digest fields and the algorithm
+/// identifier are checked explicitly.
+fn parse_argon2id_hash(s: &str) -> Result<PasswordHash<'_>, argon2::password_hash::Error> {
+    let parsed = PasswordHash::new(s)?;
+    if parsed.algorithm != argon2::Algorithm::Argon2id.ident() {
+        return Err(argon2::password_hash::Error::Algorithm);
+    }
+    if parsed.salt.is_none() || parsed.hash.as_ref().is_none_or(|h| h.as_ref().is_empty()) {
+        return Err(argon2::password_hash::Error::PhcStringField);
+    }
+    Ok(parsed)
+}
+
 #[derive(Clone)]
 pub struct BasicAuth {
     username: String,
@@ -13,20 +39,49 @@ pub struct BasicAuth {
 }
 
 impl BasicAuth {
-    /// Hash the configured password with Argon2id and a random salt.
+    /// Build an authenticator from a username and a password value that is
+    /// either plaintext or a pre-hashed Argon2id PHC string.
     ///
-    /// Argon2id is memory-hard, so a leaked in-memory hash cannot be cracked
-    /// with rainbow tables or cheap GPU brute force the way an unsalted
-    /// SHA-256 digest can.
+    /// When the value starts with `$argon2id$` it is stored as-is (after
+    /// format validation), so the plaintext password never needs to appear
+    /// in the configuration file or on the command line. Otherwise it is
+    /// hashed with Argon2id and a random salt: Argon2id is memory-hard, so a
+    /// leaked in-memory hash cannot be cracked with rainbow tables or cheap
+    /// GPU brute force the way an unsalted SHA-256 digest can.
     pub fn new(username: String, password: String) -> Result<Self, argon2::password_hash::Error> {
-        let salt = SaltString::generate(&mut OsRng);
-        let password_hash = Argon2::default()
-            .hash_password(password.as_bytes(), &salt)?
-            .to_string();
+        if password.starts_with(ARGON2ID_PREFIX) {
+            return Self::from_hash(username, password);
+        }
+        let password_hash = Self::hash_password(&password)?;
         Ok(Self {
             username,
             password_hash,
         })
+    }
+
+    /// Build an authenticator from an existing Argon2id PHC hash string.
+    ///
+    /// The hash is validated up front so a malformed configured hash fails
+    /// at construction instead of silently failing every verification later.
+    pub fn from_hash(
+        username: String,
+        password_hash: String,
+    ) -> Result<Self, argon2::password_hash::Error> {
+        // Validate the PHC structure (algorithm, salt, digest) eagerly.
+        parse_argon2id_hash(&password_hash)?;
+        Ok(Self {
+            username,
+            password_hash,
+        })
+    }
+
+    /// Hash a plaintext password with Argon2id and a random salt, returning
+    /// the PHC string suitable for the configuration file.
+    pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
+        let salt = SaltString::generate(&mut OsRng);
+        Ok(Argon2::default()
+            .hash_password(password.as_bytes(), &salt)?
+            .to_string())
     }
 
     /// Validate credentials encoded as "username:password" in base64
@@ -143,5 +198,43 @@ mod tests {
         let auth = BasicAuth::new("user".to_string(), "pass1".to_string()).unwrap();
         let credentials = general_purpose::STANDARD.encode("user:pass2");
         assert!(!auth.validate(&credentials));
+    }
+
+    #[test]
+    fn test_new_accepts_pre_hashed_password() {
+        let hash = BasicAuth::hash_password("secret").unwrap();
+        // A value starting with the Argon2id prefix is stored as-is
+        let auth = BasicAuth::new("admin".to_string(), hash.clone()).unwrap();
+        assert_eq!(auth.password_hash, hash);
+        // The original plaintext still verifies
+        let credentials = general_purpose::STANDARD.encode("admin:secret");
+        assert!(auth.validate(&credentials));
+    }
+
+    #[test]
+    fn test_from_hash_rejects_malformed_hash() {
+        let result = BasicAuth::from_hash(
+            "admin".to_string(),
+            "$argon2id$not-a-valid-hash".to_string(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hash_password_produces_verifiable_phc_string() {
+        let hash = BasicAuth::hash_password("pass").unwrap();
+        assert!(hash.starts_with("$argon2id$"));
+        assert!(is_valid_argon2_hash(&hash));
+        let auth = BasicAuth::from_hash("user".to_string(), hash).unwrap();
+        let credentials = general_purpose::STANDARD.encode("user:pass");
+        assert!(auth.validate(&credentials));
+    }
+
+    #[test]
+    fn test_is_valid_argon2_hash() {
+        assert!(!is_valid_argon2_hash("secret"));
+        assert!(!is_valid_argon2_hash("$argon2id$malformed"));
+        let hash = BasicAuth::hash_password("pass").unwrap();
+        assert!(is_valid_argon2_hash(&hash));
     }
 }

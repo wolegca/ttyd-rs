@@ -148,7 +148,7 @@ See [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) for the full security asses
 
 Key implementation notes:
 - Constant-time comparison via `subtle` crate (timing-attack resistant)
-- Argon2id password hashing with random salt (basic auth); SHA-256 + constant-time comparison for token auth
+- Argon2id password hashing with random salt (basic auth); the configured `password` value (config file or `--password`) may be a plaintext password or an Argon2id PHC hash — plaintext logs a startup warning, hashes are generated with `ttyd-rs --hash-password`; SHA-256 + constant-time comparison for token auth
 - `trust_proxy` disabled by default to prevent IP spoofing
 - Reconnection window (default 60s) preserves session state
 
