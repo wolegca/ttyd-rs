@@ -1619,6 +1619,7 @@ dependencies = [
  "libc",
  "mime_guess",
  "nix",
+ "rand 0.10.2",
  "rand_core 0.6.4",
  "rust-embed",
  "serde",

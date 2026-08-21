@@ -26,6 +26,12 @@ cargo fmt                # Auto-format
 ### Code Quality Gates (Must Pass Before Commit)
 
 ```bash
+just qa
+```
+
+or
+
+```bash
 cargo fmt -- --check
 cargo clippy -- -D warnings
 cargo test

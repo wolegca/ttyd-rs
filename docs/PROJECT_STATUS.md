@@ -1,6 +1,6 @@
 # ttyd-rs Project Status
 
-**Last Updated**: 2026-08-20
+**Last Updated**: 2026-08-21
 **Version**: 0.6.1
 **Status**: Production Ready
 
@@ -12,7 +12,7 @@
 |-------|--------|
 | `cargo fmt -- --check` | ✅ Pass |
 | `cargo clippy -- -D warnings` | ✅ Pass |
-| `cargo test` | ✅ 230 tests passing |
+| `cargo test` | ✅ 234 tests passing |
 | `cargo build --release` | ✅ Success |
 
 ---
@@ -20,7 +20,7 @@
 ## Project Statistics
 
 - **Rust source**: ~7,000 lines across 19 .rs files
-- **Tests**: 230 (unit + integration)
+- **Tests**: 234 (unit + integration)
 - **Frontend**: index.html with xterm.js integration
 - **Dependencies**: See Cargo.toml for current list
 
@@ -40,8 +40,9 @@
 - **Authentication**: Constant-time comparison via `subtle` crate (prevents timing attacks)
 - **Password storage**: Argon2id hashed (random salt per instance), raw credentials never persist beyond construction
 - **Input validation**: Terminal size bounds, payload size limits, credential format checks
-- **No path traversal**: Static files embedded at compile time via `rust-embed`
+- **No path traversal**: Static files embedded at compile time via `rust-embed`; `..` path segments are explicitly rejected
 - **No XSS risk**: Server does not reflect user input into HTML
+- **Security headers on static responses**: strict same-origin `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
 - **Rate limiting**: Sliding window algorithm, per-IP tracking
 - **Audit logging**: 8 event types (connection, auth, session, error)
 
@@ -120,6 +121,15 @@
 - `UploadFileGuard` (RAII): automatic partial-file cleanup on all error paths
 - 6 dedicated upload integration tests (success, conflict, overwrite, size-exceeded, missing field, binary)
 - Configurable: enable/disable, fixed directory override, max upload size
+
+### Static File Serving ✅
+- Embedded at compile time via `rust-embed` (no filesystem access at runtime)
+- **Gzip compression** for static assets only (API and WebSocket responses are never compressed); configurable via `[compression]` (`enabled`, `level`)
+- **Already-compressed formats skipped**: `font/*` and `image/x-icon` are not gzipped (avoids wasted CPU and size bloat)
+- **Caching**: vendor assets served with `Cache-Control: public, max-age=31536000, immutable`; `index.html` served with `Cache-Control: no-cache` so clients pick up a new entry point after an upgrade
+- **Security headers**: strict same-origin `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
+- **Path traversal**: `..` segments explicitly rejected (404)
+- 4 dedicated tests covering font non-compression, cache headers, security headers, and path traversal
 
 ---
 

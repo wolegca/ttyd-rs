@@ -260,10 +260,26 @@ fn create_router(config: &Config, app_state: AppState, api_state: ApiState) -> R
         .fallback(static_handler);
 
     if config.compression.enabled {
-        static_router =
-            static_router.layer(tower_http::compression::CompressionLayer::new().quality(
-                tower_http::compression::CompressionLevel::Precise(config.compression.level as i32),
-            ));
+        // Skip compression for already-compressed formats (fonts, icons) —
+        // gzipping them wastes CPU and can even increase size.
+        static_router = static_router.layer(
+            tower_http::compression::CompressionLayer::new()
+                .quality(tower_http::compression::CompressionLevel::Precise(
+                    config.compression.level as i32,
+                ))
+                .compress_when(
+                    |_status: axum::http::StatusCode,
+                     _version: axum::http::Version,
+                     headers: &axum::http::HeaderMap,
+                     _extensions: &axum::http::Extensions| {
+                        let content_type = headers
+                            .get(header::CONTENT_TYPE)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("");
+                        !content_type.starts_with("font/") && content_type != "image/x-icon"
+                    },
+                ),
+        );
     }
 
     Router::new()
@@ -279,20 +295,53 @@ async fn index_handler() -> impl IntoResponse {
     static_handler(Uri::from_static("/index.html")).await
 }
 
+/// Content-Security-Policy for the embedded frontend.
+///
+/// The page only loads same-origin resources (xterm.js, fonts, CSS) and makes
+/// same-origin WebSocket/fetch/XHR calls, so a strict policy is safe. Inline
+/// `<script>` and `<style>` blocks in index.html require `'unsafe-inline'`.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'";
+
 /// Handler for embedded static files
 async fn static_handler(uri: Uri) -> impl IntoResponse {
-    let path = uri.path().trim_start_matches('/');
+    let raw_path = uri.path().trim_start_matches('/');
 
     // Default to index.html for root
-    let path = if path.is_empty() { "index.html" } else { path };
+    let path = if raw_path.is_empty() {
+        "index.html"
+    } else {
+        raw_path
+    };
+
+    // Reject path traversal attempts explicitly. rust_embed does a map lookup
+    // so this cannot escape the embedded set, but being explicit keeps intent
+    // clear and avoids serving anything unexpected.
+    if path.split('/').any(|segment| segment == "..") {
+        return not_found_response();
+    }
 
     match Assets::get(path) {
         Some(content) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
 
+            // Vendor assets are embedded at compile time and only change when
+            // the binary is rebuilt, so they can be cached aggressively. The
+            // index page is revalidated on every load so clients pick up a new
+            // entry point after an upgrade.
+            let is_vendor = path.starts_with("vendor/");
+            let cache_control = if is_vendor {
+                "public, max-age=31536000, immutable"
+            } else {
+                "no-cache"
+            };
+
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime.as_ref())
+                .header(header::CACHE_CONTROL, cache_control)
+                .header(header::CONTENT_SECURITY_POLICY, CONTENT_SECURITY_POLICY)
+                .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+                .header(header::REFERRER_POLICY, "no-referrer")
                 .body(Body::from(content.data))
                 .ok()
                 .unwrap_or_else(|| {
@@ -302,17 +351,24 @@ async fn static_handler(uri: Uri) -> impl IntoResponse {
                         .unwrap_or_default()
                 })
         }
-        None => Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::from("404 Not Found"))
-            .ok()
-            .unwrap_or_else(|| {
-                Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Body::empty())
-                    .unwrap_or_default()
-            }),
+        None => not_found_response(),
     }
+}
+
+/// Build a 404 response with an explicit text/plain content type.
+fn not_found_response() -> Response {
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .body(Body::from("404 Not Found"))
+        .ok()
+        .unwrap_or_else(|| {
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::empty())
+                .unwrap_or_default()
+        })
 }
 
 #[cfg(test)]
@@ -700,6 +756,126 @@ mod tests {
         assert!(
             resp.headers().get("content-encoding").is_none(),
             "API responses must not be compressed"
+        );
+    }
+
+    // ── Static asset header tests ───────────────────────────────────
+
+    #[tokio::test]
+    async fn test_static_font_not_gzipped() {
+        let config = Config::default();
+        let (app_state, api_state) = test_state();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/vendor/fonts/0xProtoNerdFontMono-Regular.woff2")
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("font/woff2")
+        );
+        // Already-compressed fonts must NOT be gzipped again.
+        assert!(
+            resp.headers().get("content-encoding").is_none(),
+            "woff2 fonts must not be compressed, got: {:?}",
+            resp.headers().get("content-encoding")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_static_cache_headers() {
+        let config = Config::default();
+        let (app_state, api_state) = test_state();
+        let app = create_router(&config, app_state, api_state);
+
+        // Vendor assets are immutable (embedded at compile time).
+        let req = Request::builder()
+            .uri("/vendor/scripts/xterm.js")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("cache-control")
+                .and_then(|v| v.to_str().ok()),
+            Some("public, max-age=31536000, immutable")
+        );
+
+        // The index page is revalidated on every load.
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("cache-control")
+                .and_then(|v| v.to_str().ok()),
+            Some("no-cache")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_static_security_headers() {
+        let config = Config::default();
+        let (app_state, api_state) = test_state();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let csp = resp
+            .headers()
+            .get("content-security-policy")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            csp.contains("default-src 'self'"),
+            "CSP should restrict to same-origin, got: {csp}"
+        );
+        assert!(
+            csp.contains("connect-src 'self'"),
+            "CSP should allow same-origin connections, got: {csp}"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("x-content-type-options")
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_eq!(
+            resp.headers()
+                .get("referrer-policy")
+                .and_then(|v| v.to_str().ok()),
+            Some("no-referrer")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_static_path_traversal_rejected() {
+        let config = Config::default();
+        let (app_state, api_state) = test_state();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/../etc/passwd")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/plain; charset=utf-8")
         );
     }
 
