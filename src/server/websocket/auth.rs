@@ -25,7 +25,13 @@ pub(crate) enum AuthResult {
 }
 
 /// The configured authentication method and its validator.
-enum AuthMethod {
+///
+/// Built **once at startup** (see [`AuthMethod::build`]) and shared via
+/// `Arc` in `AppState`: Argon2 password hashing is expensive (~100 ms), so
+/// it must never run per connection. This also removes a DoS amplification
+/// vector where unauthenticated clients could force the server to re-hash
+/// the configured password on every login attempt.
+pub(crate) enum AuthMethod {
     Basic {
         validator: BasicAuth,
         username: String,
@@ -39,8 +45,8 @@ impl AuthMethod {
     /// Build the validator from configuration.
     ///
     /// Returns `Err` with a reason when the method is unknown, credentials
-    /// are missing, or password hashing fails.
-    fn build(config: &crate::config::AuthConfig) -> Result<Self, String> {
+    /// are missing, or password hashing fails. Called once at startup.
+    pub(crate) fn build(config: &crate::config::AuthConfig) -> Result<Self, String> {
         match config.method.as_str() {
             "basic" => {
                 let (Some(username), Some(password)) = (&config.username, &config.password) else {
@@ -158,6 +164,11 @@ async fn send_auth_ok(
 ///   returns `Close` — the caller ends the session with the given reason.
 /// - On success, returns `Success(Some(username))` for basic auth or
 ///   `Success(None)` for token auth.
+///
+/// The authenticator was built once at startup and lives in
+/// [`AppState::auth_method`]; misconfigured auth (build failure at startup)
+/// is represented by `Some(config)` present but `auth_method == None`, which
+/// fails closed here.
 pub(crate) async fn authenticate(
     state: &AppState,
     ws_sender: &WsSender,
@@ -165,7 +176,16 @@ pub(crate) async fn authenticate(
     remote_addr: &str,
     client_id: &str,
 ) -> Result<AuthResult, Box<dyn std::error::Error + Send + Sync>> {
-    let Some(auth_config) = &state.config.auth else {
+    let Some(auth_method) = state.auth_method.as_ref() else {
+        if state.config.auth.is_some() {
+            // Auth is configured but could not be built at startup — fail
+            // closed rather than letting connections through unauthenticated.
+            error!(
+                "Auth is configured but the authenticator failed to build; rejecting connection"
+            );
+            send_auth_fail(ws_sender, "Server authentication misconfigured").await?;
+            return Ok(AuthResult::Close(CloseReason::AuthFailed));
+        }
         return Ok(AuthResult::Success(None));
     };
 
@@ -175,23 +195,21 @@ pub(crate) async fn authenticate(
         ws_receiver,
         remote_addr,
         client_id,
-        auth_config,
+        auth_method,
     )
     .await
 }
 
 /// Common authentication flow shared by all auth methods.
 ///
-/// The authenticator is built lazily (after the rate-limit check and the
-/// client's auth message) because Argon2 hashing is expensive — connections
-/// that never attempt authentication must not trigger it.
+/// Uses the pre-built authenticator from startup; no per-connection hashing.
 async fn perform_auth(
     state: &AppState,
     ws_sender: &WsSender,
     ws_receiver: &mut SplitStream<WebSocket>,
     remote_addr: &str,
     client_id: &str,
-    auth_config: &crate::config::AuthConfig,
+    auth_method: &AuthMethod,
 ) -> Result<AuthResult, Box<dyn std::error::Error + Send + Sync>> {
     // 1. Check rate limit before processing auth
     if let Err(duration) = state.rate_limiter.check(remote_addr).await {
@@ -229,16 +247,8 @@ async fn perform_auth(
         return Ok(AuthResult::Close(CloseReason::AuthFailed));
     }
 
-    // 4. Build the authenticator from configuration (misconfigured auth
-    //    rejects the connection)
-    let auth_method = match AuthMethod::build(auth_config) {
-        Ok(method) => method,
-        Err(reason) => {
-            error!("Failed to build authenticator: {}", reason);
-            send_auth_fail(ws_sender, "Server authentication misconfigured").await?;
-            return Ok(AuthResult::Close(CloseReason::AuthFailed));
-        }
-    };
+    // 4. The authenticator was pre-built at startup (see `authenticate`);
+    //    no per-connection hashing happens here.
 
     // 5. Validate credentials format
     if let Err(e) = auth_method.validate_format(&state.validation, &auth_data.credentials) {

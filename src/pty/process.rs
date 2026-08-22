@@ -1,4 +1,14 @@
-/// PTY process management using nix
+//! PTY process management using nix
+//!
+//! # Global SIGCHLD contract
+//!
+//! [`register_sigchld_handler`] installs a process-wide SIGCHLD handler that
+//! reaps **all** terminated children via `waitpid(-1, WNOHANG)`. This means
+//! no other code in this process may rely on receiving child exit status:
+//! `std::process::Child::wait`, tokio's `Command` child APIs, and any other
+//! waitpid-based reaping will see "no child" (`ECHILD`) errors because this
+//! handler reaps first. All child processes in ttyd-rs are PTY shells
+//! managed here; if you add another source of children, revisit this.
 use nix::pty::{Winsize, openpty};
 use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};

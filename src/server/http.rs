@@ -6,9 +6,11 @@ use crate::rate_limit::RateLimiter;
 use crate::server::api::ApiState;
 use crate::server::websocket::AppState;
 use crate::session::{SessionManager, SessionMode};
+use axum::middleware::Next;
 use axum::{
     Router,
     body::Body,
+    extract::{ConnectInfo, Request, State},
     http::{StatusCode, Uri, header},
     middleware,
     response::{IntoResponse, Response},
@@ -19,7 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Start the HTTP/WebSocket server
 pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Error>> {
@@ -46,6 +48,26 @@ pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Erro
 
     let shutdown_token = CancellationToken::new();
 
+    // Build the WebSocket authenticator once at startup: Argon2 password
+    // hashing is expensive (~100 ms) and must never run per connection.
+    // A build failure is logged here; `AppState.auth_method` stays `None`
+    // and the WS auth path fails closed (rejects every connection).
+    let ws_auth_method = config.auth.as_ref().and_then(|auth_config| {
+        match crate::server::websocket::AuthMethod::build(auth_config) {
+            Ok(method) => Some(Arc::new(method)),
+            Err(reason) => {
+                error!("Failed to build WebSocket authenticator: {}", reason);
+                None
+            }
+        }
+    });
+
+    // Dedicated limiter for file endpoints (see AppState::file_rate_limiter).
+    let file_rate_limiter = Arc::new(RateLimiter::new(
+        config.rate_limit.max_requests,
+        config.rate_limit.window_seconds,
+    ));
+
     let app_state = AppState {
         config: Arc::new(config.clone()),
         audit_logger: Arc::new(audit_logger),
@@ -54,8 +76,9 @@ pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Erro
         session_manager: session_manager.clone(),
         shutdown_token: shutdown_token.clone(),
         active_connections: Arc::new(AtomicUsize::new(0)),
+        auth_method: ws_auth_method,
+        file_rate_limiter,
     };
-
     let api_state = ApiState {
         session_manager: session_manager.clone(),
         config: Arc::new(config.clone()),
@@ -180,6 +203,42 @@ async fn shutdown_signal() {
     }
 }
 
+/// Middleware: per-client-IP rate limiting for the file transfer endpoints.
+///
+/// Uses a dedicated [`RateLimiter`] (`AppState::file_rate_limiter`) so file
+/// browsing cannot exhaust the WebSocket auth budget (and vice versa). The
+/// client IP honors `trust_proxy` via [`extract_real_ip`], preventing limit
+/// bypass through spoofed headers.
+async fn file_rate_limit_middleware(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    request: Request,
+    next: Next,
+) -> Result<Response, (StatusCode, axum::Json<super::api::ErrorResponse>)> {
+    let client_ip =
+        super::websocket::extract_real_ip(&headers, addr.ip(), state.config.trust_proxy);
+
+    if let Err(retry_after) = state.file_rate_limiter.check(&client_ip).await {
+        warn!(
+            "Rate limit exceeded for {} on file transfer endpoint (retry after {}s)",
+            client_ip,
+            retry_after.as_secs()
+        );
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            axum::Json(super::api::ErrorResponse {
+                error: format!(
+                    "Rate limit exceeded. Try again in {} seconds",
+                    retry_after.as_secs()
+                ),
+            }),
+        ));
+    }
+
+    Ok(next.run(request).await)
+}
+
 /// Create the axum router with all routes
 fn create_router(config: &Config, app_state: AppState, api_state: ApiState) -> Router {
     // Public API routes (no auth required)
@@ -232,7 +291,20 @@ fn create_router(config: &Config, app_state: AppState, api_state: ApiState) -> R
                 "/api/files/list",
                 get(super::files::list_files).with_state(file_state),
             );
-        protected_api.merge(upload_router).merge(other_file_routes)
+        // Rate-limit file endpoints per client IP. Without this, an
+        // authenticated (or, when auth is disabled, unauthenticated) client
+        // could hammer downloads or repeatedly upload large files to
+        // exhaust bandwidth and disk. Uses the same limiter and real-IP
+        // extraction as the WebSocket auth path.
+        let rate_limit_state = app_state.clone();
+        let file_router =
+            upload_router
+                .merge(other_file_routes)
+                .layer(middleware::from_fn_with_state(
+                    rate_limit_state,
+                    file_rate_limit_middleware,
+                ));
+        protected_api.merge(file_router)
     } else {
         protected_api
     };
@@ -400,6 +472,8 @@ mod tests {
             session_manager: session_manager.clone(),
             shutdown_token: CancellationToken::new(),
             active_connections: Arc::new(AtomicUsize::new(0)),
+            auth_method: None,
+            file_rate_limiter: Arc::new(RateLimiter::new(10, 60)),
         };
 
         let api_state = ApiState {
@@ -583,6 +657,8 @@ mod tests {
             session_manager: session_manager.clone(),
             shutdown_token: CancellationToken::new(),
             active_connections: Arc::new(AtomicUsize::new(0)),
+            auth_method: None,
+            file_rate_limiter: Arc::new(RateLimiter::new(10, 60)),
         };
         let api_state = ApiState {
             session_manager,
@@ -904,6 +980,8 @@ mod tests {
             session_manager: session_manager.clone(),
             shutdown_token: CancellationToken::new(),
             active_connections: Arc::new(AtomicUsize::new(0)),
+            auth_method: None,
+            file_rate_limiter: Arc::new(RateLimiter::new(10, 60)),
         };
 
         let api_state = ApiState {
@@ -936,6 +1014,8 @@ mod tests {
             session_manager: session_manager.clone(),
             shutdown_token: CancellationToken::new(),
             active_connections: Arc::new(AtomicUsize::new(0)),
+            auth_method: None,
+            file_rate_limiter: Arc::new(RateLimiter::new(10, 60)),
         };
 
         let api_state = ApiState {
@@ -1242,14 +1322,23 @@ mod tests {
         ));
         let shutdown_token = CancellationToken::new();
 
+        // Build the WebSocket authenticator the same way start_server does.
+        let ws_auth_method = config.auth.as_ref().and_then(|auth_config| {
+            crate::server::websocket::AuthMethod::build(auth_config)
+                .ok()
+                .map(Arc::new)
+        });
+
         let app_state = AppState {
             config: Arc::new(config.clone()),
             audit_logger: Arc::new(audit_logger),
             validation: Arc::new(validation),
             rate_limiter: Arc::new(rate_limiter),
+            file_rate_limiter: Arc::new(RateLimiter::new(10, 60)),
             session_manager: session_manager.clone(),
             shutdown_token: shutdown_token.clone(),
             active_connections: Arc::new(AtomicUsize::new(0)),
+            auth_method: ws_auth_method,
         };
         let api_state = ApiState {
             session_manager,

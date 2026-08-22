@@ -85,6 +85,12 @@ struct Args {
     /// value of `password` in `[auth]` (or `--password`).
     #[arg(long)]
     hash_password: bool,
+
+    /// Disable the file transfer endpoints (upload/download/list).
+    /// Useful to satisfy the unauthenticated-file-transfer safety check in
+    /// setups that run without [auth].
+    #[arg(long)]
+    no_file_transfer: bool,
 }
 
 #[tokio::main]
@@ -246,6 +252,11 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
         config.trust_proxy = true;
     }
 
+    // File transfer toggle
+    if args.no_file_transfer {
+        config.file_transfer.enabled = false;
+    }
+
     // Audit configuration
     if args.audit {
         config.audit.enabled = true;
@@ -297,6 +308,7 @@ mod tests {
             audit_file: None,
             trust_proxy: false,
             hash_password: false,
+            no_file_transfer: true,
         };
 
         let config = load_config(&args).unwrap();
@@ -327,6 +339,7 @@ mod tests {
             audit_file: None,
             trust_proxy: false,
             hash_password: false,
+            no_file_transfer: true,
         };
 
         let config = load_config(&args).unwrap();
@@ -363,6 +376,7 @@ mod tests {
             audit_file: Some(PathBuf::from("/tmp/audit.log")),
             trust_proxy: false,
             hash_password: false,
+            no_file_transfer: true,
         };
 
         let config = load_config(&args).unwrap();
@@ -424,6 +438,7 @@ enabled = false
             audit_file: None,
             trust_proxy: false,
             hash_password: false,
+            no_file_transfer: true,
         };
 
         let config = load_config(&args).unwrap();
@@ -492,6 +507,7 @@ enabled = false
             audit_file: None,
             trust_proxy: false,
             hash_password: false,
+            no_file_transfer: true,
         };
 
         let config = load_config(&args).unwrap();

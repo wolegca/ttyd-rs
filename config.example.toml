@@ -82,6 +82,12 @@ enabled = true
 # dir = "/tmp/uploads"
 # Maximum upload file size in bytes (default: 100MB)
 max_upload_size = 104857600
+#
+# SAFETY: when `auth` above is commented out (no authentication), file
+# endpoints would be open to unauthenticated clients. The server refuses to
+# start in that combination unless you explicitly set this to true — only do
+# so for trusted, loopback-only deployments:
+# allow_unauthenticated = false
 
 # HTTP response compression (gzip) for static assets (default: enabled)
 # Only applies to static files (index.html, xterm.js, etc.) — API and

@@ -104,10 +104,11 @@ pub struct UploadQuery {
 ///
 /// When `file_transfer.dir` is explicitly configured, use it directly.
 /// Otherwise, resolve the CWD of the specified session's PTY child process
-/// via `/proc/<pid>/cwd`. If no session_id is given, falls back to the most
-/// recently active session. If a session_id IS given but not found, returns
-/// an error to prevent cross-session directory access.
-/// Falls back to the server process CWD only when no session_id is specified.
+/// via `/proc/<pid>/cwd`. A non-empty `session_id` is **required** in that
+/// case: falling back to "the most recently active session" would let one
+/// client reach into another user's isolated session working directory
+/// simply by omitting the parameter, and a silent fallback to the server
+/// process CWD would widen the accessible surface unexpectedly.
 async fn resolve_base_dir(
     state: &FileTransferState,
     session_id: Option<&str>,
@@ -117,89 +118,54 @@ async fn resolve_base_dir(
         return Ok(dir.clone());
     }
 
-    // If a specific session is requested, resolve from that session ONLY
-    if let Some(sid) = session_id {
-        if sid.is_empty() {
-            // Empty session_id treated as "no session specified"
-        } else if let Some(session) = state.session_manager.get_session(sid).await {
-            let pty = session.pty_session();
-            let pty_guard = pty.lock().await;
-            let pid = pty_guard.child_pid().as_raw();
-            drop(pty_guard);
+    // No configured directory: a session must be named so the base
+    // directory is scoped to that session's working directory.
+    let sid = match session_id {
+        Some(sid) if !sid.is_empty() => sid,
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "session_id is required when file_transfer.dir is not configured".to_string(),
+            ));
+        }
+    };
 
-            let cwd_link = PathBuf::from(format!("/proc/{}/cwd", pid));
-            match tokio::fs::read_link(&cwd_link).await {
-                Ok(cwd) => {
-                    debug!(
-                        "Resolved file transfer base dir from session {} (pid {}): {}",
-                        sid,
-                        pid,
-                        cwd.display()
-                    );
-                    return Ok(cwd);
-                }
-                Err(e) => {
-                    debug!(
-                        "Failed to read /proc/{}/cwd for session {}: {}",
-                        pid, sid, e
-                    );
-                    return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Cannot resolve working directory for session: {}", e),
-                    ));
-                }
-            }
-        } else {
+    let session = state
+        .session_manager
+        .get_session(sid)
+        .await
+        .ok_or_else(|| {
             // Session not found: reject to prevent cross-session access
-            return Err((StatusCode::NOT_FOUND, format!("Session not found: {}", sid)));
+            (StatusCode::NOT_FOUND, format!("Session not found: {}", sid))
+        })?;
+
+    let pty = session.pty_session();
+    let pty_guard = pty.lock().await;
+    let pid = pty_guard.child_pid().as_raw();
+    drop(pty_guard);
+
+    let cwd_link = PathBuf::from(format!("/proc/{}/cwd", pid));
+    match tokio::fs::read_link(&cwd_link).await {
+        Ok(cwd) => {
+            debug!(
+                "Resolved file transfer base dir from session {} (pid {}): {}",
+                sid,
+                pid,
+                cwd.display()
+            );
+            Ok(cwd)
+        }
+        Err(e) => {
+            debug!(
+                "Failed to read /proc/{}/cwd for session {}: {}",
+                pid, sid, e
+            );
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Cannot resolve working directory for session: {}", e),
+            ))
         }
     }
-
-    // Fallback (only when no session_id specified): most recently active session
-    let sessions = state.session_manager.list_sessions().await;
-    if !sessions.is_empty() {
-        let mut most_recent: Option<(std::time::Instant, i32)> = None;
-        for session in &sessions {
-            let activity = session.last_activity().await;
-            let pty = session.pty_session();
-            let pty_guard = pty.lock().await;
-            let pid = pty_guard.child_pid().as_raw();
-            drop(pty_guard);
-
-            match most_recent {
-                Some((ref t, _)) if activity > *t => {
-                    most_recent = Some((activity, pid));
-                }
-                None => {
-                    most_recent = Some((activity, pid));
-                }
-                _ => {}
-            }
-        }
-
-        if let Some((_, pid)) = most_recent {
-            let cwd_link = PathBuf::from(format!("/proc/{}/cwd", pid));
-            match tokio::fs::read_link(&cwd_link).await {
-                Ok(cwd) => {
-                    debug!(
-                        "Resolved file transfer base dir from most recent pid {}: {}",
-                        pid,
-                        cwd.display()
-                    );
-                    return Ok(cwd);
-                }
-                Err(e) => {
-                    debug!(
-                        "Failed to read /proc/{}/cwd: {}, falling back to process CWD",
-                        pid, e
-                    );
-                }
-            }
-        }
-    }
-
-    // Final fallback: server process working directory
-    Ok(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp")))
 }
 
 /// Validate that a resolved path does not escape the base directory.
@@ -246,6 +212,16 @@ fn safe_resolve(base: &Path, relative: &str) -> Result<PathBuf, (StatusCode, Str
     Ok(canonical_candidate)
 }
 
+/// Open a file for reading with `O_NOFOLLOW`, rejecting symlinked final
+/// components to close the check-then-open TOCTOU window in `download_file`.
+fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
 /// POST /api/files/upload — upload a file via multipart/form-data
 pub async fn upload_file(
     State(state): State<FileTransferState>,
@@ -267,9 +243,13 @@ pub async fn upload_file(
         // Drain the multipart body to allow a clean connection close.
         // Without this, the browser gets ERR_CONNECTION_ABORTED because
         // the server closes while the client is still sending data.
-        while let Ok(Some(mut drain_field)) = multipart.next_field().await {
-            while let Ok(Some(_)) = drain_field.chunk().await {}
-        }
+        // Bounded so a slow client cannot hold the handler forever.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Ok(Some(mut drain_field)) = multipart.next_field().await {
+                while let Ok(Some(_)) = drain_field.chunk().await {}
+            }
+        })
+        .await;
         return Err((
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(FileErrorResponse {
@@ -339,12 +319,20 @@ pub async fn upload_file(
         // closes the connection, causing a TCP RST (ERR_CONNECTION_ABORTED)
         // instead of delivering the 409 response.
         if !query.overwrite && target.exists() {
-            // Drain the current field data
-            while let Ok(Some(_)) = field.chunk().await {}
-            // Drain any remaining multipart fields
-            while let Ok(Some(mut remaining)) = multipart.next_field().await {
-                while let Ok(Some(_)) = remaining.chunk().await {}
-            }
+            // Drain the current field data and any remaining multipart fields
+            // so the client receives the 409 response instead of a TCP RST.
+            // Bounded so a slow client cannot hold the handler forever.
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while let Ok(Some(_)) = field.chunk().await {}
+            })
+            .await;
+            drop(field);
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while let Ok(Some(mut remaining)) = multipart.next_field().await {
+                    while let Ok(Some(_)) = remaining.chunk().await {}
+                }
+            })
+            .await;
             return Err((
                 StatusCode::CONFLICT,
                 Json(FileErrorResponse {
@@ -356,8 +344,22 @@ pub async fn upload_file(
             ));
         }
 
-        // Stream field data to file with incremental size checking
-        let mut file = tokio::fs::File::create(&target).await.map_err(|e| {
+        // Stream field data to a temporary file, then atomically rename it
+        // into place. The temp file:
+        // - prevents concurrent uploads of the same name from interleaving
+        //   writes into one corrupt file (last successful rename wins),
+        // - means readers never observe a partially written file,
+        // - and the rename itself replaces any symlink at the target path
+        //   rather than following it (mitigates a TOCTOU on the target).
+        let tmp_target = target.with_extension(format!(
+            "{}.{}.tmp",
+            target
+                .extension()
+                .map(|e| e.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            uuid::Uuid::new_v4()
+        ));
+        let mut file = tokio::fs::File::create(&tmp_target).await.map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(FileErrorResponse {
@@ -366,9 +368,11 @@ pub async fn upload_file(
             )
         })?;
 
-        // RAII guard: ensures the partial file is removed on any error path
-        // (read failure, write failure, size exceeded, connection abort, etc.)
-        let mut guard = UploadFileGuard::new(target.clone());
+        // RAII guard: ensures the partial temp file is removed on any error
+        // path (read failure, write failure, size exceeded, connection abort)
+        let mut guard = UploadFileGuard::new(tmp_target.clone());
+
+        const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
         let mut total_size: usize = 0;
         while let Some(chunk) = field.chunk().await.map_err(|e| {
@@ -383,12 +387,20 @@ pub async fn upload_file(
             if total_size > max_size {
                 // Abort: drop file handle; the guard will remove the partial file
                 drop(file);
-                // Drain the remaining field data to avoid TCP RST
-                while let Ok(Some(_)) = field.chunk().await {}
-                // Drain any remaining multipart fields
-                while let Ok(Some(mut remaining)) = multipart.next_field().await {
-                    while let Ok(Some(_)) = remaining.chunk().await {}
-                }
+                // Drain the remaining body so the client receives the error
+                // response instead of a TCP RST — but bound the drain so a
+                // slow client cannot hold the handler forever (Slowloris).
+                let _ = tokio::time::timeout(DRAIN_TIMEOUT, async {
+                    while let Ok(Some(_)) = field.chunk().await {}
+                })
+                .await;
+                drop(field);
+                let _ = tokio::time::timeout(DRAIN_TIMEOUT, async {
+                    while let Ok(Some(mut remaining)) = multipart.next_field().await {
+                        while let Ok(Some(_)) = remaining.chunk().await {}
+                    }
+                })
+                .await;
                 return Err((
                     StatusCode::PAYLOAD_TOO_LARGE,
                     Json(FileErrorResponse {
@@ -414,8 +426,21 @@ pub async fn upload_file(
                 }),
             )
         })?;
+        drop(file);
 
-        // Upload completed successfully — disarm the guard to keep the file
+        // Atomically move the completed temp file into place. The guard is
+        // still armed: if the rename fails it removes the temp file.
+        if let Err(e) = tokio::fs::rename(&tmp_target, &target).await {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(FileErrorResponse {
+                    error: format!("Failed to finalize upload: {}", e),
+                }),
+            ));
+        }
+
+        // Upload completed successfully — disarm the guard (the temp file no
+        // longer exists; it became the target).
         guard.disarm();
 
         uploaded_filename = sanitized;
@@ -477,17 +502,35 @@ pub async fn download_file(
         ));
     }
 
-    // Open file for streaming
-    let file = tokio::fs::File::open(&target).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(FileErrorResponse {
-                error: format!("Cannot open file: {}", e),
-            }),
-        )
+    // Open with O_NOFOLLOW so a symlink swapped in between the `safe_resolve`
+    // check and this open cannot redirect the read outside the base directory
+    // (TOCTOU). Symlinks inside the base are rejected rather than followed.
+    let std_file = open_nofollow(&target).map_err(|e| {
+        match e.raw_os_error() {
+            // ELOOP: the final component is a symlink swapped in after
+            // `safe_resolve` canonicalized it — refuse rather than follow.
+            Some(libc::ELOOP) => (
+                StatusCode::FORBIDDEN,
+                Json(FileErrorResponse {
+                    error: "Path is a symbolic link".to_string(),
+                }),
+            ),
+            Some(libc::ENOENT) => (
+                StatusCode::NOT_FOUND,
+                Json(FileErrorResponse {
+                    error: format!("File not found: {}", relative),
+                }),
+            ),
+            _ => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(FileErrorResponse {
+                    error: format!("Cannot open file: {}", e),
+                }),
+            ),
+        }
     })?;
 
-    let metadata = file.metadata().await.map_err(|e| {
+    let metadata = std_file.metadata().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(FileErrorResponse {
@@ -495,6 +538,9 @@ pub async fn download_file(
             }),
         )
     })?;
+
+    // Convert to async after all synchronous metadata work is done.
+    let file = tokio::fs::File::from_std(std_file);
 
     let file_name = target
         .file_name()
@@ -641,6 +687,7 @@ mod tests {
                 enabled: true,
                 dir: Some(dir),
                 max_upload_size: 1024,
+                allow_unauthenticated: true,
             }),
             session_manager: Arc::new(SessionManager::new(
                 Duration::from_secs(3600),
@@ -702,6 +749,29 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn test_open_nofollow_rejects_symlink() {
+        let dir = std::env::temp_dir().join("ttyd-rs-files-test-nofollow");
+        let _ = fs::create_dir_all(&dir);
+        let secret = std::env::temp_dir().join("ttyd-rs-files-test-nofollow-secret");
+        fs::write(&secret, b"secret").unwrap();
+
+        // Symlink inside the base pointing outside it
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&secret, dir.join("link")).unwrap();
+
+        // O_NOFOLLOW must reject the symlinked final component (ELOOP)
+        let result = open_nofollow(&dir.join("link"));
+        assert!(result.is_err(), "O_NOFOLLOW must reject a symlink");
+
+        // A regular file still opens fine
+        fs::write(dir.join("regular.txt"), b"data").unwrap();
+        assert!(open_nofollow(&dir.join("regular.txt")).is_ok());
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_file(&secret);
+    }
+
     #[tokio::test]
     async fn test_base_dir_uses_config() {
         let state = test_state(PathBuf::from("/tmp/custom"));
@@ -712,21 +782,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_base_dir_defaults_to_cwd_when_no_session() {
+    async fn test_base_dir_requires_session_when_no_config() {
         let state = FileTransferState {
             config: Arc::new(FileTransferConfig {
                 enabled: true,
                 dir: None,
                 max_upload_size: 1024,
+                allow_unauthenticated: true,
             }),
             session_manager: Arc::new(SessionManager::new(
                 Duration::from_secs(3600),
                 SessionMode::Isolated,
             )),
         };
-        // No active sessions, should fall back to process CWD
-        let expected = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp"));
-        assert_eq!(resolve_base_dir(&state, None).await.unwrap(), expected);
+        // Omitting session_id must be rejected (400): a fallback to the most
+        // recently active session would allow cross-session directory access.
+        let result = resolve_base_dir(&state, None).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // An empty session_id is likewise rejected.
+        let result = resolve_base_dir(&state, Some("")).await;
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -736,6 +816,7 @@ mod tests {
                 enabled: true,
                 dir: None,
                 max_upload_size: 1024,
+                allow_unauthenticated: true,
             }),
             session_manager: Arc::new(SessionManager::new(
                 Duration::from_secs(3600),
@@ -772,6 +853,7 @@ mod tests {
                 enabled: true,
                 dir: None,
                 max_upload_size: 1024,
+                allow_unauthenticated: true,
             }),
             session_manager: sm,
         };
@@ -936,6 +1018,7 @@ mod tests {
                 enabled: true,
                 dir: state.config.dir.clone(),
                 max_upload_size: max_size,
+                allow_unauthenticated: true,
             }),
             session_manager: state.session_manager.clone(),
         };
@@ -1161,6 +1244,86 @@ mod tests {
 
         let file_content = fs::read(dir.join("data.bin")).unwrap();
         assert_eq!(file_content, binary_content);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_upload_no_leftover_tmp_files() {
+        // After a successful upload no *.tmp files may remain in the base dir.
+        let dir = std::env::temp_dir().join("ttyd-rs-files-test-upload-tmp-clean");
+        let _ = fs::create_dir_all(&dir);
+
+        let state = test_state(dir.clone());
+        let app = upload_router(state, 1024 * 1024);
+
+        let boundary = "testboundary123";
+        let body = multipart_body(boundary, "file", "clean.txt", "data");
+        let req = Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header(
+                "Content-Type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover tmp files: {leftovers:?}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_upload_failed_size_check_leaves_original_intact() {
+        // An oversized upload must not clobber an existing file with the
+        // same name (atomic tmp+rename guarantees this).
+        let dir = std::env::temp_dir().join("ttyd-rs-files-test-upload-atomic");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(dir.join("keep.txt"), "original").unwrap();
+
+        let state = test_state(dir.clone());
+        let app = upload_router(state.clone(), 8); // tiny limit
+
+        let boundary = "testboundary123";
+        let body = multipart_body(
+            boundary,
+            "file",
+            "fresh.txt",
+            "this content is way too long",
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header(
+                "Content-Type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        // The original file must be untouched and no tmp leftovers remain.
+        assert_eq!(
+            fs::read_to_string(dir.join("keep.txt")).unwrap(),
+            "original"
+        );
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover tmp files: {leftovers:?}");
 
         let _ = fs::remove_dir_all(&dir);
     }

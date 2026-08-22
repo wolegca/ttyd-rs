@@ -27,6 +27,9 @@ pub enum ConfigError {
 
     #[error("Invalid compression configuration: {0}")]
     InvalidCompression(String),
+
+    #[error("Unsafe configuration: {0}")]
+    UnsafeConfiguration(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +184,15 @@ pub struct FileTransferConfig {
     /// Maximum upload file size in bytes (default: 100MB)
     #[serde(default = "default_max_upload_size")]
     pub max_upload_size: usize,
+
+    /// Explicitly allow file transfer endpoints without authentication.
+    ///
+    /// File transfer exposes read/write access to the working directory of
+    /// terminal sessions; leaving it open without auth is almost always a
+    /// misconfiguration. This escape hatch exists for trusted, loopback-only
+    /// deployments and must be set deliberately.
+    #[serde(default)]
+    pub allow_unauthenticated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,6 +303,7 @@ impl Default for FileTransferConfig {
             enabled: true,
             dir: None,
             max_upload_size: default_max_upload_size(),
+            allow_unauthenticated: false,
         }
     }
 }
@@ -350,6 +363,21 @@ impl Config {
                 "compression level must be between 1 and 9, got {}",
                 self.compression.level
             )));
+        }
+
+        // File transfer without authentication exposes read/write access to
+        // the working directories of terminal sessions. Fail fast unless the
+        // operator explicitly opted in via `allow_unauthenticated`.
+        if self.file_transfer.enabled
+            && self.auth.is_none()
+            && !self.file_transfer.allow_unauthenticated
+        {
+            return Err(ConfigError::UnsafeConfiguration(
+                "file_transfer is enabled but no [auth] is configured; file endpoints would be \
+                 open to unauthenticated clients. Configure [auth], disable file_transfer, or set \
+                 file_transfer.allow_unauthenticated = true to override (loopback-only setups only)."
+                    .to_string(),
+            ));
         }
 
         // Validate auth configuration consistency
@@ -413,7 +441,41 @@ mod tests {
 
     #[test]
     fn test_config_validation_valid() {
+        // The default config enables file transfer without auth, which the
+        // safety check rejects; a valid baseline therefore disables file
+        // transfer (or, equivalently, configures auth).
+        let mut config = Config::default();
+        config.file_transfer.enabled = false;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_file_transfer_without_auth_rejected() {
         let config = Config::default();
+        assert!(config.auth.is_none());
+        assert!(config.file_transfer.enabled);
+        assert!(config.validate().is_err());
+
+        // Explicit opt-in allows the unsafe combination.
+        let mut config = Config::default();
+        config.file_transfer.allow_unauthenticated = true;
+        assert!(config.validate().is_ok());
+
+        // Disabling file transfer also resolves the conflict.
+        let mut config = Config::default();
+        config.file_transfer.enabled = false;
+        assert!(config.validate().is_ok());
+
+        // Configuring auth resolves the conflict too.
+        let config = Config {
+            auth: Some(AuthConfig {
+                method: "token".to_string(),
+                username: None,
+                password: None,
+                token: Some("secret".to_string()),
+            }),
+            ..Config::default()
+        };
         assert!(config.validate().is_ok());
     }
 
@@ -538,6 +600,9 @@ window_seconds = 120
 
 [audit]
 enabled = true
+
+[file_transfer]
+enabled = false
 "#,
         )
         .unwrap();

@@ -211,7 +211,9 @@ impl Session {
     /// Check if the client can write to this session
     pub async fn can_write(&self, client_id: &str) -> bool {
         match self.metadata.mode {
-            SessionMode::Isolated => true,
+            // Isolated sessions allow writes only for the registered client;
+            // a client that has already been removed must not keep writing.
+            SessionMode::Isolated => self.clients.read().await.contains_key(client_id),
             SessionMode::SharedReadOnly => false,
             SessionMode::SharedReadWrite => {
                 // Check if client exists and is not marked readonly
@@ -631,7 +633,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_can_write_modes() {
-        // Isolated: always writable
+        // Isolated: writable only for the registered client
         let isolated = Session::new(
             "iso".to_string(),
             SessionMode::Isolated,
@@ -641,7 +643,19 @@ mod tests {
             24,
         )
         .unwrap();
-        assert!(isolated.can_write("anyone").await);
+        // Unknown client must not be able to write
+        assert!(!isolated.can_write("anyone").await);
+        isolated
+            .add_client(Client {
+                client_id: "c1".to_string(),
+                remote_addr: "127.0.0.1".to_string(),
+                username: None,
+                connected_at: Instant::now(),
+                readonly: false,
+            })
+            .await
+            .unwrap();
+        assert!(isolated.can_write("c1").await);
 
         // SharedReadOnly: never writable
         let sro = Session::new(

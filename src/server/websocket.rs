@@ -8,6 +8,7 @@
 /// 5. Main message loop dispatching Input/Resize/Ping/FileList ([`message_loop`])
 /// 6. Cleanup and disconnection ([`session_lifecycle::cleanup_client`])
 mod auth;
+pub(crate) use auth::AuthMethod;
 mod handshake;
 mod message_loop;
 mod pty_io;
@@ -49,6 +50,19 @@ pub struct AppState {
     pub session_manager: Arc<SessionManager>,
     pub shutdown_token: CancellationToken,
     pub active_connections: Arc<AtomicUsize>,
+    /// Pre-built WebSocket authenticator, constructed once at startup.
+    ///
+    /// `None` when auth is not configured **or** when the configured auth
+    /// could not be built (misconfiguration). `authenticate` distinguishes
+    /// the two via `config.auth` and fails closed in the latter case.
+    pub(crate) auth_method: Option<Arc<AuthMethod>>,
+    /// Dedicated rate limiter for the file transfer endpoints.
+    ///
+    /// Kept separate from `rate_limiter` (used by WS auth): file browsing
+    /// legitimately consumes many requests per minute, and sharing one
+    /// bucket would let heavy file usage lock a client out of WebSocket
+    /// authentication entirely.
+    pub(crate) file_rate_limiter: Arc<RateLimiter>,
 }
 
 impl AppState {
@@ -412,6 +426,8 @@ mod tests {
             session_manager,
             shutdown_token: CancellationToken::new(),
             active_connections: Arc::new(AtomicUsize::new(0)),
+            auth_method: None,
+            file_rate_limiter: Arc::new(RateLimiter::new(10, 60)),
         }
     }
 

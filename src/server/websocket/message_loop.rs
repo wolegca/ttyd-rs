@@ -139,6 +139,11 @@ async fn handle_input(ctx: &mut MessageLoopContext<'_>, data: &InputData) {
     // Write user input to PTY
     if let Err(e) = ctx.pty_writer.write_all(data.payload.as_bytes()).await {
         error!("Failed to write to PTY: {}", e);
+        // A write failure almost always means the shell has exited (EIO on
+        // the master side). Mark the PTY as exited so subscribers receive
+        // their ordered "shell exited" disconnect instead of lingering on a
+        // dead session until the heartbeat times out.
+        ctx.session.mark_pty_exited();
     }
 }
 

@@ -72,7 +72,8 @@ impl RateLimiter {
         }
 
         // Check if window has expired
-        if now.duration_since(entry.window_start) >= self.window {
+        let elapsed_in_window = now.duration_since(entry.window_start);
+        if elapsed_in_window >= self.window {
             // Reset window
             entry.count = 0;
             entry.window_start = now;
@@ -83,11 +84,12 @@ impl RateLimiter {
 
         // Check if limit exceeded
         if entry.count > self.max_requests {
-            // Block for the remainder of the window plus an additional window
-            let blocked_duration = self.window
-                + self
-                    .window
-                    .saturating_sub(now.duration_since(entry.window_start));
+            // Block for the remainder of the current window plus one full
+            // additional window. Compute the remainder *before* mutating the
+            // entry so the penalty reflects how much of the window was
+            // actually consumed (an early burst gets a longer block).
+            let consumed = now.duration_since(entry.window_start).min(self.window);
+            let blocked_duration = self.window + (self.window - consumed);
             entry.blocked_until = Some(now + blocked_duration);
             return Err(blocked_duration);
         }
@@ -237,5 +239,57 @@ mod tests {
         let stats = limiter.stats().await;
         assert_eq!(stats.active_clients, 2);
         assert_eq!(stats.blocked_clients, 0);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_block_duration_matches_window_remainder() {
+        // All checks happen back-to-back at the same instant: the window is
+        // fully unconsumed when the limit trips, so the block must be close
+        // to window + window = 4s (a small scheduling delta is tolerated).
+        let limiter = RateLimiter::new(1, 2);
+
+        assert!(limiter.check("c").await.is_ok());
+        let penalty = limiter.check("c").await.unwrap_err();
+        assert!(
+            penalty > Duration::from_secs(3) && penalty <= Duration::from_secs(4),
+            "block duration should be remainder-of-window (full) plus one window, got {penalty:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_blocked_then_unblocked_state_machine() {
+        let limiter = RateLimiter::new(1, 1); // 1 second window
+
+        assert!(limiter.check("c").await.is_ok());
+        let penalty = limiter.check("c").await.unwrap_err();
+        assert!(penalty > Duration::from_secs(1));
+
+        // While blocked, every request is rejected with the remaining time
+        for _ in 0..3 {
+            let err = limiter.check("c").await.unwrap_err();
+            assert!(err <= penalty);
+        }
+
+        // After the block expires the counter resets and requests succeed
+        sleep(Duration::from_millis(2100)).await;
+        assert!(limiter.check("c").await.is_ok());
+        assert!(limiter.check("c").await.is_err()); // new window budget spent
+
+        // reset() clears everything immediately
+        limiter.reset("c").await;
+        assert!(limiter.check("c").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_cleanup_removes_expired_entries() {
+        let limiter = RateLimiter::new(5, 1);
+
+        limiter.check("gone").await.ok();
+        sleep(Duration::from_millis(2100)).await; // beyond window * 2? no — window*2 = 2s; wait more
+        sleep(Duration::from_millis(100)).await;
+
+        limiter.cleanup().await;
+        let stats = limiter.stats().await;
+        assert_eq!(stats.total_tracked, 0, "expired entries must be removed");
     }
 }
