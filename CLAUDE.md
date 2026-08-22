@@ -134,7 +134,7 @@ src/
 
 ## WebSocket Protocol
 
-JSON messages with these types: `auth`/`auth_ok`/`auth_fail`, `input`/`output`, `resize`, `ping`/`pong`, `error`/`disconnect`, `ready`, `join`, `file_list`/`file_list_result`.
+JSON messages with types: `auth`/`auth_ok`/`auth_fail`, `input`/`output`, `resize`, `ping`/`pong`, `error`/`disconnect`, `ready`, `join`, `file_list`/`file_list_result`.
 
 Full spec: [docs/PROTOCOL.md](docs/PROTOCOL.md)
 

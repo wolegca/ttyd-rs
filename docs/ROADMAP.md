@@ -69,23 +69,7 @@
 
 ## Feature Matrix
 
-| Feature | Priority | Status | Milestone |
-|---------|----------|--------|-----------|
-| CLI parsing | High | ✅ Done | M1 |
-| Configuration | High | ✅ Done | M1 |
-| HTTP server | High | ✅ Done | M2 |
-| WebSocket | High | ✅ Done | M2 |
-| PTY management | High | ✅ Done | M3 |
-| Basic auth | High | ✅ Done | M4 |
-| Token auth | Medium | ✅ Done | M4 |
-| Rate limiting | High | ✅ Done | M4 |
-| Audit logging | Medium | ✅ Done | M4 |
-| Session modes | High | ✅ Done | M5 |
-| REST API | Medium | ✅ Done | M5 |
-| xterm.js frontend | High | ✅ Done | M6 |
-| File transfer | High | ✅ Done | Post-M6 |
-| Signal handling | High | ✅ Done | M3 |
-| Process cleanup | High | ✅ Done | M3 |
+All planned features through M6 and post-M6 (file transfer, signal handling, process cleanup) are **✅ complete**. See [Development History](#development-history) for details.
 
 ---
 

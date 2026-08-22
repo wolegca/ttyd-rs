@@ -42,7 +42,7 @@
 - **Input validation**: Terminal size bounds, payload size limits, credential format checks
 - **No path traversal**: Static files embedded at compile time via `rust-embed`; `..` path segments are explicitly rejected
 - **No XSS risk**: Server does not reflect user input into HTML
-- **Security headers on static responses**: strict same-origin `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
+- **Security headers on static responses**: strict same-origin `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` (see [Static File Serving](#static-file-serving--))
 - **Rate limiting**: Sliding window algorithm, per-IP tracking
 - **Audit logging**: 8 event types (connection, auth, session, error)
 
@@ -63,45 +63,18 @@
 
 ## Implemented Features
 
-### M1: Foundation ✅
-- CLI with clap (all flags from original ttyd)
-- TOML configuration file support
-- tracing / tracing-subscriber logging
-- thiserror error handling
+Milestone history (M1–M6) is maintained in [docs/ROADMAP.md](ROADMAP.md#development-history). Below are implementation details beyond that summary.
 
-### M2: Core Server ✅
-- axum HTTP server with routing
-- WebSocket upgrade handler
-- Bidirectional message handling
-- Static file serving via rust-embed
-
-### M3: PTY Management ✅
-- PTY creation via nix openpty + fork
-- Signal handling (SIGHUP, SIGKILL, TIOCSWINSZ)
-- Process lifecycle management
-- Zombie process reaping
-
-### M4: Security Layer ✅
-- Basic Auth with Argon2id password hashing (random salt)
+### Security Layer (M4) — details
 - Password can be configured as an Argon2id PHC hash (`ttyd-rs --hash-password` generates it; plaintext triggers a startup warning)
-- Token Auth with constant-time comparison (subtle crate)
-- Rate limiting (sliding window, per-IP)
-- Input validation (terminal size, payload, credentials)
-- Audit logging (connection, auth, session events)
+- Rate limiting: sliding window, per-IP
+- Input validation: terminal size, payload, credentials
+- Audit logging: connection, auth, session events
 
-### M5: Session Management ✅
-- SessionManager with lifecycle management
-- Session modes: isolated, shared_readonly, shared_readwrite
+### Session Management (M5) — details
 - Session timeout and auto-cleanup (30s interval)
-- REST API for session management
-- Broadcast channel for shared-session output
 
-### M6: Frontend Integration ✅
-- xterm.js terminal emulation
-- Login form (basic auth / token auth)
-- Auto-reconnect with exponential backoff
-- Session join via URL parameter
-- Terminal resize handling
+### Frontend Integration (M6) — details
 - Three-dot kebab menu (upload/browse files, visible only when authenticated)
 - Connection status indicator (green=connected, yellow=login required, red=disconnected)
 
@@ -136,31 +109,7 @@
 
 ## Module Structure
 
-```
-src/
-├── main.rs              Entry point, CLI, config loading
-├── config.rs            Configuration types and validation
-├── server.rs            Module declaration
-├── server/
-│   ├── http.rs          HTTP server, routing, static files
-│   ├── websocket.rs     WebSocket handler, session management
-│   ├── api.rs           REST API endpoints
-│   └── files.rs         File transfer (upload/download/list)
-├── pty.rs               Module declaration
-├── pty/
-│   ├── process.rs       PTY process spawning and management
-│   └── session.rs       PTY session wrapper
-├── auth.rs              Module declaration
-├── auth/
-│   ├── basic.rs         Basic authentication
-│   └── token.rs         Token authentication
-├── protocol.rs          WebSocket message types
-├── session.rs           Session manager, multi-client support
-├── audit.rs             Audit logging
-├── rate_limit.rs        Rate limiting
-├── validation.rs        Input validation
-└── assets.rs            Static asset embedding
-```
+See [Project Structure](../CLAUDE.md#project-structure) in CLAUDE.md for the annotated `src/` directory tree.
 
 ---
 
@@ -195,21 +144,7 @@ curl -u admin:secret http://localhost:7681/api/files/list
 
 ## WebSocket Protocol
 
-| Direction | Type | Description |
-|-----------|------|-------------|
-| C→S | auth | Authentication request |
-| S→C | auth_ok | Auth success (with client_id) |
-| S→C | auth_fail | Auth failure (with reason) |
-| C→S | input | Terminal input |
-| S→C | output | Terminal output |
-| C→S | resize | Terminal resize |
-| C→S | join | Join existing session |
-| C→S | file_list | Request directory listing |
-| S→C | file_list_result | Directory listing response |
-| C→S / S→C | ping / pong | Keepalive |
-| S→C | ready | Session ready notification |
-| S→C | disconnect | Session ended |
-| S→C | error | Error message |
+See [docs/PROTOCOL.md](PROTOCOL.md) for the full message type reference, state machine, and error codes.
 
 ---
 
@@ -259,7 +194,7 @@ None. Previously listed items have been resolved or reclassified:
 ## Deployment Recommendations
 
 1. **Enable authentication** — configure `[auth]` section in config
-2. **Store the password as an Argon2id hash** — `printf 'secret\n' | ttyd-rs --hash-password`, use the output as the `password` value; keep the config file readable only by the service user (`chmod 600`)
+2. **Store the password as an Argon2id hash** — generate with `ttyd-rs --hash-password`; keep the config file readable only by the service user (`chmod 600`)
 3. **Enable audit logging** — configure `[audit]` section for security monitoring
 4. **Use reverse proxy** — nginx/Caddy for HTTPS termination (TLS not built-in)
 5. **Tune limits** — adjust `max_connections` and rate limit parameters for expected load

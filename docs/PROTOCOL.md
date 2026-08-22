@@ -254,7 +254,6 @@ All messages are transmitted in JSON format (binary protocol optimization may be
 | `INVALID_MESSAGE` | Invalid message format |
 | `PTY_ERROR` | Terminal error |
 | `PERMISSION_DENIED` | Permission denied (read-only mode) |
-
 | `FILE_TRANSFER_DISABLED` | File transfer feature is not enabled |
 | `FILE_LIST_ERROR` | Directory listing failed |
 
