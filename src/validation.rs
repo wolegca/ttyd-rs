@@ -50,7 +50,9 @@ impl ValidationConfig {
             return Err(ValidationError::PayloadTooLarge(size, self.max_input_size));
         }
 
-        // Ensure it's valid UTF-8 (already guaranteed by String type, but explicit check)
+        // Reject NUL bytes: they have no place in terminal input and can
+        // confuse downstream pty consumers. (UTF-8 validity is already
+        // guaranteed by the `String` type.)
         if !payload.is_empty() && payload.chars().any(|c| c == '\0') {
             return Err(ValidationError::InvalidFormat(
                 "Null bytes not allowed".to_string(),

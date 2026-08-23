@@ -50,7 +50,7 @@
 
 - **PTY cleanup**: 5-stage process cleanup (SIGHUP → poll → SIGKILL → non-blocking reap → background reaper thread)
 - **FD management**: `FD_CLOEXEC` set on PTY FDs, child calls `close_fds_above()`, parent uses `dup()` for independent FDs per task
-- **Memory safety**: `Arc` for reference counting, `broadcast::channel(512)` bounds memory per session
+- **Memory safety**: `Arc` for reference counting, `broadcast::channel(1024)` bounds memory per session
 
 ### 4. Concurrency Safety — Good
 
@@ -178,6 +178,9 @@ None. Previously listed items have been resolved or reclassified:
 
 - **SHA-256 without salt** — Resolved in v0.6.1 (see below).
 - **`Box<dyn Error>` for top-level handlers** — Reclassified as an accepted design decision: `start_server` (`http.rs`) is the process entry point and its error is only logged by `main`; all lower layers already use typed `thiserror` enums, so a top-level error type would add no actionable information.
+- **Token auth uses unsalted SHA-256** — Accepted trade-off (documented): token comparison hashes the *incoming* credential and compares digests in constant time, so the config file stores a digest rather than plaintext. Because tokens are high-entropy random strings (not user-chosen passwords), a salt adds little; use long random tokens (`openssl rand -hex 32`). Prefer Argon2id basic auth when password-based login is acceptable.
+- **Audit log has no rotation** — Accepted trade-off (documented): the audit file grows unboundedly and write failures are only logged via tracing. Run logrotate (copytruncate mode) against `audit.log_file`, or ship the file with a log collector.
+- **`/api/config` exposes the auth method publicly** — Accepted: the frontend calls it unauthenticated on page load to decide whether to show the login overlay. Deployment details (`max_upload_size`, `file_transfer_enabled`) are only revealed when auth is disabled.
 
 ### Resolved
 
@@ -198,8 +201,9 @@ None. Previously listed items have been resolved or reclassified:
 3. **Enable audit logging** — configure `[audit]` section for security monitoring
 4. **Use reverse proxy** — nginx/Caddy for HTTPS termination (TLS not built-in)
 5. **Tune limits** — adjust `max_connections` and rate limit parameters for expected load
-6. **Set `trust_proxy`** — enable only when behind a trusted reverse proxy
+6. **Set `trust_proxy`** — enable only when behind a trusted reverse proxy (a startup warning is logged otherwise)
 7. **Configure file transfer** — set `[file_transfer]` dir or rely on dynamic `$PWD` tracking
+8. **Rotate audit logs** — configure logrotate (copytruncate) for the audit log file
 
 ---
 

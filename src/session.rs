@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 /// Errors that can occur during session operations
@@ -88,6 +89,12 @@ pub struct Session {
     /// lets each subscriber send its "shell exited" disconnect in order
     /// after its final output burst.
     output_tx: std::sync::Mutex<Option<broadcast::Sender<Vec<u8>>>>,
+    /// Cancellation token signalled when the session is force-removed
+    /// (stale cleanup or API delete). WebSocket handlers and the PTY
+    /// reader task observe this and run their normal cleanup paths, which
+    /// guarantees the PTY child is killed and clients are disconnected
+    /// even though other Arc<Session> holders keep the session alive.
+    cancel_token: CancellationToken,
 }
 
 impl Session {
@@ -119,6 +126,7 @@ impl Session {
             clients: Arc::new(RwLock::new(HashMap::new())),
             last_activity: Arc::new(Mutex::new(Instant::now())),
             output_tx: std::sync::Mutex::new(Some(output_tx)),
+            cancel_token: CancellationToken::new(),
         })
     }
 
@@ -203,9 +211,36 @@ impl Session {
         let _ = self.output_tx.lock().ok().map(|mut g| g.take());
     }
 
+    /// Get the session cancellation token.
+    ///
+    /// Handlers select on `token.cancelled()` to abort promptly when the
+    /// session is force-removed by [`SessionManager::cleanup_inactive`] or
+    /// [`SessionManager::remove_session`].
+    pub fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel_token
+    }
+
+    /// Force-shutdown the session: signal all handlers to stop and drop
+    /// the output sender so subscribers observe the ordered "shell exited"
+    /// disconnect. The PTY child is killed by the handlers' cleanup paths
+    /// (or by `PtyProcess::drop` once the last Arc reference is released).
+    pub fn shutdown(&self) {
+        self.cancel_token.cancel();
+        self.mark_pty_exited();
+    }
+
     /// Get last activity time
     pub async fn last_activity(&self) -> Instant {
         *self.last_activity.lock().await
+    }
+
+    /// Refresh the last-activity timestamp.
+    ///
+    /// Called whenever a client performs meaningful interaction (e.g. input
+    /// written to the PTY) so that `cleanup_inactive` does not force-remove
+    /// sessions that are actively in use.
+    pub async fn touch(&self) {
+        *self.last_activity.lock().await = Instant::now();
     }
 
     /// Check if the client can write to this session
@@ -232,11 +267,6 @@ impl Session {
     }
 }
 
-/// Time to keep an empty session alive for client reconnection
-/// Increased to 120 seconds to provide ample time for client reconnection
-/// after network issues or browser refresh
-pub const RECONNECT_WINDOW: Duration = Duration::from_secs(120);
-
 /// Session manager for managing all active sessions
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
@@ -246,12 +276,17 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    /// Create a new session manager
+    /// Create a new session manager.
+    ///
+    /// The reconnect window defaults to the same value as `session_timeout`
+    /// until overridden via [`SessionManager::with_reconnect_window`] —
+    /// there is deliberately no hardcoded constant so the configured
+    /// default (60s) is the single source of truth.
     pub fn new(session_timeout: Duration, default_mode: SessionMode) -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             session_timeout,
-            reconnect_window: RECONNECT_WINDOW,
+            reconnect_window: session_timeout,
             default_mode,
         }
     }
@@ -260,6 +295,11 @@ impl SessionManager {
     pub fn with_reconnect_window(mut self, window: Duration) -> Self {
         self.reconnect_window = window;
         self
+    }
+
+    /// Get the reconnect window duration
+    pub fn reconnect_window(&self) -> Duration {
+        self.reconnect_window
     }
 
     /// Create a new session
@@ -296,13 +336,17 @@ impl SessionManager {
         self.sessions.read().await.values().cloned().collect()
     }
 
-    /// Remove a session
+    /// Remove a session, signalling its cancellation token so that any
+    /// live handlers disconnect their clients and kill the PTY child.
     pub async fn remove_session(&self, session_id: &str) -> bool {
-        let removed = self.sessions.write().await.remove(session_id).is_some();
-        if removed {
+        let removed = self.sessions.write().await.remove(session_id);
+        if let Some(session) = removed {
+            session.shutdown();
             info!("Removed session {}", session_id);
+            true
+        } else {
+            false
         }
-        removed
     }
 
     /// Atomically check if a session has no clients and remove it if so.
@@ -384,8 +428,11 @@ impl SessionManager {
         for session_id in stale_candidates {
             let mut sessions = self.sessions.write().await;
             if let Some(session) = sessions.remove(&session_id) {
-                // Clear clients to disconnect them; the session's PtyProcess
-                // will be dropped when the last Arc reference is released.
+                // Signal all WS handlers / PTY tasks to stop and disconnect
+                // their clients. Other Arc<Session> holders observe the
+                // cancellation and run their cleanup paths, which kill the
+                // PTY child instead of leaking it.
+                session.shutdown();
                 let mut clients = session.clients.write().await;
                 let n = clients.len();
                 clients.clear();
@@ -411,14 +458,19 @@ impl SessionManager {
         }
     }
 
-    /// Get statistics
+    /// Get statistics.
+    ///
+    /// Collects the session Arcs under a short read lock, then aggregates
+    /// after releasing it — mirroring [`SessionManager::list_sessions`] —
+    /// so per-session awaits do not hold the sessions lock and amplify
+    /// contention under load.
     pub async fn stats(&self) -> SessionStats {
-        let sessions = self.sessions.read().await;
+        let snapshots = self.list_sessions().await;
         let mut total_clients = 0;
         let mut isolated_count = 0;
         let mut shared_count = 0;
 
-        for session in sessions.values() {
+        for session in &snapshots {
             total_clients += session.client_count().await;
             match session.metadata().mode {
                 SessionMode::Isolated => isolated_count += 1,
@@ -427,7 +479,7 @@ impl SessionManager {
         }
 
         SessionStats {
-            total_sessions: sessions.len(),
+            total_sessions: snapshots.len(),
             isolated_sessions: isolated_count,
             shared_sessions: shared_count,
             total_clients,

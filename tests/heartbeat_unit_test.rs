@@ -75,10 +75,15 @@ async fn test_heartbeat_prevents_timeout() {
 
 #[tokio::test]
 async fn test_reconnect_window_duration() {
-    use ttyd_rs::session::RECONNECT_WINDOW;
+    use ttyd_rs::session::{SessionManager, SessionMode};
 
-    // Verify reconnect window is 120 seconds as per fix
-    assert_eq!(RECONNECT_WINDOW.as_secs(), 120);
+    // The reconnect window defaults to the session timeout and can be
+    // overridden — there is no hardcoded constant (L1 fix).
+    let manager = SessionManager::new(Duration::from_secs(3600), SessionMode::Isolated);
+    assert_eq!(manager.reconnect_window(), Duration::from_secs(3600));
+
+    let manager = manager.with_reconnect_window(Duration::from_secs(60));
+    assert_eq!(manager.reconnect_window(), Duration::from_secs(60));
 }
 
 #[tokio::test]

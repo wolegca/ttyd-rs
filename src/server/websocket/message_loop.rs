@@ -54,6 +54,13 @@ pub(crate) async fn run(ctx: &mut MessageLoopContext<'_>) -> CloseReason {
                 info!("Shutdown signal received, closing WebSocket connection");
                 return CloseReason::Shutdown;
             }
+            // Session force-removed (stale cleanup or API delete): stop the
+            // loop so the caller's cleanup path disconnects this client and
+            // kills the PTY instead of leaking a ghost session.
+            _ = ctx.session.cancel_token().cancelled() => {
+                info!("Session {} was force-removed", ctx.session_id);
+                return CloseReason::SessionClosed;
+            }
         };
         let Some(msg) = msg else {
             return CloseReason::ClientClosed;
@@ -61,7 +68,9 @@ pub(crate) async fn run(ctx: &mut MessageLoopContext<'_>) -> CloseReason {
         match msg {
             Ok(WsMessage::Text(text)) => match Message::from_json(&text) {
                 Ok(Message::Input(data)) => {
-                    handle_input(ctx, &data).await;
+                    if let Err(reason) = handle_input(ctx, &data).await {
+                        return reason;
+                    }
                 }
                 Ok(Message::Resize(data)) => {
                     handle_resize(ctx, &data).await;
@@ -101,7 +110,14 @@ pub(crate) async fn run(ctx: &mut MessageLoopContext<'_>) -> CloseReason {
 }
 
 /// Handle an Input message: validate and write to PTY.
-async fn handle_input(ctx: &mut MessageLoopContext<'_>, data: &InputData) {
+///
+/// Returns `Err(CloseReason)` when the connection should be terminated
+/// immediately (PTY write failure), so the client does not linger on a dead
+/// session until the heartbeat times out.
+async fn handle_input(
+    ctx: &mut MessageLoopContext<'_>,
+    data: &InputData,
+) -> Result<(), CloseReason> {
     // Check if client can write (read-only enforcement)
     if !ctx.session.can_write(ctx.client_id).await {
         let _ = send_ws_error(
@@ -111,7 +127,7 @@ async fn handle_input(ctx: &mut MessageLoopContext<'_>, data: &InputData) {
             false,
         )
         .await;
-        return;
+        return Ok(());
     }
 
     // Validate input payload
@@ -133,7 +149,7 @@ async fn handle_input(ctx: &mut MessageLoopContext<'_>, data: &InputData) {
             false,
         )
         .await;
-        return;
+        return Ok(());
     }
 
     // Write user input to PTY
@@ -141,10 +157,15 @@ async fn handle_input(ctx: &mut MessageLoopContext<'_>, data: &InputData) {
         error!("Failed to write to PTY: {}", e);
         // A write failure almost always means the shell has exited (EIO on
         // the master side). Mark the PTY as exited so subscribers receive
-        // their ordered "shell exited" disconnect instead of lingering on a
-        // dead session until the heartbeat times out.
+        // their ordered "shell exited" disconnect, and end this connection's
+        // loop right away instead of waiting for a heartbeat timeout.
         ctx.session.mark_pty_exited();
+        return Err(CloseReason::IoError);
     }
+    // Successful interaction refreshes the idle timer so that
+    // `cleanup_inactive` never force-removes an actively used session.
+    ctx.session.touch().await;
+    Ok(())
 }
 
 /// Handle a Resize message: validate and resize the PTY.
@@ -204,6 +225,24 @@ async fn handle_file_list(ctx: &MessageLoopContext<'_>, data: &FileListData) {
             ctx.ws_sender,
             "FILE_TRANSFER_DISABLED",
             "File transfer is not enabled".to_string(),
+            false,
+        )
+        .await;
+        return;
+    }
+
+    // Rate-limit directory listings with the same dedicated limiter the HTTP
+    // file endpoints use. Without this, an authenticated client could hammer
+    // `file_list` messages (each triggering read_dir + canonicalize) without
+    // ever touching the HTTP rate limit.
+    if let Err(retry_after) = ctx.state.file_rate_limiter.check(ctx.remote_addr).await {
+        let _ = send_ws_error(
+            ctx.ws_sender,
+            "RATE_LIMITED",
+            format!(
+                "Too many file listings. Try again in {} seconds",
+                retry_after.as_secs()
+            ),
             false,
         )
         .await;

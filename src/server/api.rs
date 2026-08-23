@@ -1,5 +1,5 @@
 /// REST API endpoints for session management
-use crate::config::{AuthConfig, Config};
+use crate::config::Config;
 use crate::session::SessionManager;
 use axum::{
     Json,
@@ -40,7 +40,8 @@ pub struct SessionInfo {
 pub struct TerminalInfo {
     pub cols: u16,
     pub rows: u16,
-    pub pid: i32,
+    // NOTE: the child PID is intentionally NOT exposed — it leaks host
+    // process information to any authenticated API caller.
 }
 
 /// Statistics response
@@ -81,7 +82,6 @@ pub async fn list_sessions(
         let pty_session = session.pty_session();
         let pty = pty_session.lock().await;
         let (cols, rows) = pty.dimensions();
-        let pid = pty.child_pid();
 
         session_infos.push(SessionInfo {
             session_id: metadata.session_id.clone(),
@@ -89,11 +89,7 @@ pub async fn list_sessions(
             clients: client_count,
             created_at: format_instant(metadata.created_at),
             last_activity: format_instant(last_activity),
-            terminal: TerminalInfo {
-                cols,
-                rows,
-                pid: pid.as_raw(),
-            },
+            terminal: TerminalInfo { cols, rows },
         });
     }
 
@@ -131,7 +127,6 @@ pub async fn get_session(
     let pty_session = session.pty_session();
     let pty = pty_session.lock().await;
     let (cols, rows) = pty.dimensions();
-    let pid = pty.child_pid();
 
     Ok(Json(SessionInfo {
         session_id: metadata.session_id.clone(),
@@ -139,11 +134,7 @@ pub async fn get_session(
         clients: client_count,
         created_at: format_instant(metadata.created_at),
         last_activity: format_instant(last_activity),
-        terminal: TerminalInfo {
-            cols,
-            rows,
-            pid: pid.as_raw(),
-        },
+        terminal: TerminalInfo { cols, rows },
     }))
 }
 
@@ -196,16 +187,23 @@ pub struct ConfigResponse {
     pub file_transfer_enabled: bool,
 }
 
-/// Get client-facing configuration
+/// Get client-facing configuration.
+///
+/// This endpoint stays public (unauthenticated) because the frontend calls
+/// it on page load to decide whether to show the login overlay. To limit
+/// reconnaissance value, deployment details (`max_upload_size`,
+/// `file_transfer_enabled`) are only revealed when auth is disabled —
+/// with auth enabled the client learns nothing beyond the auth method.
 pub async fn get_config(State(state): State<ApiState>) -> Json<ConfigResponse> {
+    let expose_details = state.config.auth.is_none();
     Json(ConfigResponse {
         auth_method: state.config.auth.as_ref().map(|a| a.method.clone()),
-        max_upload_size: if state.config.file_transfer.enabled {
+        max_upload_size: if expose_details && state.config.file_transfer.enabled {
             Some(state.config.file_transfer.max_upload_size)
         } else {
             None
         },
-        file_transfer_enabled: state.config.file_transfer.enabled,
+        file_transfer_enabled: expose_details && state.config.file_transfer.enabled,
     })
 }
 
@@ -245,29 +243,20 @@ pub(crate) enum ApiAuth {
 }
 
 impl ApiAuth {
-    /// Build from the configured auth method.
+    /// Build from the pre-built WebSocket authenticator.
     ///
-    /// Returns `None` when the method is unknown, credentials are missing,
-    /// or password hashing fails — the middleware then denies every request
-    /// (fail closed).
-    pub(crate) fn from_config(config: &AuthConfig) -> Option<Self> {
-        match config.method.as_str() {
-            "basic" => match (&config.username, &config.password) {
-                (Some(username), Some(password)) => {
-                    match crate::auth::BasicAuth::new(username.clone(), password.clone()) {
-                        Ok(authenticator) => Some(Self::Basic { authenticator }),
-                        Err(e) => {
-                            tracing::error!("Failed to hash configured password: {}", e);
-                            None
-                        }
-                    }
-                }
-                _ => None,
-            },
-            "token" => config.token.as_ref().map(|token| Self::Token {
-                authenticator: crate::auth::TokenAuth::new(token.clone()),
+    /// Reuses the validator already constructed once at startup
+    /// (`AppState.auth_method`) instead of re-running the expensive Argon2
+    /// password hash a second time. Returns `None` when the variant is
+    /// unexpected (fail closed — the middleware then denies every request).
+    pub(crate) fn from_auth_method(method: &crate::server::websocket::AuthMethod) -> Option<Self> {
+        match method {
+            crate::server::websocket::AuthMethod::Basic { validator, .. } => Some(Self::Basic {
+                authenticator: validator.clone(),
             }),
-            _ => None,
+            crate::server::websocket::AuthMethod::Token { validator } => Some(Self::Token {
+                authenticator: validator.clone(),
+            }),
         }
     }
 

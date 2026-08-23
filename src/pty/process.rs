@@ -139,7 +139,26 @@ impl PtyProcess {
             }
             Ok(ForkResult::Child) => {
                 // Child process — pty will be dropped but exec replaces the process image anyway.
-                Self::setup_child(slave_fd, command, working_dir)?;
+                //
+                // CRITICAL: this branch must NEVER return. If `setup_child` fails, the
+                // child would otherwise continue executing the parent's call stack
+                // (tokio runtime / axum server), producing a second "server" sharing
+                // the same listener fd. On failure we write to stderr (fd 2 is the
+                // PTY slave after dup2 in setup_child, or inherited stderr before it)
+                // and terminate with _exit(127) — async-signal-safe and no atexit
+                // handlers or destructors of parent state are run.
+                if let Err(e) = Self::setup_child(slave_fd, command, working_dir) {
+                    let msg = format!("ttyd-rs: child setup failed: {e}\n");
+                    // SAFETY: fd 2 is always valid in the forked child; we
+                    // are pre-exec in a single-threaded child process.
+                    unsafe {
+                        let _ = nix::unistd::write(
+                            std::os::fd::BorrowedFd::borrow_raw(libc::STDERR_FILENO),
+                            msg.as_bytes(),
+                        );
+                        libc::_exit(127);
+                    }
+                }
                 // setup_child calls execvp which never returns on success.
                 unreachable!("execvp should not return");
             }

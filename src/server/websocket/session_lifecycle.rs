@@ -20,7 +20,10 @@ pub(crate) struct ResolvedSession {
 /// Create or join a session based on the handshake result.
 ///
 /// If `join_session_id` is provided, attempts to join an existing session.
-/// If the session doesn't exist, creates a new one (graceful reconnection).
+/// If the session doesn't exist, the connection is rejected with
+/// `SESSION_NOT_FOUND` — silently forking a new PTY would let any client
+/// amplify resources by joining random ids. Legitimate reconnections hit
+/// the session still kept alive in the reconnect window.
 /// If no `join_session_id` is provided, always creates a new session.
 pub(crate) async fn create_or_join_session(
     state: &AppState,
@@ -56,11 +59,18 @@ pub(crate) async fn create_or_join_session(
                 });
             }
             None => {
-                // Session expired or not found — create a new one instead of erroring.
-                info!(
-                    "Session '{}' not found, creating new session for rejoining client",
-                    target_id
-                );
+                // Session expired or not found — reject instead of creating a
+                // new PTY. Creating one here would let clients fork arbitrary
+                // numbers of shells by joining random session ids.
+                warn!("Session '{}' not found, rejecting join", target_id);
+                let _ = send_ws_error(
+                    ws_sender,
+                    "SESSION_NOT_FOUND",
+                    format!("Session '{}' not found or expired", target_id),
+                    true,
+                )
+                .await;
+                return Err(());
             }
         }
     }

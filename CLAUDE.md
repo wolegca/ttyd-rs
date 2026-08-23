@@ -128,7 +128,7 @@ src/
 
 - **Error handling**: All errors typed via `thiserror`, propagated with `?`. Never silenced.
 - **Concurrent I/O**: PTY output coalesced to reduce syscall frequency.
-- **Memory**: `broadcast::channel(512)` bounds per-session memory. `Arc` for shared state.
+- **Memory**: `broadcast::channel(1024)` bounds per-session memory. `Arc` for shared state.
 - **PTY cleanup**: 5-stage process cleanup (SIGHUP → poll → SIGKILL → reap → background reaper).
 - **Upload safety**: `UploadFileGuard` (RAII) ensures partial files are removed on all error paths.
 

@@ -111,6 +111,16 @@ pub async fn websocket_handler(
 ) -> Response {
     let remote_addr = extract_real_ip(&headers, addr.ip(), state.config.trust_proxy);
 
+    // Rate-limit key: combine the (possibly header-derived) client IP with
+    // the real socket address. When `trust_proxy` is enabled a direct client
+    // could otherwise rotate spoofed X-Real-IP values to evade the limiter;
+    // the socket address cannot be forged.
+    let rate_limit_key = if state.config.trust_proxy {
+        format!("{}|{}", remote_addr, addr.ip())
+    } else {
+        remote_addr.clone()
+    };
+
     // Check max connections limit and increment the counter atomically
     if !state.try_acquire_connection() {
         let current = state.active_connections.load(Ordering::Relaxed);
@@ -125,7 +135,7 @@ pub async fn websocket_handler(
     }
 
     ws.max_message_size(MAX_WS_MESSAGE_SIZE)
-        .on_upgrade(move |socket| handle_socket(socket, state, remote_addr))
+        .on_upgrade(move |socket| handle_socket(socket, state, remote_addr, rate_limit_key))
 }
 
 /// Why a WebSocket connection ended.
@@ -146,6 +156,8 @@ pub(crate) enum CloseReason {
     HeartbeatTimeout,
     /// The server was shutting down.
     Shutdown,
+    /// The session was force-removed (stale cleanup or API delete).
+    SessionClosed,
     /// An I/O or protocol error terminated the connection.
     IoError,
 }
@@ -160,16 +172,22 @@ impl CloseReason {
             Self::SessionSetupFailed => "session setup failed",
             Self::HeartbeatTimeout => "heartbeat timeout",
             Self::Shutdown => "server shutdown",
+            Self::SessionClosed => "session force-removed",
             Self::IoError => "I/O error",
         }
     }
 }
 
 /// Handle a WebSocket connection
-async fn handle_socket(socket: WebSocket, state: AppState, remote_addr: String) {
+async fn handle_socket(
+    socket: WebSocket,
+    state: AppState,
+    remote_addr: String,
+    rate_limit_key: String,
+) {
     info!("New WebSocket connection from {}", remote_addr);
 
-    let reason = handle_terminal_session(socket, state.clone(), remote_addr).await;
+    let reason = handle_terminal_session(socket, state.clone(), remote_addr, &rate_limit_key).await;
 
     // Decrement active connection count
     state.active_connections.fetch_sub(1, Ordering::Relaxed);
@@ -190,6 +208,7 @@ async fn handle_terminal_session(
     socket: WebSocket,
     state: AppState,
     remote_addr: String,
+    rate_limit_key: &str,
 ) -> CloseReason {
     let (ws_sender, mut ws_receiver) = socket.split();
     let ws_sender = Arc::new(tokio::sync::Mutex::new(ws_sender));
@@ -208,6 +227,7 @@ async fn handle_terminal_session(
         &mut ws_receiver,
         &remote_addr,
         &client_id,
+        rate_limit_key,
     )
     .await
     {
@@ -248,13 +268,22 @@ async fn run_session(
     ws_receiver: &mut SplitStream<WebSocket>,
     remote_addr: &str,
     client_id: &str,
+    rate_limit_key: &str,
 ) -> Result<CloseReason, Box<dyn std::error::Error + Send + Sync>> {
-    // ── Authentication ──────────────────────────────────────────────
-    let username =
-        match auth::authenticate(state, ws_sender, ws_receiver, remote_addr, client_id).await? {
-            auth::AuthResult::Success(username) => username,
-            auth::AuthResult::Close(reason) => return Ok(reason),
-        };
+    // ── Authentication ────────────────────────────────────────────────
+    let username = match auth::authenticate(
+        state,
+        ws_sender,
+        ws_receiver,
+        remote_addr,
+        client_id,
+        rate_limit_key,
+    )
+    .await?
+    {
+        auth::AuthResult::Success(username) => username,
+        auth::AuthResult::Close(reason) => return Ok(reason),
+    };
 
     // ── Handshake (Resize/Join) ─────────────────────────────────────
     let handshake = match handshake::read_handshake(

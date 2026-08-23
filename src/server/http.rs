@@ -23,8 +23,14 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-/// Start the HTTP/WebSocket server
-pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Error>> {
+/// Start the HTTP/WebSocket server.
+///
+/// `bound_port_tx` optionally receives the actually-bound port after the
+/// listener is created — useful when the config binds to port 0 (e.g. tests).
+pub async fn start_server(
+    config: Config,
+    bound_port_tx: Option<tokio::sync::oneshot::Sender<u16>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let audit_logger = AuditLogger::new(config.audit.log_file.clone(), config.audit.enabled);
     if config.audit.enabled {
         audit_logger.prepare().await.map_err(|e| {
@@ -153,6 +159,13 @@ pub async fn start_server(config: Config) -> Result<(), Box<dyn std::error::Erro
     });
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    // Report the actually-bound port back to the caller. Essential when the
+    // config uses port 0 (OS-assigned) — e.g. integration tests.
+    if let Some(port_tx) = bound_port_tx
+        && let Ok(local) = listener.local_addr()
+    {
+        let _ = port_tx.send(local.port());
+    }
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -310,11 +323,14 @@ fn create_router(config: &Config, app_state: AppState, api_state: ApiState) -> R
     };
 
     // Apply auth middleware to protected routes when auth is configured.
-    // The authenticator (including the expensive Argon2 hashing) is built
-    // once here rather than per request.
-    let protected_api = if let Some(ref auth_config) = config.auth {
+    // Reuses the authenticator already built once at startup
+    // (`app_state.auth_method`) — no second Argon2 hash pass.
+    let protected_api = if config.auth.is_some() {
         let auth_state = super::api::ApiAuthState {
-            auth: super::api::ApiAuth::from_config(auth_config),
+            auth: app_state
+                .auth_method
+                .as_deref()
+                .and_then(super::api::ApiAuth::from_auth_method),
         };
         protected_api.layer(middleware::from_fn_with_state(
             auth_state,
@@ -966,29 +982,7 @@ mod tests {
             password: Some("secret".to_string()),
             token: None,
         });
-        let session_manager = Arc::new(SessionManager::new(
-            Duration::from_secs(3600),
-            SessionMode::Isolated,
-        ));
-        let config_arc = Arc::new(config.clone());
-
-        let app_state = AppState {
-            config: config_arc.clone(),
-            audit_logger: Arc::new(AuditLogger::new(None, false)),
-            validation: Arc::new(ValidationConfig::default()),
-            rate_limiter: Arc::new(RateLimiter::default()),
-            session_manager: session_manager.clone(),
-            shutdown_token: CancellationToken::new(),
-            active_connections: Arc::new(AtomicUsize::new(0)),
-            auth_method: None,
-            file_rate_limiter: Arc::new(RateLimiter::new(10, 60)),
-        };
-
-        let api_state = ApiState {
-            session_manager,
-            config: config_arc,
-        };
-        (config, app_state, api_state)
+        build_auth_test_state(config)
     }
 
     /// Build test AppState and ApiState with token auth configured
@@ -1000,11 +994,25 @@ mod tests {
             password: None,
             token: Some("test-secret-token".to_string()),
         });
+        build_auth_test_state(config)
+    }
+
+    /// Shared builder for auth test states: constructs the pre-built
+    /// authenticator the same way startup does (L12 — the router now reads
+    /// it from `AppState.auth_method` instead of re-hashing the config).
+    fn build_auth_test_state(config: Config) -> (Config, AppState, ApiState) {
         let session_manager = Arc::new(SessionManager::new(
             Duration::from_secs(3600),
             SessionMode::Isolated,
         ));
         let config_arc = Arc::new(config.clone());
+
+        let auth_method = config.auth.as_ref().and_then(|auth_config| {
+            match crate::server::websocket::AuthMethod::build(auth_config) {
+                Ok(method) => Some(Arc::new(method)),
+                Err(_) => None,
+            }
+        });
 
         let app_state = AppState {
             config: config_arc.clone(),
@@ -1014,7 +1022,7 @@ mod tests {
             session_manager: session_manager.clone(),
             shutdown_token: CancellationToken::new(),
             active_connections: Arc::new(AtomicUsize::new(0)),
-            auth_method: None,
+            auth_method,
             file_rate_limiter: Arc::new(RateLimiter::new(10, 60)),
         };
 

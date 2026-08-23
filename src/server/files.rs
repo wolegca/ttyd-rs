@@ -213,13 +213,174 @@ fn safe_resolve(base: &Path, relative: &str) -> Result<PathBuf, (StatusCode, Str
 }
 
 /// Open a file for reading with `O_NOFOLLOW`, rejecting symlinked final
-/// components to close the check-then-open TOCTOU window in `download_file`.
+/// components. Superseded by [`open_nofollow_recursive`] for downloads,
+/// but still used by unit tests to verify O_NOFOLLOW semantics.
+#[cfg(test)]
 fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
+}
+
+/// Resolve and open a file under `base` without ever following a symlink.
+///
+/// Walks each component of `relative` with `openat(O_NOFOLLOW | O_DIRECTORY)`
+/// starting from a canonicalized `base`, then opens the final component with
+/// `O_NOFOLLOW`. Because resolution and opening happen in a single kernel
+/// walk rooted at an fd, an attacker who can create symlinks inside the base
+/// (e.g. via upload) cannot swap a *middle* directory for a symlink between
+/// a `canonicalize()` check and the final `open` — the TOCTOU that
+/// `safe_resolve` + `open_nofollow` leaves open.
+///
+/// Returns the opened file plus its full path (for MIME/Content-Disposition).
+fn open_nofollow_recursive(
+    base: &Path,
+    relative: &str,
+) -> Result<(std::fs::File, PathBuf), (StatusCode, String)> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    let err = |status: StatusCode, msg: &str| -> (StatusCode, String) { (status, msg.to_string()) };
+
+    // Reject absolute paths and traversal components up front.
+    if relative.starts_with('/') {
+        return Err(err(StatusCode::FORBIDDEN, "Absolute paths are not allowed"));
+    }
+
+    // Root the walk at the canonical base directory.
+    let base_canon = base.canonicalize().map_err(|_| {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Base directory not accessible",
+        )
+    })?;
+    let mut dir_fd = match std::fs::File::open(&base_canon) {
+        Ok(f) => f,
+        Err(e) => {
+            return Err(err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Base directory not accessible: {}", e),
+            ));
+        }
+    };
+    let mut resolved = base_canon;
+
+    let components: Vec<&std::ffi::OsStr> = Path::new(relative)
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(os) => Some(os),
+            // "." and trailing slashes are harmless; ".." is rejected outright
+            std::path::Component::ParentDir => None,
+            _ => None,
+        })
+        .collect();
+    if Path::new(relative)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(err(StatusCode::FORBIDDEN, "Path traversal detected"));
+    }
+    if components.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "Empty path"));
+    }
+
+    let last_idx = components.len() - 1;
+    for (i, comp) in components.iter().enumerate() {
+        let c_comp = std::ffi::CString::new(comp.as_bytes())
+            .map_err(|_| err(StatusCode::BAD_REQUEST, "Invalid path component"))?;
+
+        let is_last = i == last_idx;
+        let flags = if is_last {
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC
+        } else {
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_DIRECTORY | libc::O_CLOEXEC
+        };
+
+        // SAFETY: c_comp is a valid NUL-terminated string; dir_fd.raw_fd()
+        // is an open directory fd. The returned fd is wrapped in a File so
+        // it is closed on drop / error paths.
+        let fd = unsafe { libc::openat(dir_fd.as_raw_fd(), c_comp.as_ptr(), flags) };
+        if fd < 0 {
+            let e = std::io::Error::last_os_error();
+            let status = match e.raw_os_error() {
+                Some(libc::ELOOP) => StatusCode::FORBIDDEN,
+                Some(libc::ENOENT) => StatusCode::NOT_FOUND,
+                Some(libc::ENOTDIR) => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            let msg = match e.raw_os_error() {
+                Some(libc::ELOOP) => "Path is a symbolic link",
+                Some(libc::ENOENT) => "Path not found",
+                Some(libc::ENOTDIR) => "Path component is not a directory",
+                _ => "Cannot open path",
+            };
+            return Err(err(status, msg));
+        }
+        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+        resolved = resolved.join(comp);
+        dir_fd = file;
+    }
+
+    Ok((dir_fd, resolved))
+}
+
+/// Atomically rename `from` to `to` without replacing an existing target.
+///
+/// Uses `renameat2(RENAME_NOREPLACE)` on Linux. Returns
+/// `ErrorKind::AlreadyExists` when the target exists, closing the TOCTOU
+/// window between an `exists()` check and a plain `rename` (which would
+/// otherwise silently overwrite a file created concurrently).
+fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let from_c = std::ffi::CString::new(from.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid path"))?;
+    let to_c = std::ffi::CString::new(to.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid path"))?;
+
+    // SAFETY: both pointers are valid NUL-terminated C strings; the syscall
+    // does not retain them beyond the call.
+    let rc = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from_c.as_ptr(),
+            libc::AT_FDCWD,
+            to_c.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if rc == 0 {
+        return Ok(());
+    }
+    Err(std::io::Error::last_os_error())
+}
+
+/// Bounded drain of the remaining multipart body.
+///
+/// Before returning an error response we must consume the rest of the body:
+/// if the server closes while the client is still uploading, the browser
+/// gets a TCP RST (ERR_CONNECTION_ABORTED) instead of the error status.
+/// The timeout bounds how long a slow client can hold the handler (Slowloris).
+async fn drain_multipart(multipart: &mut Multipart, timeout_dur: std::time::Duration) {
+    let _ = tokio::time::timeout(timeout_dur, async {
+        while let Ok(Some(mut remaining)) = multipart.next_field().await {
+            while let Ok(Some(_)) = remaining.chunk().await {}
+        }
+    })
+    .await;
+}
+
+/// Drain the current field's remaining chunks (bounded).
+async fn drain_field(
+    field: &mut axum::extract::multipart::Field<'_>,
+    timeout_dur: std::time::Duration,
+) {
+    let _ = tokio::time::timeout(timeout_dur, async {
+        while let Ok(Some(_)) = field.chunk().await {}
+    })
+    .await;
 }
 
 /// POST /api/files/upload — upload a file via multipart/form-data
@@ -243,13 +404,7 @@ pub async fn upload_file(
         // Drain the multipart body to allow a clean connection close.
         // Without this, the browser gets ERR_CONNECTION_ABORTED because
         // the server closes while the client is still sending data.
-        // Bounded so a slow client cannot hold the handler forever.
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while let Ok(Some(mut drain_field)) = multipart.next_field().await {
-                while let Ok(Some(_)) = drain_field.chunk().await {}
-            }
-        })
-        .await;
+        drain_multipart(&mut multipart, std::time::Duration::from_secs(10)).await;
         return Err((
             StatusCode::PAYLOAD_TOO_LARGE,
             Json(FileErrorResponse {
@@ -321,18 +476,9 @@ pub async fn upload_file(
         if !query.overwrite && target.exists() {
             // Drain the current field data and any remaining multipart fields
             // so the client receives the 409 response instead of a TCP RST.
-            // Bounded so a slow client cannot hold the handler forever.
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                while let Ok(Some(_)) = field.chunk().await {}
-            })
-            .await;
+            drain_field(&mut field, std::time::Duration::from_secs(10)).await;
             drop(field);
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                while let Ok(Some(mut remaining)) = multipart.next_field().await {
-                    while let Ok(Some(_)) = remaining.chunk().await {}
-                }
-            })
-            .await;
+            drain_multipart(&mut multipart, std::time::Duration::from_secs(10)).await;
             return Err((
                 StatusCode::CONFLICT,
                 Json(FileErrorResponse {
@@ -388,19 +534,11 @@ pub async fn upload_file(
                 // Abort: drop file handle; the guard will remove the partial file
                 drop(file);
                 // Drain the remaining body so the client receives the error
-                // response instead of a TCP RST — but bound the drain so a
-                // slow client cannot hold the handler forever (Slowloris).
-                let _ = tokio::time::timeout(DRAIN_TIMEOUT, async {
-                    while let Ok(Some(_)) = field.chunk().await {}
-                })
-                .await;
+                // response instead of a TCP RST — bounded so a slow client
+                // cannot hold the handler forever (Slowloris).
+                drain_field(&mut field, DRAIN_TIMEOUT).await;
                 drop(field);
-                let _ = tokio::time::timeout(DRAIN_TIMEOUT, async {
-                    while let Ok(Some(mut remaining)) = multipart.next_field().await {
-                        while let Ok(Some(_)) = remaining.chunk().await {}
-                    }
-                })
-                .await;
+                drain_multipart(&mut multipart, DRAIN_TIMEOUT).await;
                 return Err((
                     StatusCode::PAYLOAD_TOO_LARGE,
                     Json(FileErrorResponse {
@@ -430,13 +568,37 @@ pub async fn upload_file(
 
         // Atomically move the completed temp file into place. The guard is
         // still armed: if the rename fails it removes the temp file.
-        if let Err(e) = tokio::fs::rename(&tmp_target, &target).await {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(FileErrorResponse {
-                    error: format!("Failed to finalize upload: {}", e),
-                }),
-            ));
+        //
+        // When `overwrite` was not requested we use renameat2 with
+        // RENAME_NOREPLACE so the "does not exist" check and the move are a
+        // single atomic operation — two concurrent uploads of the same name
+        // can no longer both pass an exists() check and silently clobber
+        // each other. EEXIST maps to 409 Conflict.
+        let rename_result = if query.overwrite {
+            tokio::fs::rename(&tmp_target, &target).await
+        } else {
+            let tmp = tmp_target.clone();
+            let dst = target.clone();
+            tokio::task::spawn_blocking(move || rename_noreplace(&tmp, &dst))
+                .await
+                .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())))
+        };
+        if let Err(e) = rename_result {
+            let (status, message) = if e.kind() == std::io::ErrorKind::AlreadyExists {
+                (
+                    StatusCode::CONFLICT,
+                    format!(
+                        "File already exists: {}. Use overwrite=true to replace.",
+                        sanitized
+                    ),
+                )
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to finalize upload: {}", e),
+                )
+            };
+            return Err((status, Json(FileErrorResponse { error: message })));
         }
 
         // Upload completed successfully — disarm the guard (the temp file no
@@ -462,6 +624,27 @@ pub async fn upload_file(
     }))
 }
 
+/// Build an RFC 6266/5987-compliant `Content-Disposition` value.
+///
+/// Emits `filename="..."` for the (sanitized) name plus a
+/// `filename*=UTF-8''...` percent-encoded form so non-ASCII filenames are
+/// rendered correctly by modern clients instead of turning into mojibake.
+fn content_disposition(filename: &str) -> String {
+    let mut encoded = String::with_capacity(filename.len());
+    for byte in filename.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    format!(
+        "attachment; filename=\"{}\"; filename*=UTF-8''{}",
+        filename, encoded
+    )
+}
+
 /// GET /api/files/download?path=... — download a file (streaming)
 pub async fn download_file(
     State(state): State<FileTransferState>,
@@ -481,54 +664,23 @@ pub async fn download_file(
     let base = resolve_base_dir(&state, query.session_id.as_deref())
         .await
         .map_err(|(status, msg)| (status, Json(FileErrorResponse { error: msg })))?;
-    let target = safe_resolve(&base, relative)
-        .map_err(|(status, msg)| (status, Json(FileErrorResponse { error: msg })))?;
 
-    if !target.exists() {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(FileErrorResponse {
-                error: format!("File not found: {}", relative),
-            }),
-        ));
-    }
-
-    if target.is_dir() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(FileErrorResponse {
-                error: "Path is a directory, not a file".to_string(),
-            }),
-        ));
-    }
-
-    // Open with O_NOFOLLOW so a symlink swapped in between the `safe_resolve`
-    // check and this open cannot redirect the read outside the base directory
-    // (TOCTOU). Symlinks inside the base are rejected rather than followed.
-    let std_file = open_nofollow(&target).map_err(|e| {
-        match e.raw_os_error() {
-            // ELOOP: the final component is a symlink swapped in after
-            // `safe_resolve` canonicalized it — refuse rather than follow.
-            Some(libc::ELOOP) => (
-                StatusCode::FORBIDDEN,
+    // Resolve and open in a single kernel walk rooted at the base directory.
+    // Unlike safe_resolve() + open(), this cannot be raced with a symlink
+    // swapped into a *middle* path component (see open_nofollow_recursive).
+    let (std_file, target) =
+        open_nofollow_recursive(&base, relative).map_err(|(status, msg)| {
+            (
+                status,
                 Json(FileErrorResponse {
-                    error: "Path is a symbolic link".to_string(),
+                    error: if msg == "Path not found" {
+                        format!("File not found: {}", relative)
+                    } else {
+                        msg
+                    },
                 }),
-            ),
-            Some(libc::ENOENT) => (
-                StatusCode::NOT_FOUND,
-                Json(FileErrorResponse {
-                    error: format!("File not found: {}", relative),
-                }),
-            ),
-            _ => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(FileErrorResponse {
-                    error: format!("Cannot open file: {}", e),
-                }),
-            ),
-        }
-    })?;
+            )
+        })?;
 
     let metadata = std_file.metadata().map_err(|e| {
         (
@@ -557,6 +709,7 @@ pub async fn download_file(
     } else {
         safe_name
     };
+    let disposition = content_disposition(&safe_name);
 
     let mime = mime_guess::from_path(&target).first_or_octet_stream();
     let stream = ReaderStream::new(file);
@@ -566,10 +719,7 @@ pub async fn download_file(
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime.as_ref())
         .header(header::CONTENT_LENGTH, metadata.len())
-        .header(
-            header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{}\"", safe_name),
-        )
+        .header(header::CONTENT_DISPOSITION, disposition)
         .body(body)
         .map_err(|_| {
             (
@@ -680,6 +830,30 @@ mod tests {
     use crate::session::{SessionManager, SessionMode};
     use std::fs;
     use std::time::Duration;
+
+    #[test]
+    fn test_content_disposition_ascii() {
+        let cd = content_disposition("report.txt");
+        assert_eq!(
+            cd,
+            "attachment; filename=\"report.txt\"; filename*=UTF-8''report.txt"
+        );
+    }
+
+    #[test]
+    fn test_content_disposition_utf8() {
+        let cd = content_disposition("报告.md");
+        // Non-ASCII bytes must be percent-encoded in the filename* form
+        assert!(cd.contains("filename=\"报告.md\""));
+        assert!(cd.contains("filename*=UTF-8''%E6%8A%A5%E5%91%8A.md",));
+    }
+
+    #[test]
+    fn test_content_disposition_special_chars() {
+        let cd = content_disposition("a b+c.txt");
+        // Space and '+' are not in the RFC 5987 attr-char set
+        assert!(cd.contains("filename*=UTF-8''a%20b%2Bc.txt"));
+    }
 
     fn test_state(dir: PathBuf) -> FileTransferState {
         FileTransferState {

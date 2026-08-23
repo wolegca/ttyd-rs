@@ -31,6 +31,7 @@ pub(crate) enum AuthResult {
 /// it must never run per connection. This also removes a DoS amplification
 /// vector where unauthenticated clients could force the server to re-hash
 /// the configured password on every login attempt.
+#[derive(Clone)]
 pub(crate) enum AuthMethod {
     Basic {
         validator: BasicAuth,
@@ -175,6 +176,7 @@ pub(crate) async fn authenticate(
     ws_receiver: &mut SplitStream<WebSocket>,
     remote_addr: &str,
     client_id: &str,
+    rate_limit_key: &str,
 ) -> Result<AuthResult, Box<dyn std::error::Error + Send + Sync>> {
     let Some(auth_method) = state.auth_method.as_ref() else {
         if state.config.auth.is_some() {
@@ -195,6 +197,7 @@ pub(crate) async fn authenticate(
         ws_receiver,
         remote_addr,
         client_id,
+        rate_limit_key,
         auth_method,
     )
     .await
@@ -209,10 +212,13 @@ async fn perform_auth(
     ws_receiver: &mut SplitStream<WebSocket>,
     remote_addr: &str,
     client_id: &str,
+    rate_limit_key: &str,
     auth_method: &AuthMethod,
 ) -> Result<AuthResult, Box<dyn std::error::Error + Send + Sync>> {
-    // 1. Check rate limit before processing auth
-    if let Err(duration) = state.rate_limiter.check(remote_addr).await {
+    // 1. Check rate limit before processing auth.
+    // The key combines the (possibly header-derived) IP with the real socket
+    // address when trust_proxy is on, so spoofed headers cannot evade it.
+    if let Err(duration) = state.rate_limiter.check(rate_limit_key).await {
         warn!("Rate limit exceeded for {}", remote_addr);
         send_auth_fail(
             ws_sender,

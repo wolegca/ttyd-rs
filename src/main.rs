@@ -14,13 +14,16 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 #[command(about = "Share your terminal over the web", long_about = None)]
 #[command(version)]
 struct Args {
-    /// Port to listen on
-    #[arg(short, long, default_value = "7681")]
-    port: u16,
+    /// Port to listen on.
+    /// Defaults to the `bind` value from the configuration file (or 7681).
+    /// Only overrides the config when explicitly provided.
+    #[arg(short, long)]
+    port: Option<u16>,
 
-    /// Address to bind to
-    #[arg(short, long, default_value = "127.0.0.1")]
-    bind: String,
+    /// Address to bind to.
+    /// Only overrides the config when explicitly provided.
+    #[arg(short, long)]
+    bind: Option<String>,
 
     /// Configuration file path
     #[arg(short, long)]
@@ -40,21 +43,25 @@ struct Args {
     #[arg(long)]
     log_level: Option<String>,
 
-    /// Session mode: isolated, shared-ro, shared-rw
-    #[arg(long, default_value = "isolated")]
-    session_mode: String,
+    /// Session mode: isolated, shared-ro, shared-rw.
+    /// Only overrides the config when explicitly provided.
+    #[arg(long)]
+    session_mode: Option<String>,
 
-    /// Session timeout in seconds (0 = no timeout)
-    #[arg(long, default_value = "3600")]
-    session_timeout: u64,
+    /// Session timeout in seconds (0 = no timeout).
+    /// Only overrides the config when explicitly provided.
+    #[arg(long)]
+    session_timeout: Option<u64>,
 
-    /// Reconnect window in seconds — how long to keep empty sessions alive
-    #[arg(long, default_value = "60")]
-    reconnect_window: u64,
+    /// Reconnect window in seconds — how long to keep empty sessions alive.
+    /// Only overrides the config when explicitly provided.
+    #[arg(long)]
+    reconnect_window: Option<u64>,
 
-    /// Maximum number of concurrent connections
-    #[arg(long, default_value = "100")]
-    max_connections: usize,
+    /// Maximum number of concurrent connections.
+    /// Only overrides the config when explicitly provided.
+    #[arg(long)]
+    max_connections: Option<usize>,
 
     /// Enable authentication
     #[arg(long)]
@@ -146,7 +153,7 @@ async fn main() {
     }
 
     // Start the server
-    if let Err(e) = server::http::start_server(config).await {
+    if let Err(e) = server::http::start_server(config, None).await {
         tracing::error!("Server error: {}", e);
         std::process::exit(1);
     }
@@ -225,9 +232,20 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
         }
     };
 
-    // Override with command line arguments
-    let bind_addr = format!("{}:{}", args.bind, args.port);
-    config.bind = bind_addr.parse()?;
+    // Override with command line arguments. Each field is only applied
+    // when explicitly provided on the CLI, so values from the config file
+    // (or built-in defaults) are preserved otherwise.
+    if let (Some(bind), Some(port)) = (&args.bind, args.port) {
+        let bind_addr = format!("{}:{}", bind, port);
+        config.bind = bind_addr.parse()?;
+    } else if let Some(port) = args.port {
+        let mut addr = config.bind;
+        addr.set_port(port);
+        config.bind = addr;
+    } else if let Some(bind) = &args.bind {
+        let bind_addr = format!("{}:{}", bind, config.bind.port());
+        config.bind = bind_addr.parse()?;
+    }
     if let Some(shell) = &args.shell {
         config.command = shell.split_whitespace().map(String::from).collect();
     }
@@ -240,12 +258,20 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
     if let Some(log_level) = &args.log_level {
         config.log_level = log_level.clone();
     }
-    config.max_connections = args.max_connections;
+    if let Some(max_connections) = args.max_connections {
+        config.max_connections = max_connections;
+    }
 
     // Session configuration
-    config.session.mode = args.session_mode.clone();
-    config.session.timeout = args.session_timeout;
-    config.session.reconnect_window = args.reconnect_window;
+    if let Some(mode) = &args.session_mode {
+        config.session.mode = mode.clone();
+    }
+    if let Some(timeout) = args.session_timeout {
+        config.session.timeout = timeout;
+    }
+    if let Some(window) = args.reconnect_window {
+        config.session.reconnect_window = window;
+    }
 
     // Proxy configuration
     if args.trust_proxy {
@@ -288,19 +314,19 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_load_config_defaults() {
-        let args = Args {
-            port: 7681,
-            bind: "127.0.0.1".to_string(),
+    /// Build minimal Args with all fields unset (None/false) except shell.
+    fn base_args() -> Args {
+        Args {
+            port: None,
+            bind: None,
             config: None,
-            shell: Some("bash --login".to_string()),
+            shell: Some("bash".to_string()),
             working_dir: None,
-            log_level: Some("info".to_string()),
-            session_mode: "isolated".to_string(),
-            session_timeout: 3600,
-            reconnect_window: 60,
-            max_connections: 100,
+            log_level: None,
+            session_mode: None,
+            session_timeout: None,
+            reconnect_window: None,
+            max_connections: None,
             auth: false,
             username: None,
             password: None,
@@ -309,43 +335,36 @@ mod tests {
             trust_proxy: false,
             hash_password: false,
             no_file_transfer: true,
-        };
+        }
+    }
+
+    #[test]
+    fn test_load_config_defaults() {
+        let mut args = base_args();
+        args.shell = Some("bash --login".to_string());
 
         let config = load_config(&args).unwrap();
         assert_eq!(config.command, vec!["bash", "--login"]);
-        assert_eq!(config.session.mode, "isolated");
-        assert_eq!(config.session.timeout, 3600);
+        assert_eq!(config.session.mode, "isolated"); // built-in default
+        assert_eq!(config.session.timeout, 3600); // built-in default
         assert!(config.auth.is_none());
         assert!(!config.trust_proxy);
     }
 
     #[test]
-    fn test_load_config_with_auth() {
-        let args = Args {
-            port: 8080,
-            bind: "0.0.0.0".to_string(),
-            config: None,
-            shell: Some("/bin/zsh".to_string()),
-            working_dir: Some(PathBuf::from("/tmp")),
-            log_level: Some("debug".to_string()),
-            session_mode: "shared_readwrite".to_string(),
-            session_timeout: 7200,
-            reconnect_window: 60,
-            max_connections: 50,
-            auth: true,
-            username: Some("admin".to_string()),
-            password: Some("secret".to_string()),
-            audit: false,
-            audit_file: None,
-            trust_proxy: false,
-            hash_password: false,
-            no_file_transfer: true,
-        };
+    fn test_load_config_cli_overrides() {
+        let mut args = base_args();
+        args.port = Some(8080);
+        args.bind = Some("0.0.0.0".to_string());
+        args.session_mode = Some("shared_readwrite".to_string());
+        args.session_timeout = Some(7200);
+        args.max_connections = Some(50);
+        args.auth = true;
+        args.username = Some("admin".to_string());
+        args.password = Some("secret".to_string());
 
         let config = load_config(&args).unwrap();
-        assert_eq!(config.command, vec!["/bin/zsh"]);
-        assert_eq!(config.working_dir, Some(PathBuf::from("/tmp")));
-        assert_eq!(config.log_level, "debug");
+        assert_eq!(config.bind.to_string(), "0.0.0.0:8080");
         assert_eq!(config.max_connections, 50);
         assert_eq!(config.session.mode, "shared_readwrite");
         assert_eq!(config.session.timeout, 7200);
@@ -358,26 +377,9 @@ mod tests {
 
     #[test]
     fn test_load_config_with_audit() {
-        let args = Args {
-            port: 7681,
-            bind: "127.0.0.1".to_string(),
-            config: None,
-            shell: Some("bash".to_string()),
-            working_dir: None,
-            log_level: Some("info".to_string()),
-            session_mode: "isolated".to_string(),
-            session_timeout: 3600,
-            reconnect_window: 60,
-            max_connections: 100,
-            auth: false,
-            username: None,
-            password: None,
-            audit: true,
-            audit_file: Some(PathBuf::from("/tmp/audit.log")),
-            trust_proxy: false,
-            hash_password: false,
-            no_file_transfer: true,
-        };
+        let mut args = base_args();
+        args.audit = true;
+        args.audit_file = Some(PathBuf::from("/tmp/audit.log"));
 
         let config = load_config(&args).unwrap();
         assert!(config.audit.enabled);
@@ -420,34 +422,19 @@ enabled = false
         )
         .unwrap();
 
-        let args = Args {
-            port: 9999,
-            bind: "127.0.0.1".to_string(),
-            config: Some(config_path),
-            shell: Some("bash".to_string()),
-            working_dir: None,
-            log_level: Some("info".to_string()),
-            session_mode: "isolated".to_string(),
-            session_timeout: 3600,
-            reconnect_window: 60,
-            max_connections: 100,
-            auth: false,
-            username: None,
-            password: None,
-            audit: false,
-            audit_file: None,
-            trust_proxy: false,
-            hash_password: false,
-            no_file_transfer: true,
-        };
+        let mut args = base_args();
+        args.config = Some(config_path);
+        args.log_level = Some("info".to_string());
 
         let config = load_config(&args).unwrap();
         // CLI overrides file values for these fields
         assert_eq!(config.command, vec!["bash"]);
         assert_eq!(config.log_level, "info");
-        assert_eq!(config.max_connections, 100);
-        // File values that are NOT overridden by CLI
-        assert_eq!(config.session.mode, "isolated"); // CLI overrides
+        // File values that are NOT overridden by CLI are preserved (M1 fix)
+        assert_eq!(config.max_connections, 200);
+        assert_eq!(config.session.mode, "shared_readonly");
+        assert_eq!(config.session.timeout, 1800);
+        assert_eq!(config.bind.to_string(), "0.0.0.0:3000");
         assert!(config.validate().is_ok());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -489,26 +476,8 @@ enabled = false
         )
         .unwrap();
 
-        let args = Args {
-            port: 7681,
-            bind: "127.0.0.1".to_string(),
-            config: Some(config_path),
-            shell: None,
-            working_dir: None,
-            log_level: None,
-            session_mode: "isolated".to_string(),
-            session_timeout: 3600,
-            reconnect_window: 60,
-            max_connections: 100,
-            auth: false,
-            username: None,
-            password: None,
-            audit: false,
-            audit_file: None,
-            trust_proxy: false,
-            hash_password: false,
-            no_file_transfer: true,
-        };
+        let mut args = base_args();
+        args.config = Some(config_path);
 
         let config = load_config(&args).unwrap();
         assert_eq!(config.log_level, "warn");

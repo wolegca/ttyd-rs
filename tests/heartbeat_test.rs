@@ -7,7 +7,10 @@ use std::time::Duration;
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-/// Helper to start a test server instance
+/// Helper to start a test server instance.
+///
+/// The server binds to port 0 (OS-assigned); the actual port is received
+/// back through a oneshot channel so tests connect to the right endpoint.
 async fn start_test_server() -> (tokio::task::JoinHandle<()>, u16) {
     use ttyd_rs::config::Config;
     use ttyd_rs::server::http::start_server;
@@ -18,13 +21,16 @@ async fn start_test_server() -> (tokio::task::JoinHandle<()>, u16) {
         ..Default::default()
     };
 
-    let port = config.bind.port();
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
     let handle = tokio::spawn(async move {
-        let _ = start_server(config).await;
+        let _ = start_server(config, Some(port_tx)).await;
     });
 
-    // Give server time to start
-    sleep(Duration::from_millis(500)).await;
+    // Wait for the server to report its bound port
+    let port = timeout(Duration::from_secs(5), port_rx)
+        .await
+        .expect("server did not start in time")
+        .expect("server did not report bound port");
 
     (handle, port)
 }

@@ -3,7 +3,7 @@ use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures::StreamExt;
 use futures::stream::SplitStream;
 use std::time::Duration;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::protocol::Message;
 
@@ -87,8 +87,11 @@ async fn process_handshake_message(
         Message::Join(data) => {
             hs.join_session_id = Some(data.session_id);
         }
-        _ => {
-            warn!("Expected resize or join, got other message type");
+        other => {
+            debug!(
+                "Ignoring unexpected message type during handshake: {}",
+                super::utils::message_type_name(&other)
+            );
         }
     }
     Ok(())
@@ -119,8 +122,25 @@ pub(crate) async fn read_handshake(
             process_handshake_message(state, ws_sender, remote_addr, client_id, msg, &mut hs)
                 .await?;
         }
-        _ => {
+        // A Close frame during handshake is a deliberate client abort —
+        // reject instead of silently continuing with default dimensions.
+        Some(Ok(WsMessage::Close(_))) => {
+            warn!("Client sent Close during handshake");
+            return Err(());
+        }
+        // Receive errors mean the connection is broken.
+        Some(Err(e)) => {
+            warn!("WebSocket error during handshake: {}", e);
+            return Err(());
+        }
+        // Connection dropped without any message.
+        None => {
             warn!("No handshake message received");
+            return Err(());
+        }
+        // Non-text frames (Binary/Ping/Pong) are tolerated but logged.
+        Some(Ok(other)) => {
+            debug!("Ignoring non-text frame during handshake: {:?}", other);
         }
     }
 
