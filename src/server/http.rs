@@ -83,20 +83,22 @@ pub async fn start_server(
         shutdown_token: shutdown_token.clone(),
         active_connections: Arc::new(AtomicUsize::new(0)),
         auth_method: ws_auth_method,
-        file_rate_limiter,
+        file_rate_limiter: file_rate_limiter.clone(),
     };
     let api_state = ApiState {
         session_manager: session_manager.clone(),
         config: Arc::new(config.clone()),
     };
 
-    // Spawn cleanup task for rate limiter
+    // Spawn cleanup task for both rate limiters
     let cleanup_limiter = rate_limiter.clone();
+    let cleanup_file_limiter = file_rate_limiter.clone();
     let limiter_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(300)); // Cleanup every 5 minutes
         loop {
             interval.tick().await;
             cleanup_limiter.cleanup().await;
+            cleanup_file_limiter.cleanup().await;
         }
     });
 

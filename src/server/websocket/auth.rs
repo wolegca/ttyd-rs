@@ -288,7 +288,7 @@ async fn perform_auth(
         .audit_logger
         .log_auth_attempt(remote_addr, auth_method.audit_name(), true, client_id)
         .await;
-    state.rate_limiter.reset(remote_addr).await;
+    state.rate_limiter.reset(rate_limit_key).await;
     send_auth_ok(ws_sender, client_id).await?;
 
     Ok(AuthResult::Success(auth_method.success_username()))

@@ -64,7 +64,7 @@ struct Args {
     max_connections: Option<usize>,
 
     /// Enable authentication
-    #[arg(long)]
+    #[arg(long, requires = "username", requires = "password")]
     auth: bool,
 
     /// Username for basic authentication
