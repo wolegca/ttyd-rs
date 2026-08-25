@@ -44,24 +44,31 @@ pub struct Config {
     pub working_dir: Option<PathBuf>,
 
     /// Authentication configuration
+    #[serde(default)]
     pub auth: Option<AuthConfig>,
 
     /// Logging configuration
+    #[serde(default = "default_log_level")]
     pub log_level: String,
 
     /// Maximum number of concurrent connections
+    #[serde(default = "default_max_connections")]
     pub max_connections: usize,
 
     /// Audit log configuration
+    #[serde(default)]
     pub audit: AuditConfig,
 
     /// Session configuration
+    #[serde(default)]
     pub session: SessionConfig,
 
     /// Validation configuration
+    #[serde(default)]
     pub validation: ValidationConfig,
 
     /// Rate limiting configuration
+    #[serde(default)]
     pub rate_limit: RateLimitConfig,
 
     /// File transfer configuration
@@ -118,18 +125,22 @@ impl std::fmt::Debug for AuthConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AuditConfig {
     /// Enable audit logging
+    #[serde(default)]
     pub enabled: bool,
 
     /// Audit log file path
+    #[serde(default)]
     pub log_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
     /// Session mode: "isolated", "shared_readonly", or "shared_readwrite"
+    #[serde(default = "default_session_mode")]
     pub mode: String,
 
     /// Session timeout in seconds (0 = no timeout)
+    #[serde(default = "default_session_timeout")]
     pub timeout: u64,
 
     /// Reconnect window in seconds — how long to keep empty sessions alive
@@ -142,33 +153,49 @@ fn default_reconnect_window() -> u64 {
     60
 }
 
+fn default_session_mode() -> String {
+    "isolated".to_string()
+}
+
+fn default_session_timeout() -> u64 {
+    3600
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationConfig {
     /// Maximum terminal columns
+    #[serde(default = "default_max_cols")]
     pub max_cols: u16,
 
     /// Minimum terminal columns
+    #[serde(default = "default_min_cols")]
     pub min_cols: u16,
 
     /// Maximum terminal rows
+    #[serde(default = "default_max_rows")]
     pub max_rows: u16,
 
     /// Minimum terminal rows
+    #[serde(default = "default_min_rows")]
     pub min_rows: u16,
 
     /// Maximum input payload size in bytes
+    #[serde(default = "default_max_input_size")]
     pub max_input_size: usize,
 
     /// Maximum credentials length
+    #[serde(default = "default_max_credentials_length")]
     pub max_credentials_length: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitConfig {
     /// Maximum requests allowed
+    #[serde(default = "default_max_requests")]
     pub max_requests: u32,
 
     /// Time window in seconds
+    #[serde(default = "default_window_seconds")]
     pub window_seconds: u64,
 }
 
@@ -229,6 +256,46 @@ fn default_file_transfer_enabled() -> bool {
 
 fn default_max_upload_size() -> usize {
     100 * 1024 * 1024 // 100MB
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+fn default_max_connections() -> usize {
+    100
+}
+
+fn default_max_cols() -> u16 {
+    500
+}
+
+fn default_min_cols() -> u16 {
+    10
+}
+
+fn default_max_rows() -> u16 {
+    200
+}
+
+fn default_min_rows() -> u16 {
+    5
+}
+
+fn default_max_input_size() -> usize {
+    16384
+}
+
+fn default_max_credentials_length() -> usize {
+    1024
+}
+
+fn default_max_requests() -> u32 {
+    10
+}
+
+fn default_window_seconds() -> u64 {
+    60
 }
 
 impl Default for Config {
@@ -638,6 +705,96 @@ enabled = false
 
         let result = Config::from_file(&config_path);
         assert!(result.is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A minimal config file with only `bind` and `command` should load, with
+    /// all other sections falling back to their built-in defaults.
+    #[test]
+    fn test_config_from_file_minimal() {
+        let dir = std::env::temp_dir().join("ttyd-rs-config-test-minimal");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("minimal.toml");
+
+        std::fs::write(
+            &config_path,
+            "bind = \"0.0.0.0:3000\"\ncommand = [\"/bin/sh\"]\n",
+        )
+        .unwrap();
+
+        let config = Config::from_file(&config_path).unwrap();
+        assert_eq!(config.bind.to_string(), "0.0.0.0:3000");
+        assert_eq!(config.command, vec!["/bin/sh"]);
+        // Built-in defaults fill the omitted sections.
+        assert_eq!(config.log_level, "info");
+        assert_eq!(config.max_connections, 100);
+        assert_eq!(config.session.mode, "isolated");
+        assert_eq!(config.session.timeout, 3600);
+        assert_eq!(config.session.reconnect_window, 60);
+        assert_eq!(config.validation.max_cols, 500);
+        assert_eq!(config.rate_limit.max_requests, 10);
+        assert!(!config.audit.enabled);
+        assert!(config.file_transfer.enabled);
+        assert_eq!(config.compression.level, 6);
+        assert!(!config.trust_proxy);
+        assert!(config.auth.is_none());
+        // With no [auth] and file_transfer enabled by default, validation must
+        // refuse to start — file endpoints would be unauthenticated.
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::UnsafeConfiguration(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A config with a partial `[session]` table falls back to defaults for
+    /// the omitted session fields.
+    #[test]
+    fn test_config_from_file_partial_session() {
+        let dir = std::env::temp_dir().join("ttyd-rs-config-test-partial-session");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("partial.toml");
+
+        std::fs::write(
+            &config_path,
+            "bind = \"127.0.0.1:7681\"\ncommand = [\"/bin/sh\"]\n\n[session]\nmode = \"shared_readonly\"\n",
+        )
+        .unwrap();
+
+        let config = Config::from_file(&config_path).unwrap();
+        assert_eq!(config.session.mode, "shared_readonly");
+        // `timeout` and `reconnect_window` omitted → defaults.
+        assert_eq!(config.session.timeout, 3600);
+        assert_eq!(config.session.reconnect_window, 60);
+        // Same unauthenticated-file-transfer refusal as above.
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::UnsafeConfiguration(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A minimal config combined with auth validates cleanly, proving the
+    /// built-in defaults are otherwise sound.
+    #[test]
+    fn test_config_from_file_minimal_with_auth() {
+        let dir = std::env::temp_dir().join("ttyd-rs-config-test-minimal-auth");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("minimal_auth.toml");
+
+        std::fs::write(
+            &config_path,
+            concat!(
+                "bind = \"127.0.0.1:7681\"\n",
+                "command = [\"/bin/sh\"]\n\n",
+                "[auth]\n",
+                "method = \"token\"\n",
+                "token = \"secret\"\n",
+            ),
+        )
+        .unwrap();
+
+        let config = Config::from_file(&config_path).unwrap();
+        assert!(config.validate().is_ok());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

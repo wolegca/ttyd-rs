@@ -74,7 +74,20 @@ password = "$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>"
 enabled = true
 ```
 
+Config files are *partial*: any omitted top-level table (`[auth]`, `[session]`,
+`[validation]`, `[rate_limit]`, `[audit]`, ...) and any omitted field inside them
+falls back to the built-in default (same defaults the CLI uses). So a file with
+just `bind` and `command` works. Note that file transfer is enabled by default,
+so a config with no `[auth]` will refuse to start unless you disable
+`[file_transfer]` — add auth or set `[file_transfer] enabled = false`.
+
 CLI arguments override config file values. Run `ttyd-rs --help` for all options.
+Notable behaviors:
+
+- `--bind` accepts a bare IP (`127.0.0.1`, `::1`) or an explicit `ip:port`
+  socket address; combined with `--port`, the explicit socket address wins.
+- `--shell` honors shell-style quoting/escaping, e.g. `-s 'bash -c "echo hi"'`.
+- `--audit-file` requires `--audit`; using it alone is an error.
 
 ## Security
 

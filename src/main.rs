@@ -6,6 +6,7 @@ use ttyd_rs::{
 
 use clap::Parser;
 use std::io::{BufRead, Write};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -80,7 +81,7 @@ struct Args {
     audit: bool,
 
     /// Audit log file path
-    #[arg(long)]
+    #[arg(long, requires = "audit")]
     audit_file: Option<PathBuf>,
 
     /// Trust proxy headers (X-Real-IP / X-Forwarded-For) for client IP
@@ -214,6 +215,43 @@ fn init_logging(
     Ok(())
 }
 
+/// Parse a `--bind` value into a socket address.
+///
+/// Accepts either a bare IP literal (`127.0.0.1`, `::1`) or an explicit
+/// `ip:port` socket address. The port to use takes the following precedence:
+/// the explicit port embedded in `bind`, then `cli_port`, then the current
+/// configured port. This supports IPv6 literals, which the previous
+/// `format!("{}:{}", ...)` concatenation could not represent.
+fn parse_bind(
+    bind: &str,
+    cli_port: Option<u16>,
+    current: SocketAddr,
+) -> Result<SocketAddr, Box<dyn std::error::Error>> {
+    // Prefer an explicit `ip:port` socket address when the user provided one.
+    if let Ok(addr) = bind.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+
+    // Otherwise treat `bind` as a bare IP literal and combine with a port.
+    let ip: std::net::IpAddr = bind
+        .parse()
+        .map_err(|_| format!("invalid --bind value '{bind}': expected an IP address (IPv4 or IPv6), optionally with a :port suffix"))?;
+    let port = cli_port.unwrap_or_else(|| current.port());
+    Ok(SocketAddr::new(ip, port))
+}
+
+/// Split a single `--shell` string into a command vector, honoring shell
+/// quoting and escaping. Falls back to whitespace splitting for input that
+/// cannot be parsed by `shlex` (for example, unbalanced quotes).
+fn split_command(shell: &str) -> Vec<String> {
+    shlex::split(shell).unwrap_or_else(|| shell.split_whitespace().map(String::from).collect())
+}
+
+/// Fallback working directory: the current user's home directory.
+fn default_working_dir() -> Option<PathBuf> {
+    std::env::var("HOME").ok().map(PathBuf::from)
+}
+
 /// Load configuration from file or command line arguments
 fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
     let mut config = if let Some(config_path) = &args.config {
@@ -235,22 +273,26 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
     // Override with command line arguments. Each field is only applied
     // when explicitly provided on the CLI, so values from the config file
     // (or built-in defaults) are preserved otherwise.
-    if let (Some(bind), Some(port)) = (&args.bind, args.port) {
-        let bind_addr = format!("{}:{}", bind, port);
-        config.bind = bind_addr.parse()?;
+    if let Some(bind) = &args.bind {
+        // Accept a bare IP (IPv4 or IPv6) or an explicit `ip:port` socket
+        // address. This avoids the old `format!("{}:{}", ...)` approach,
+        // which could not represent IPv6 literals.
+        config.bind = parse_bind(bind, args.port, config.bind)?;
     } else if let Some(port) = args.port {
-        let mut addr = config.bind;
-        addr.set_port(port);
-        config.bind = addr;
-    } else if let Some(bind) = &args.bind {
-        let bind_addr = format!("{}:{}", bind, config.bind.port());
-        config.bind = bind_addr.parse()?;
+        config.bind.set_port(port);
     }
     if let Some(shell) = &args.shell {
-        config.command = shell.split_whitespace().map(String::from).collect();
+        config.command = split_command(shell);
     }
     if let Some(working_dir) = &args.working_dir {
         config.working_dir = Some(working_dir.clone());
+    }
+    // If no working directory was configured (no CLI flag and none in the
+    // config file), fall back to the current user's home directory. This
+    // keeps behavior consistent whether a config file was loaded or the
+    // default configuration was used: shell then starts in $HOME.
+    if config.working_dir.is_none() {
+        config.working_dir = default_working_dir();
     }
     // Only override `log_level` when the flag was explicitly provided, so
     // the value from the configuration file (or the built-in default) is
@@ -483,5 +525,111 @@ enabled = false
         assert_eq!(config.log_level, "warn");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_config_default_working_dir_to_home() {
+        // Config file that omits `working_dir` must fall back to $HOME
+        // rather than inheriting the process's current directory.
+        let dir = std::env::temp_dir().join("ttyd-rs-main-workdir");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("config.toml");
+
+        std::fs::write(
+            &config_path,
+            r#"
+bind = "0.0.0.0:3100"
+command = ["/bin/sh"]
+log_level = "warn"
+max_connections = 100
+
+[session]
+mode = "isolated"
+timeout = 3600
+
+[validation]
+max_cols = 500
+min_cols = 10
+max_rows = 200
+min_rows = 5
+max_input_size = 16384
+max_credentials_length = 1024
+
+[rate_limit]
+max_requests = 10
+window_seconds = 60
+
+[audit]
+enabled = false
+"#,
+        )
+        .unwrap();
+
+        let mut args = base_args();
+        args.config = Some(config_path);
+
+        let config = load_config(&args).unwrap();
+        let home = std::env::var("HOME").expect("HOME must be set for this test");
+        assert_eq!(config.working_dir, Some(PathBuf::from(home)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_parse_bind_ipv6_literal() {
+        // IPv6 bare literal with no CLI port → uses current port.
+        let cur = "[::1]:7681".parse::<SocketAddr>().unwrap();
+        assert_eq!(
+            parse_bind("::1", None, cur).unwrap(),
+            "[::1]:7681".parse::<SocketAddr>().unwrap()
+        );
+
+        // IPv6 literal combined with an explicit CLI port.
+        assert_eq!(
+            parse_bind("::1", Some(9000), cur).unwrap(),
+            "[::1]:9000".parse::<SocketAddr>().unwrap()
+        );
+
+        // Explicit IPv6 list form with port wins over CLI port.
+        let full = "[2001:db8::1]:8443".parse::<SocketAddr>().unwrap();
+        let p = parse_bind("[2001:db8::1]:8443", Some(9000), cur).unwrap();
+        assert_eq!(p, full);
+    }
+
+    #[test]
+    fn test_parse_bind_bare_ipv4_and_with_port() {
+        let cur = "0.0.0.0:80".parse::<SocketAddr>().unwrap();
+        // Bare IPv4 uses current port.
+        assert_eq!(
+            parse_bind("127.0.0.1", None, cur).unwrap(),
+            "127.0.0.1:80".parse::<SocketAddr>().unwrap()
+        );
+        // Bare IPv4 + CLI port.
+        assert_eq!(
+            parse_bind("127.0.0.1", Some(8080), cur).unwrap(),
+            "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
+        );
+        // Explicit ip:port beats CLI port.
+        assert_eq!(
+            parse_bind("127.0.0.1:9999", Some(8080), cur).unwrap(),
+            "127.0.0.1:9999".parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_parse_bind_rejects_non_ip() {
+        let cur = "[::1]:80".parse::<SocketAddr>().unwrap();
+        assert!(parse_bind("not-an-ip", None, cur).is_err());
+        assert!(parse_bind("", None, cur).is_err());
+    }
+
+    #[test]
+    fn test_split_command_with_quotes() {
+        assert_eq!(
+            split_command(r#"bash -c "echo 'hi world'""#),
+            vec!["bash", "-c", "echo 'hi world'"]
+        );
+        // Space-separated without quotes still works.
+        assert_eq!(split_command("bash --login"), vec!["bash", "--login"]);
     }
 }

@@ -1,6 +1,12 @@
 # ttyd-rs Configuration File
 # This is an example configuration file for ttyd-rs
 # Copy this file to config.toml and modify as needed
+#
+# All sections and fields are optional. Any that are omitted fall back to
+# the built-in default, so a minimal file with just `bind` and `command`
+# works. The one caveat: file transfer is enabled by default, so without an
+# [auth] section the server refuses to start unless you set
+# `[file_transfer] enabled = false` (see the note below).
 
 # Server configuration
 bind = "127.0.0.1:7681"

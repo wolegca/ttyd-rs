@@ -12,17 +12,8 @@
 |-------|--------|
 | `cargo fmt -- --check` | ✅ Pass |
 | `cargo clippy -- -D warnings` | ✅ Pass |
-| `cargo test` | ✅ 242 tests passing |
+| `cargo test` | ✅ All tests passing |
 | `cargo build --release` | ✅ Success |
-
----
-
-## Project Statistics
-
-- **Rust source**: ~7,000 lines across 19 .rs files
-- **Tests**: 242 (unit + integration)
-- **Frontend**: index.html with xterm.js integration
-- **Dependencies**: See Cargo.toml for current list
 
 ---
 
@@ -153,8 +144,8 @@ See [docs/PROTOCOL.md](PROTOCOL.md) for the full message type reference, state m
 | Flag | Default | Description |
 |------|---------|-------------|
 | -p, --port | 7681 | Listen port |
-| -b, --bind | 127.0.0.1 | Bind address |
-| -s, --shell | bash | Shell command |
+| -b, --bind | 127.0.0.1 | Bind address: a bare IP (IPv4 or IPv6) or an `ip:port` socket address |
+| -s, --shell | bash | Shell command; supports shell-style quoting/escaping (e.g. `-s 'bash -c "echo hi"'`) |
 | --session-mode | isolated | Session mode |
 | --session-timeout | 3600 | Session timeout (seconds) |
 | --reconnect-window | 60 | Reconnect window (seconds) |
@@ -162,6 +153,7 @@ See [docs/PROTOCOL.md](PROTOCOL.md) for the full message type reference, state m
 | --auth | false | Enable authentication |
 | --trust-proxy | false | Trust proxy headers |
 | --audit | false | Enable audit logging |
+| --audit-file | — | Audit log file path (requires `--audit`) |
 | --hash-password | — | Read a password from stdin, print its Argon2id hash, and exit |
 
 ---
