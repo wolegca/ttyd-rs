@@ -82,6 +82,13 @@ pub struct Config {
     /// Trust proxy headers (X-Real-IP / X-Forwarded-For) for client IP
     #[serde(default)]
     pub trust_proxy: bool,
+
+    /// Explicitly permit an unauthenticated terminal on a non-loopback bind.
+    ///
+    /// This is intended only for deployments where a trusted reverse proxy
+    /// performs authentication before forwarding traffic to ttyd-rs.
+    #[serde(default)]
+    pub allow_unauthenticated: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -317,6 +324,7 @@ impl Default for Config {
             file_transfer: FileTransferConfig::default(),
             compression: CompressionConfig::default(),
             trust_proxy: false,
+            allow_unauthenticated: false,
         }
     }
 }
@@ -447,6 +455,20 @@ impl Config {
             ));
         }
 
+        // A terminal grants command execution as the service user. Refuse a
+        // network-reachable terminal without authentication unless the
+        // operator deliberately opts in (for example, when a reverse proxy
+        // provides the authentication boundary).
+        if self.auth.is_none() && !self.bind.ip().is_loopback() && !self.allow_unauthenticated {
+            return Err(ConfigError::UnsafeConfiguration(
+                "refusing an unauthenticated terminal on a non-loopback bind; \
+                 configure [auth], bind to 127.0.0.1/::1, or set \
+                 allow_unauthenticated = true only when a trusted reverse proxy \
+                 enforces authentication"
+                    .to_string(),
+            ));
+        }
+
         // Validate auth configuration consistency
         if let Some(auth) = &self.auth {
             match auth.method.as_str() {
@@ -543,6 +565,19 @@ mod tests {
             }),
             ..Config::default()
         };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_public_unauthenticated_terminal_rejected_without_explicit_opt_in() {
+        let mut config = Config::default();
+        config.bind = "0.0.0.0:7681".parse().unwrap();
+        config.file_transfer.enabled = false;
+
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::UnsafeConfiguration(_)));
+
+        config.allow_unauthenticated = true;
         assert!(config.validate().is_ok());
     }
 
@@ -645,6 +680,7 @@ mod tests {
             &config_path,
             r#"
 bind = "0.0.0.0:9090"
+allow_unauthenticated = true
 command = ["/bin/zsh"]
 log_level = "debug"
 max_connections = 50
@@ -684,6 +720,7 @@ enabled = false
         assert_eq!(config.validation.min_cols, 20);
         assert_eq!(config.rate_limit.max_requests, 20);
         assert!(config.audit.enabled);
+        assert!(config.allow_unauthenticated);
         assert!(config.validate().is_ok());
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -419,7 +419,10 @@ mod tests {
         // Use an invalid fd to trigger an error
         let proc = PtyProcess {
             master_fd: -1,
-            child_pid: nix::unistd::Pid::from_raw(1),
+            // The destructor sends SIGHUP to its child. Use a PID that
+            // cannot name the test runner or the container init process;
+            // the signal will safely fail with ESRCH during cleanup.
+            child_pid: nix::unistd::Pid::from_raw(999_999_999),
         };
         let result = proc.resize(80, 24);
         assert!(result.is_err());

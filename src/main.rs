@@ -88,6 +88,11 @@ struct Args {
     #[arg(long)]
     trust_proxy: bool,
 
+    /// Allow an unauthenticated terminal on a non-loopback address.
+    /// Only use when a trusted reverse proxy enforces authentication.
+    #[arg(long)]
+    allow_unauthenticated: bool,
+
     /// Read a password from stdin, print its Argon2id hash (PHC string) for
     /// the configuration file, and exit. The hash can replace the plaintext
     /// value of `password` in `[auth]` (or `--password`).
@@ -319,6 +324,9 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
     if args.trust_proxy {
         config.trust_proxy = true;
     }
+    if args.allow_unauthenticated {
+        config.allow_unauthenticated = true;
+    }
 
     // File transfer toggle
     if args.no_file_transfer {
@@ -375,6 +383,7 @@ mod tests {
             audit: false,
             audit_file: None,
             trust_proxy: false,
+            allow_unauthenticated: false,
             hash_password: false,
             no_file_transfer: true,
         }
@@ -438,6 +447,7 @@ mod tests {
             &config_path,
             r#"
 bind = "0.0.0.0:3000"
+allow_unauthenticated = true
 command = ["/bin/sh"]
 log_level = "warn"
 max_connections = 200
@@ -477,6 +487,7 @@ enabled = false
         assert_eq!(config.session.mode, "shared_readonly");
         assert_eq!(config.session.timeout, 1800);
         assert_eq!(config.bind.to_string(), "0.0.0.0:3000");
+        assert!(config.allow_unauthenticated);
         assert!(config.validate().is_ok());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -492,6 +503,7 @@ enabled = false
             &config_path,
             r#"
 bind = "0.0.0.0:9090"
+allow_unauthenticated = true
 command = ["/bin/zsh"]
 log_level = "warn"
 max_connections = 50
@@ -539,6 +551,7 @@ enabled = false
             &config_path,
             r#"
 bind = "0.0.0.0:3100"
+allow_unauthenticated = true
 command = ["/bin/sh"]
 log_level = "warn"
 max_connections = 100

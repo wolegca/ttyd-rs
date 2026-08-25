@@ -328,5 +328,5 @@ Message type encoding:
 
 ---
 
-*Protocol version: v0.2*
-*Last updated: 2026-07-30*
+*Protocol version: v1.0.0*
+*Last updated: 2026-08-25*

@@ -2,7 +2,7 @@
 
 **Target Platforms**: Linux only (no Windows or macOS support)
 
-**Current Status**: All core milestones (M1–M6) completed. See [PROJECT_STATUS.md](PROJECT_STATUS.md) for current test counts and quality gate status.
+**Current Status**: v1.0.0 release preparation. All core milestones (M1–M6) are complete; see [PROJECT_STATUS.md](PROJECT_STATUS.md) for release verification status.
 
 ---
 
@@ -96,7 +96,7 @@ All planned features through M6 and post-M6 (file transfer, signal handling, pro
    - Docker container support
    - systemd service file
    - Reverse proxy configuration examples
-   - Credential injection via environment variables / systemd `LoadCredential` (e.g. `TTYD_RS_AUTH_PASSWORD`), complementing the v0.7.0 Argon2id hash-in-config support
+   - Credential injection via environment variables / systemd `LoadCredential` (e.g. `TTYD_RS_AUTH_PASSWORD`), complementing Argon2id hash-in-config support
 
 3. **Performance Optimizations**
    - Connection pooling
@@ -123,4 +123,4 @@ All planned features through M6 and post-M6 (file transfer, signal handling, pro
 
 ---
 
-Last Updated: 2026-08-21
+Last Updated: 2026-08-25

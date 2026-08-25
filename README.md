@@ -2,7 +2,7 @@
 
 A Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd) — Share your terminal over the web using WebSocket.
 
-**Version**: v0.7.0
+**Version**: v1.0.0
 **Status**: Production-ready
 **Platform**: Linux only
 
@@ -36,7 +36,7 @@ Then open `http://localhost:7681` in your browser.
 ### Basic Usage
 
 ```bash
-# Defaults: localhost:7681, bash shell, no auth
+# Defaults: localhost:7681, bash shell, no auth (file transfer must be disabled)
 ttyd-rs
 
 # Custom port and shell
@@ -80,6 +80,9 @@ falls back to the built-in default (same defaults the CLI uses). So a file with
 just `bind` and `command` works. Note that file transfer is enabled by default,
 so a config with no `[auth]` will refuse to start unless you disable
 `[file_transfer]` — add auth or set `[file_transfer] enabled = false`.
+An unauthenticated terminal is also refused on non-loopback addresses unless
+you explicitly set `allow_unauthenticated = true` for a trusted reverse proxy
+that enforces authentication.
 
 CLI arguments override config file values. Run `ttyd-rs --help` for all options.
 Notable behaviors:
@@ -92,6 +95,9 @@ Notable behaviors:
 ## Security
 
 - **Always enable authentication** in production
+- **Public binds require authentication by default**; only use
+  `allow_unauthenticated = true` when a trusted reverse proxy is the enforced
+  authentication boundary
 - **Store the password as an Argon2id hash** — see [Quick Start](#quick-start) for generation; plaintext triggers a startup warning
 - **Use a reverse proxy** (nginx/Caddy) for HTTPS — TLS is not built-in
 - **Bind to localhost** and use SSH tunneling, or configure firewall rules

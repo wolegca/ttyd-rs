@@ -1,8 +1,8 @@
 # ttyd-rs Project Status
 
-**Last Updated**: 2026-08-21
-**Version**: 0.7.0
-**Status**: Production Ready
+**Last Updated**: 2026-08-25
+**Version**: 1.0.0
+**Status**: Release preparation
 
 ---
 
@@ -29,6 +29,7 @@
 ### 2. Security — Good
 
 - **Authentication**: Constant-time comparison via `subtle` crate (prevents timing attacks)
+- **Safe network exposure**: unauthenticated terminals may bind only to loopback by default; a non-loopback bind requires authentication or the explicit `allow_unauthenticated = true` reverse-proxy opt-in
 - **Password storage**: Argon2id hashed (random salt per instance), raw credentials never persist beyond construction; the config file / CLI accepts either a plaintext password (logged with a startup warning) or a pre-hashed Argon2id PHC string generated via `ttyd-rs --hash-password`
 - **Input validation**: Terminal size bounds, payload size limits, credential format checks
 - **No path traversal**: Static files embedded at compile time via `rust-embed`; `..` path segments are explicitly rejected
@@ -114,9 +115,9 @@ See [Project Structure](../CLAUDE.md#project-structure) in CLAUDE.md for the ann
 | GET | /api/sessions/:id | Get session info |
 | DELETE | /api/sessions/:id | Terminate session |
 | GET | /api/stats | Server statistics |
-| POST | /api/files/upload | Upload file (multipart, auth required) |
-| GET | /api/files/download?path= | Download file (auth required) |
-| GET | /api/files/list | List files in working dir (auth required) |
+| POST | /api/files/upload | Upload file (multipart; requires auth unless explicitly enabled for an unauthenticated loopback deployment) |
+| GET | /api/files/download?path= | Download file (same access policy as upload) |
+| GET | /api/files/list | List files in working dir (same access policy as upload) |
 
 ### Examples
 
@@ -151,6 +152,7 @@ See [docs/PROTOCOL.md](PROTOCOL.md) for the full message type reference, state m
 | --reconnect-window | 60 | Reconnect window (seconds) |
 | --max-connections | 100 | Max concurrent connections |
 | --auth | false | Enable authentication |
+| --allow-unauthenticated | false | Explicitly allow an unauthenticated non-loopback terminal (trusted reverse proxy only) |
 | --trust-proxy | false | Trust proxy headers |
 | --audit | false | Enable audit logging |
 | --audit-file | — | Audit log file path (requires `--audit`) |

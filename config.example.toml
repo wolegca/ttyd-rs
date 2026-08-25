@@ -19,6 +19,12 @@ log_level = "info"
 # Only enable this when you trust the proxy to set these headers correctly.
 # trust_proxy = false
 
+# Refuse unauthenticated terminals on non-loopback addresses by default.
+# Set this only when a trusted reverse proxy enforces authentication before
+# forwarding traffic to ttyd-rs. It does not enable file transfer without
+# authentication; that requires the separate setting below.
+# allow_unauthenticated = false
+
 # Terminal command to execute
 command = ["bash", "-l"]
 
