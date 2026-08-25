@@ -1,6 +1,4 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+# CODE GUIDANCE to AIs
 
 ## Project Overview
 
@@ -129,7 +127,7 @@ src/
 - **Error handling**: All errors typed via `thiserror`, propagated with `?`. Never silenced.
 - **Concurrent I/O**: PTY output coalesced to reduce syscall frequency.
 - **Memory**: `broadcast::channel(1024)` bounds per-session memory. `Arc` for shared state.
-- **PTY cleanup**: 5-stage process cleanup (SIGHUP → poll → SIGKILL → reap → background reaper).
+- **PTY cleanup**: close master fd + SIGHUP + non-blocking reap, with a global SIGCHLD handler reaping terminated children asynchronously.
 - **Upload safety**: `UploadFileGuard` (RAII) ensures partial files are removed on all error paths.
 
 ## WebSocket Protocol

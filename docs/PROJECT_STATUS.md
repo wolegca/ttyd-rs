@@ -48,7 +48,7 @@
 
 ### 3. Resource Management — Excellent
 
-- **PTY cleanup**: 5-stage process cleanup (SIGHUP → poll → SIGKILL → non-blocking reap → background reaper thread)
+- **PTY cleanup**: close master fd + SIGHUP + non-blocking reap, with a global SIGCHLD handler reaping terminated children asynchronously
 - **FD management**: `FD_CLOEXEC` set on PTY FDs, child calls `close_fds_above()`, parent uses `dup()` for independent FDs per task
 - **Memory safety**: `Arc` for reference counting, `broadcast::channel(1024)` bounds memory per session
 

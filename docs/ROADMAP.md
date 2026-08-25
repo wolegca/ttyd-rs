@@ -32,8 +32,8 @@
 **Goal**: Pseudo-terminal management
 
 - `openpty()` + `fork()`, `setsid()`, `dup2()` for PTY allocation
-- Terminal resize via `TIOCSWINSZ`, SIGHUP/SIGKILL lifecycle management
-- 5-stage process cleanup + background zombie reaper thread
+- Terminal resize via `TIOCSWINSZ`, SIGHUP lifecycle management
+- Process cleanup via close master fd + SIGHUP + global SIGCHLD reaper
 
 ---
 

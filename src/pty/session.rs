@@ -114,8 +114,8 @@ mod tests {
     #[test]
     fn test_pty_session_drop_runs_without_panic() {
         // Verify that Drop impl runs without panicking.
-        // The actual cleanup (SIGHUP, SIGKILL, reaper thread) is tested
-        // indirectly through the session manager tests.
+        // The actual cleanup (close master fd + SIGHUP + global SIGCHLD handler
+        // reaping) is tested indirectly through the session manager tests.
         let session = PtySession::new(&["true".to_string()], 80, 24, None).unwrap();
         // Drop should run without panic
         drop(session);
