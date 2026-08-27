@@ -357,6 +357,27 @@ fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
     Err(std::io::Error::last_os_error())
 }
 
+/// Pre-flight check: verify that `dir` is writable by the current process
+/// using `access(2)` with `W_OK`. This runs *before* any upload data is
+/// read so a permission problem fails fast with 403 instead of surfacing
+/// as an opaque 500 mid-stream after bytes have already been transferred.
+///
+/// Note: `access()` uses the real UID/GID, which matches the server process
+/// identity that will actually create the file, so this is authoritative here.
+fn check_dir_writable(dir: &Path) -> Result<(), std::io::Error> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = std::ffi::CString::new(dir.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid path"))?;
+    // SAFETY: c_path is a valid NUL-terminated C string; access() does not
+    // retain it beyond the call.
+    let rc = unsafe { libc::access(c_path.as_ptr(), libc::W_OK) };
+    if rc == 0 {
+        return Ok(());
+    }
+    Err(std::io::Error::last_os_error())
+}
+
 /// Bounded drain of the remaining multipart body.
 ///
 /// Before returning an error response we must consume the rest of the body:
@@ -426,6 +447,22 @@ pub async fn upload_file(
                 }),
             )
         })?;
+    }
+
+    // Pre-flight: verify the target directory is writable before reading any
+    // upload data. Failing here gives the client a fast, clear 403 instead of
+    // an opaque 500 after transferring (potentially large) file bytes.
+    if let Err(e) = check_dir_writable(&base) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(FileErrorResponse {
+                error: format!(
+                    "Target directory is not writable: {}: {}",
+                    base.display(),
+                    e
+                ),
+            }),
+        ));
     }
 
     let mut uploaded_filename = String::new();
@@ -1202,6 +1239,42 @@ mod tests {
         Router::new()
             .route("/upload", post(upload_file).with_state(state_with_size))
             .layer(axum::extract::DefaultBodyLimit::max(body_limit))
+    }
+
+    #[tokio::test]
+    async fn test_upload_readonly_dir_rejected_before_body() {
+        // A read-only target directory must be rejected with 403 before any
+        // upload data is processed (pre-flight permission check).
+        let dir = std::env::temp_dir().join("ttyd-rs-files-test-upload-readonly");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // Skip when running as root: root bypasses DAC permissions, so the
+        // access(W_OK) check would succeed and the test premise is invalid.
+        if unsafe { libc::geteuid() } == 0 {
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
+
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let state = test_state(dir.clone());
+        let app = upload_router(state, 1024 * 1024);
+
+        let body = multipart_body("boundary", "file", "hello.txt", "hello");
+        let req = Request::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("content-type", "multipart/form-data; boundary=boundary")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        // Restore permissions so cleanup works, then clean up.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
