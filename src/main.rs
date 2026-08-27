@@ -107,11 +107,40 @@ struct Args {
     /// setups that run without [auth].
     #[arg(long)]
     no_file_transfer: bool,
+
+    /// Test the configuration: load the config file,
+    /// apply CLI overrides, run validation, and exit without starting the
+    /// server. Exit code 0 means the configuration is valid.
+    #[arg(short = 't', long)]
+    check_config: bool,
 }
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+
+    // `--check-config` (-t) is a standalone validation mode, like `nginx -t`:
+    // load and validate the configuration, report the result, and exit
+    // without binding any port or spawning a PTY.
+    if args.check_config {
+        match load_config(&args) {
+            Ok(config) => {
+                println!(
+                    "ttyd-rs: configuration file {} is valid",
+                    args.config.as_deref().map_or_else(
+                        || "config.toml (default location)".to_string(),
+                        |p| p.display().to_string()
+                    )
+                );
+                println!("bind = {}", config.bind);
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("ttyd-rs: configuration test failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
 
     // `--hash-password` is a standalone utility mode: hash the password
     // read from stdin and exit without starting the server.
@@ -412,6 +441,7 @@ mod tests {
             allow_unauthenticated: None,
             hash_password: false,
             no_file_transfer: true,
+            check_config: false,
         }
     }
 
@@ -706,6 +736,54 @@ enabled = false
         let config = load_config(&args).unwrap();
         assert!(!config.trust_proxy);
         assert!(!config.allow_unauthenticated);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--check-config` mode validates the merged configuration (file +
+    /// CLI overrides) without starting the server.
+    #[test]
+    fn test_check_config_mode() {
+        let dir = std::env::temp_dir().join("ttyd-rs-main-check-config");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("config.toml");
+
+        // Valid configuration: load_config succeeds.
+        std::fs::write(
+            &config_path,
+            concat!(
+                "bind = \"127.0.0.1:7681\"\n",
+                "command = [\"/bin/sh\"]\n",
+                "file_transfer.enabled = false\n",
+            ),
+        )
+        .unwrap();
+        let mut args = base_args();
+        args.config = Some(config_path.clone());
+        assert!(load_config(&args).is_ok());
+
+        // Invalid configuration: load_config fails with a clear error.
+        std::fs::write(
+            &config_path,
+            concat!(
+                "bind = \"127.0.0.1:7681\"\n",
+                "command = [\"/bin/sh\"]\n",
+                "log_level = \"tracert\"\n",
+            ),
+        )
+        .unwrap();
+        let mut args = base_args();
+        args.config = Some(config_path.clone());
+        let err = load_config(&args).unwrap_err();
+        assert!(err.to_string().contains("Invalid log_level"));
+
+        // CLI overrides are applied before validation, so an invalid CLI
+        // value is caught too.
+        let mut args = base_args();
+        args.config = Some(config_path.clone());
+        args.log_level = Some("verbose".to_string());
+        let err = load_config(&args).unwrap_err();
+        assert!(err.to_string().contains("Invalid log_level"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1,8 +1,6 @@
 # ttyd-rs Project Status
 
-**Last Updated**: 2026-08-25
-**Version**: 1.0.0
-**Status**: Release preparation
+**Status**: Stable release
 
 ---
 
@@ -152,11 +150,30 @@ See [docs/PROTOCOL.md](PROTOCOL.md) for the full message type reference, state m
 | --reconnect-window | 60 | Reconnect window (seconds) |
 | --max-connections | 100 | Max concurrent connections |
 | --auth | false | Enable authentication |
-| --allow-unauthenticated | false | Explicitly allow an unauthenticated non-loopback terminal (trusted reverse proxy only) |
-| --trust-proxy | false | Trust proxy headers |
+| --allow-unauthenticated | false | Explicitly allow an unauthenticated non-loopback terminal (trusted reverse proxy only). Three-state: accepts `--flag=true\|false` to override the config file in either direction; the bare flag means `true` |
+| --trust-proxy | false | Trust proxy headers. Three-state: accepts `--flag=true\|false`; the bare flag means `true` |
 | --audit | false | Enable audit logging |
 | --audit-file | — | Audit log file path (requires `--audit`) |
+| --log-level | info | Log level: bare level name (`trace`, `debug`, `info`, `warn`, `error`, `off`, case-insensitive) or an EnvFilter directive (e.g. `ttyd_rs=debug`); invalid values are rejected at startup |
 | --hash-password | — | Read a password from stdin, print its Argon2id hash, and exit |
+| -t, --check-config | — | Load the configuration, apply CLI overrides, run validation, and exit without starting the server. Exit code 0 = valid |
+
+### Configuration Validation
+
+The configuration is validated after merging config file + CLI overrides
+(`Config::validate()`), before any port is bound:
+
+- `command` must not be empty.
+- `max_connections` must be greater than 0.
+- `log_level` must be a bare level name or an EnvFilter directive containing
+  `=`; anything else is rejected (previously it silently filtered out nearly
+  all log output).
+- Auth `method` matching is case-insensitive (`basic` / `token`).
+- Unknown fields or sections in the config file are rejected
+  (`deny_unknown_fields`), so typos fail loudly instead of falling back to
+  defaults.
+
+Pre-flight check for deployments: `ttyd-rs -t --config /etc/ttyd-rs/config.toml`.
 
 ---
 
@@ -192,12 +209,13 @@ None. Previously listed items have been resolved or reclassified:
 
 1. **Enable authentication** — configure `[auth]` section in config
 2. **Store the password as an Argon2id hash** — generate with `ttyd-rs --hash-password`; keep the config file readable only by the service user (`chmod 600`)
-3. **Enable audit logging** — configure `[audit]` section for security monitoring
-4. **Use reverse proxy** — nginx/Caddy for HTTPS termination (TLS not built-in)
-5. **Tune limits** — adjust `max_connections` and rate limit parameters for expected load
-6. **Set `trust_proxy`** — enable only when behind a trusted reverse proxy (a startup warning is logged otherwise)
-7. **Configure file transfer** — set `[file_transfer]` dir or rely on dynamic `$PWD` tracking
-8. **Rotate audit logs** — configure logrotate (copytruncate) for the audit log file
+3. **Validate before restarting** — run `ttyd-rs -t --config /etc/ttyd-rs/config.toml` (or as a systemd `ExecStartPre=`) to catch configuration errors before they take the service down
+4. **Enable audit logging** — configure `[audit]` section for security monitoring
+5. **Use reverse proxy** — nginx/Caddy for HTTPS termination (TLS not built-in)
+6. **Tune limits** — adjust `max_connections` and rate limit parameters for expected load
+7. **Set `trust_proxy`** — enable only when behind a trusted reverse proxy (a startup warning is logged otherwise)
+8. **Configure file transfer** — set `[file_transfer]` dir or rely on dynamic `$PWD` tracking
+9. **Rotate audit logs** — configure logrotate (copytruncate) for the audit log file
 
 ---
 

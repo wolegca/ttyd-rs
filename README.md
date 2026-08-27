@@ -2,7 +2,6 @@
 
 A Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd) — Share your terminal over the web using WebSocket.
 
-**Version**: v1.0.0
 **Status**: Production-ready
 **Platform**: Linux only
 
@@ -77,7 +76,9 @@ enabled = true
 Config files are *partial*: any omitted top-level table (`[auth]`, `[session]`,
 `[validation]`, `[rate_limit]`, `[audit]`, ...) and any omitted field inside them
 falls back to the built-in default (same defaults the CLI uses). So a file with
-just `bind` and `command` works. Note that file transfer is enabled by default,
+just `bind` and `command` works. Unknown fields and sections, however, are
+rejected at startup — a typo like `[file_tranfer]` fails loudly instead of
+being silently ignored. Note that file transfer is enabled by default,
 so a config with no `[auth]` will refuse to start unless you disable
 `[file_transfer]` — add auth or set `[file_transfer] enabled = false`.
 An unauthenticated terminal is also refused on non-loopback addresses unless
@@ -91,6 +92,18 @@ Notable behaviors:
   socket address; combined with `--port`, the explicit socket address wins.
 - `--shell` honors shell-style quoting/escaping, e.g. `-s 'bash -c "echo hi"'`.
 - `--audit-file` requires `--audit`; using it alone is an error.
+- `--trust-proxy` and `--allow-unauthenticated` accept explicit values
+  (`--flag=true|false`), so the CLI can override the config file in either
+  direction; the bare flag means `true`.
+- `--log-level` accepts bare level names (`trace`, `debug`, `info`, `warn`,
+  `error`, `off`, case-insensitive) or EnvFilter directives (e.g.
+  `ttyd_rs=debug`); invalid values are rejected at startup.
+
+Validate a configuration without starting the server (like `nginx -t`):
+
+```bash
+ttyd-rs -t --config /etc/ttyd-rs/config.toml   # exit 0 = valid
+```
 
 ## Security
 

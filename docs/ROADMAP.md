@@ -2,7 +2,7 @@
 
 **Target Platforms**: Linux only (no Windows or macOS support)
 
-**Current Status**: v1.0.0 release preparation. All core milestones (M1–M6) are complete; see [PROJECT_STATUS.md](PROJECT_STATUS.md) for release verification status.
+**Current Status**: v1.1.0 released. All core milestones (M1–M6) are complete; see [PROJECT_STATUS.md](PROJECT_STATUS.md) for release verification status.
 
 ---
 
@@ -67,9 +67,27 @@
 
 ---
 
+### Post-1.0 Hardening (v1.1.0) ✅
+
+**Goal**: Configuration robustness and operational tooling
+
+- Strict config validation: unknown fields rejected (`deny_unknown_fields`),
+  non-empty `command`, `max_connections > 0`, `log_level` validated (bare
+  level names or EnvFilter directives)
+- `--check-config` / `-t` pre-flight validation mode (like `nginx -t`)
+- Three-state CLI boolean flags (`--trust-proxy=true|false`,
+  `--allow-unauthenticated=true|false`) that can override the config file in
+  either direction
+- Case-insensitive auth `method` matching; invalid `--log-level` is a hard
+  error instead of a silent filter
+
+---
+
 ## Feature Matrix
 
 All planned features through M6 and post-M6 (file transfer, signal handling, process cleanup) are **✅ complete**. See [Development History](#development-history) for details.
+
+Post-1.0 hardening (strict config validation, `--check-config`) shipped in v1.1.0.
 
 ---
 
@@ -82,26 +100,6 @@ All planned features through M6 and post-M6 (file transfer, signal handling, pro
 | Connection latency | < 5ms | Time to establish WebSocket |
 | Max concurrent | > 1000 | Configurable via `--max-connections` |
 | Message throughput | > 10MB/s | Terminal output streaming |
-
----
-
-## Future Enhancements
-
-1. **Enhanced Terminal Features**
-   - Terminal recording/playback
-   - Screenshot capture
-   - Copy button overlay
-
-2. **Deployment Features**
-   - Docker container support
-   - systemd service file
-   - Reverse proxy configuration examples
-   - Credential injection via environment variables / systemd `LoadCredential` (e.g. `TTYD_RS_AUTH_PASSWORD`), complementing Argon2id hash-in-config support
-
-3. **Performance Optimizations**
-   - Connection pooling
-   - Message batching
-   - Binary WebSocket frames for better performance
 
 ---
 
@@ -122,5 +120,3 @@ All planned features through M6 and post-M6 (file transfer, signal handling, pro
 - **Configuration**: Support same config file format (with extensions)
 
 ---
-
-Last Updated: 2026-08-25

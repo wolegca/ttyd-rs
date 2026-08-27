@@ -4,13 +4,21 @@
 #
 # All sections and fields are optional. Any that are omitted fall back to
 # the built-in default, so a minimal file with just `bind` and `command`
-# works. The one caveat: file transfer is enabled by default, so without an
-# [auth] section the server refuses to start unless you set
-# `[file_transfer] enabled = false` (see the note below).
+# works. Unknown fields and sections, however, are rejected at startup —
+# remove unused keys rather than leaving them in. The one caveat: file
+# transfer is enabled by default, so without an [auth] section the server
+# refuses to start unless you set `[file_transfer] enabled = false` (see
+# the note below).
+#
+# Validate a configuration without starting the server:
+#   ttyd-rs -t --config /path/to/config.toml
 
 # Server configuration
 bind = "127.0.0.1:7681"
 max_connections = 100
+# Log level: bare level name ("trace", "debug", "info", "warn", "error",
+# "off", case-insensitive) or an EnvFilter directive containing "="
+# (e.g. "ttyd_rs=debug"). Invalid values refuse startup.
 log_level = "info"
 
 # Trust proxy headers (default: false)

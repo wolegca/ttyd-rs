@@ -4,7 +4,10 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/ttyd-rs
+# Validate the configuration before starting (like `nginx -t`); the service
+# is not started if the configuration is invalid.
+ExecStartPre=/usr/local/bin/ttyd-rs -t --config /etc/ttyd-rs/config.toml
+ExecStart=/usr/local/bin/ttyd-rs --config /etc/ttyd-rs/config.toml
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

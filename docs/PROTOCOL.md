@@ -328,5 +328,4 @@ Message type encoding:
 
 ---
 
-*Protocol version: v1.0.0*
-*Last updated: 2026-08-25*
+*Protocol version: v1.1.0*
