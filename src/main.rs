@@ -84,14 +84,17 @@ struct Args {
     #[arg(long, requires = "audit")]
     audit_file: Option<PathBuf>,
 
-    /// Trust proxy headers (X-Real-IP / X-Forwarded-For) for client IP
-    #[arg(long)]
-    trust_proxy: bool,
+    /// Trust proxy headers (X-Real-IP / X-Forwarded-For) for client IP.
+    /// Accepts an explicit value (`--trust-proxy=true|false`) to override
+    /// the config file in either direction; the bare flag means `true`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    trust_proxy: Option<bool>,
 
     /// Allow an unauthenticated terminal on a non-loopback address.
     /// Only use when a trusted reverse proxy enforces authentication.
-    #[arg(long)]
-    allow_unauthenticated: bool,
+    /// Accepts `--allow-unauthenticated=true|false`; bare flag means `true`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    allow_unauthenticated: Option<bool>,
 
     /// Read a password from stdin, print its Argon2id hash (PHC string) for
     /// the configuration file, and exit. The hash can replace the plaintext
@@ -206,6 +209,20 @@ fn init_logging(
     cli_log_level: Option<&str>,
     config_log_level: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // A bare level name is validated up front: `EnvFilter::try_new` accepts
+    // unknown words as *target* directives, so a typo like "verbose" would
+    // silently filter out nearly all log output instead of erroring.
+    if let Some(level) = cli_log_level
+        && !ttyd_rs::config::is_valid_log_level(level)
+    {
+        return Err(format!(
+            "--log-level '{level}' is invalid: expected a bare level name \
+             (trace, debug, info, warn, error, off) or an EnvFilter \
+             directive containing '='"
+        )
+        .into());
+    }
+
     let filter = if let Some(level) = cli_log_level {
         EnvFilter::try_new(level)?
     } else {
@@ -282,6 +299,13 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
         // Accept a bare IP (IPv4 or IPv6) or an explicit `ip:port` socket
         // address. This avoids the old `format!("{}:{}", ...)` approach,
         // which could not represent IPv6 literals.
+        // Warn when an embedded port silently overrides an explicit --port.
+        if args.port.is_some() && bind.parse::<SocketAddr>().is_ok() {
+            eprintln!(
+                "Warning: --bind '{bind}' contains a port; the explicit \
+                 --port value is ignored"
+            );
+        }
         config.bind = parse_bind(bind, args.port, config.bind)?;
     } else if let Some(port) = args.port {
         config.bind.set_port(port);
@@ -320,12 +344,14 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
         config.session.reconnect_window = window;
     }
 
-    // Proxy configuration
-    if args.trust_proxy {
-        config.trust_proxy = true;
+    // Proxy / safety opt-in configuration. `Option<bool>` lets the CLI
+    // override the config file in either direction (true→false included);
+    // an unset flag leaves the config value untouched.
+    if let Some(trust) = args.trust_proxy {
+        config.trust_proxy = trust;
     }
-    if args.allow_unauthenticated {
-        config.allow_unauthenticated = true;
+    if let Some(allow) = args.allow_unauthenticated {
+        config.allow_unauthenticated = allow;
     }
 
     // File transfer toggle
@@ -341,14 +367,14 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
         }
     }
 
-    // Set up authentication if provided
-    if args.auth
-        && let (Some(username), Some(password)) = (&args.username, &args.password)
-    {
+    // Set up authentication if provided. clap's `requires` constraints
+    // guarantee that `--auth` implies both `--username` and `--password`,
+    // so this branch is always taken when `args.auth` is set.
+    if args.auth {
         config.auth = Some(AuthConfig {
             method: "basic".to_string(),
-            username: Some(username.clone()),
-            password: Some(password.clone()),
+            username: args.username.clone(),
+            password: args.password.clone(),
             token: None,
         });
     }
@@ -360,7 +386,7 @@ fn load_config(args: &Args) -> Result<Config, Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -382,8 +408,8 @@ mod tests {
             password: None,
             audit: false,
             audit_file: None,
-            trust_proxy: false,
-            allow_unauthenticated: false,
+            trust_proxy: None,
+            allow_unauthenticated: None,
             hash_password: false,
             no_file_transfer: true,
         }
@@ -644,5 +670,43 @@ enabled = false
         );
         // Space-separated without quotes still works.
         assert_eq!(split_command("bash --login"), vec!["bash", "--login"]);
+    }
+
+    /// Three-state flags: `Some(false)` must be able to turn a config-file
+    /// `true` off, and `None` must leave the config value untouched.
+    #[test]
+    fn test_load_config_tristate_flags() {
+        let dir = std::env::temp_dir().join("ttyd-rs-main-tristate");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("config.toml");
+
+        std::fs::write(
+            &config_path,
+            concat!(
+                "bind = \"127.0.0.1:7681\"\n",
+                "command = [\"/bin/sh\"]\n",
+                "trust_proxy = true\n",
+                "allow_unauthenticated = true\n",
+            ),
+        )
+        .unwrap();
+
+        // No CLI flags → config values preserved.
+        let mut args = base_args();
+        args.config = Some(config_path.clone());
+        let config = load_config(&args).unwrap();
+        assert!(config.trust_proxy);
+        assert!(config.allow_unauthenticated);
+
+        // Explicit `=false` overrides the config file.
+        let mut args = base_args();
+        args.config = Some(config_path.clone());
+        args.trust_proxy = Some(false);
+        args.allow_unauthenticated = Some(false);
+        let config = load_config(&args).unwrap();
+        assert!(!config.trust_proxy);
+        assert!(!config.allow_unauthenticated);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

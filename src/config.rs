@@ -28,11 +28,34 @@ pub enum ConfigError {
     #[error("Invalid compression configuration: {0}")]
     InvalidCompression(String),
 
+    #[error("Invalid command: {0}")]
+    InvalidCommand(String),
+
+    #[error("Invalid max_connections: {0}")]
+    InvalidMaxConnections(String),
+
+    #[error("Invalid log_level: {0}")]
+    InvalidLogLevel(String),
+
     #[error("Unsafe configuration: {0}")]
     UnsafeConfiguration(String),
 }
 
+/// Unknown fields in the config file are rejected so that typos (e.g.
+/// `[file_tranfer]`, `max_conections`) fail loudly at startup instead of
+/// being silently ignored while defaults are used.
+/// Returns true when the value is a valid tracing log level: either a bare
+/// level name (`trace`, `debug`, `info`, `warn`, `error`, `off`) or an
+/// explicit EnvFilter directive containing `=` (e.g. `ttyd_rs=debug,info`).
+pub fn is_valid_log_level(level: &str) -> bool {
+    level.contains('=')
+        || ["trace", "debug", "info", "warn", "error", "off"]
+            .iter()
+            .any(|valid| level.eq_ignore_ascii_case(valid))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// Server bind address
     pub bind: SocketAddr,
@@ -393,6 +416,32 @@ impl Config {
 
     /// Validate configuration
     pub fn validate(&self) -> Result<(), ConfigError> {
+        // The shell command must be non-empty; an empty command would only
+        // fail later at PTY spawn time, long after the server has started.
+        if self.command.is_empty() {
+            return Err(ConfigError::InvalidCommand(
+                "command must not be empty".to_string(),
+            ));
+        }
+
+        // Zero would mean "reject every connection"; refuse it at startup.
+        if self.max_connections == 0 {
+            return Err(ConfigError::InvalidMaxConnections(
+                "max_connections must be greater than 0".to_string(),
+            ));
+        }
+
+        // An invalid level would be accepted by `EnvFilter::try_new` as a
+        // *target* directive, silently filtering out nearly all log output.
+        // Reject it here so the failure is loud and immediate.
+        if !is_valid_log_level(&self.log_level) {
+            return Err(ConfigError::InvalidLogLevel(format!(
+                "'{}' is not a bare level name (trace, debug, info, warn, \
+                 error, off) or an EnvFilter directive containing '='",
+                self.log_level
+            )));
+        }
+
         // Validate session mode (accept both hyphenated and underscore forms)
         if ![
             "isolated",
@@ -469,9 +518,10 @@ impl Config {
             ));
         }
 
-        // Validate auth configuration consistency
+        // Validate auth configuration consistency. The method is matched
+        // case-insensitively, consistent with SessionMode parsing.
         if let Some(auth) = &self.auth {
-            match auth.method.as_str() {
+            match auth.method.to_ascii_lowercase().as_str() {
                 "basic" => {
                     if auth.username.is_none() || auth.password.is_none() {
                         return Err(ConfigError::InvalidAuth(
@@ -570,8 +620,10 @@ mod tests {
 
     #[test]
     fn test_public_unauthenticated_terminal_rejected_without_explicit_opt_in() {
-        let mut config = Config::default();
-        config.bind = "0.0.0.0:7681".parse().unwrap();
+        let mut config = Config {
+            bind: "0.0.0.0:7681".parse().unwrap(),
+            ..Config::default()
+        };
         config.file_transfer.enabled = false;
 
         let err = config.validate().unwrap_err();
@@ -586,6 +638,53 @@ mod tests {
         let mut config = Config::default();
         config.session.mode = "invalid_mode".to_string();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_validation_empty_command() {
+        let mut config = Config::default();
+        config.file_transfer.enabled = false;
+        config.command = Vec::new();
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidCommand(_)));
+    }
+
+    #[test]
+    fn test_config_validation_zero_max_connections() {
+        let mut config = Config::default();
+        config.file_transfer.enabled = false;
+        config.max_connections = 0;
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidMaxConnections(_)));
+    }
+
+    /// Auth method matching is case-insensitive and normalized to lowercase.
+    #[test]
+    fn test_config_validation_auth_method_case_insensitive() {
+        let mut config = Config::default();
+        config.file_transfer.enabled = false;
+        config.auth = Some(AuthConfig {
+            method: "TOKEN".to_string(),
+            username: None,
+            password: None,
+            token: Some("secret".to_string()),
+        });
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_validation_invalid_log_level() {
+        let mut config = Config::default();
+        config.file_transfer.enabled = false;
+        config.log_level = "tracert".to_string();
+        let err = config.validate().unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidLogLevel(_)));
+
+        // Valid bare levels and EnvFilter directives are accepted.
+        for level in ["trace", "INFO", "off", "ttyd_rs=debug,info"] {
+            config.log_level = level.to_string();
+            assert!(config.validate().is_ok(), "level '{level}' should be valid");
+        }
     }
 
     #[test]
@@ -832,6 +931,43 @@ enabled = false
 
         let config = Config::from_file(&config_path).unwrap();
         assert!(config.validate().is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Unknown fields (e.g. a misspelled section or key) must be rejected
+    /// instead of silently ignored.
+    #[test]
+    fn test_config_from_file_unknown_field_rejected() {
+        let dir = std::env::temp_dir().join("ttyd-rs-config-test-unknown");
+        let _ = std::fs::create_dir_all(&dir);
+        let config_path = dir.join("unknown.toml");
+
+        std::fs::write(
+            &config_path,
+            concat!(
+                "bind = \"127.0.0.1:7681\"\n",
+                "command = [\"/bin/sh\"]\n",
+                "max_conections = 10\n", // typo
+            ),
+        )
+        .unwrap();
+
+        assert!(Config::from_file(&config_path).is_err());
+
+        // A misspelled section is rejected too.
+        std::fs::write(
+            &config_path,
+            concat!(
+                "bind = \"127.0.0.1:7681\"\n",
+                "command = [\"/bin/sh\"]\n\n",
+                "[file_tranfer]\n", // typo
+                "enabled = false\n",
+            ),
+        )
+        .unwrap();
+
+        assert!(Config::from_file(&config_path).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
