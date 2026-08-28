@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.1 — 2026-08-28
+
+### Fixed
+
+- File browser: the breadcrumb path bar did not update when navigating into a
+  subdirectory, going up via `..`, or clicking a breadcrumb crumb. The click
+  handlers sent the `file_list` request directly, bypassing the code that
+  tracks the current path and re-renders the breadcrumb; they now all go
+  through `requestFileList()` in `static/js/files.js`.
+
 ## 1.2.0 — 2026-08-28
 
 ### Added

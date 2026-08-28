@@ -69,8 +69,7 @@ function renderBreadcrumb(path) {
     rootCrumb.className = 'crumb';
     rootCrumb.textContent = '~';
     rootCrumb.addEventListener('click', () => {
-        showLoading();
-        requestList('.');
+        requestFileList('.');
     });
     filePanelBreadcrumb.appendChild(rootCrumb);
 
@@ -89,8 +88,7 @@ function renderBreadcrumb(path) {
         crumb.textContent = part;
         const target = accum;
         crumb.addEventListener('click', () => {
-            showLoading();
-            requestList(target);
+            requestFileList(target);
         });
         filePanelBreadcrumb.appendChild(crumb);
     });
@@ -157,8 +155,7 @@ export function renderFileList(data) {
         upItem.appendChild(upIcon);
         upItem.appendChild(upName);
         upItem.addEventListener('click', () => {
-            showLoading();
-            requestList(parent);
+            requestFileList(parent);
         });
         filePanelBody.appendChild(upItem);
     }
@@ -192,8 +189,7 @@ export function renderFileList(data) {
 
         if (f.is_dir) {
             item.addEventListener('click', () => {
-                showLoading();
-                requestList(joinPath(currentFilePath, f.name));
+                requestFileList(joinPath(currentFilePath, f.name));
             });
         } else {
             const dl = document.createElement('button');
