@@ -2,8 +2,8 @@
 
 **Target Platforms**: Linux only (no Windows or macOS support)
 
-**Current Status**: v1.1.0 released; post-1.1.0 work in progress (see
-[CHANGELOG.md → Unreleased](../CHANGELOG.md)). All core milestones (M1–M6) are
+**Current Status**: v1.2.0 released; post-1.2.0 work in progress (see
+[CHANGELOG.md](../CHANGELOG.md)). All core milestones (M1–M6) are
 complete; see [PROJECT_STATUS.md](PROJECT_STATUS.md) for release verification status.
 
 ---

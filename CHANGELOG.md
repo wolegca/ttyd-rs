@@ -1,9 +1,36 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-08-28
 
 ### Added
 
+- Frontend refactor: the monolithic `static/index.html` (previously ~1.9k lines
+  of inline CSS/JS) is split into eight ES modules under `static/js/` —
+  `config.js` (constants + namespaced `localStorage` preference wrapper),
+  `icons.js`, `auth.js`, `terminal.js`, `toast.js`, `transfer.js`, `files.js`,
+  and `main.js` (WebSocket lifecycle). All modules are embedded via rust-embed
+  and covered by new asset tests in `src/assets.rs`.
+- Settings menu additions, all persisted via `localStorage`:
+  - Terminal font size with increase/decrease/reset controls.
+  - Cursor blink toggle.
+  - Toast duration (seconds, `0` = sticky) with increase/decrease/reset and a
+    direct numeric input.
+- Upload progress indicator: a header ring button showing aggregate upload
+  progress, expanding into a detail panel listing per-file status with a
+  "Cancel all" control.
+- Toast close buttons; toasts now stack from the bottom-right corner (newest
+  at the bottom) instead of hanging below the header.
+- "Clear terminal" menu item.
+
+### Changed
+
+- Upgraded `argon2` from 0.5 to 0.6. Adapted `src/auth/basic.rs` to the new
+  API: `PasswordHash` now lives in `password_hash::phc`, `hash_password` no
+  longer takes an explicit salt (it generates one internally via the OS RNG,
+  so the direct `rand_core` dependency and its `getrandom` workaround were
+  dropped from `Cargo.toml`), and the strict PHC hash validation now maps
+  missing salt/digest to the more precise `SaltInvalid` / `OutputSize` errors.
+  Existing `$argon2id$` PHC strings in configuration files remain compatible.
 - File uploads now verify that the target directory is writable (`access(2)`
   with `W_OK`) before any multipart body is read. An unwritable target fails
   fast with 403 and a message naming the directory, instead of transferring

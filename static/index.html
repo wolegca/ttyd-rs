@@ -89,10 +89,10 @@
             --z-banner: 60;
             --z-copy: 70;
             --z-mobile: 90;
-            --z-toast: 200;
             --z-progress: 250;
             --z-overlay: 300;
             --z-confirm: 400;
+            --z-toast: 500;
 
             /* Fonts */
             --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue",
@@ -312,7 +312,9 @@
             position: absolute;
             top: calc(100% + 8px);
             right: 0;
+            width: max-content;
             min-width: 210px;
+            max-width: calc(100vw - 24px);
             background: var(--bg-elevated);
             border: 1px solid var(--border-subtle);
             border-radius: var(--radius-md);
@@ -369,13 +371,16 @@
 
         /* Settings-specific controls */
         .menu-group { padding: 6px 12px 2px; }
+        .menu-group:last-child { padding-bottom: 6px; }
         .menu-label {
             font-size: 10.5px;
             text-transform: uppercase;
             letter-spacing: 0.6px;
             color: var(--text-faint);
-            margin-bottom: 8px;
+            margin-bottom: 4px;
         }
+        /* Rows inside a labeled group: no extra padding-top (label provides spacing) */
+        .menu-group .menu-row { padding-top: 4px; padding-bottom: 6px; }
         .menu-controls {
             display: flex;
             align-items: center;
@@ -458,6 +463,31 @@
         }
 
         #upload-input { display: none; }
+
+        /* Toast duration number input (settings menu) */
+        .toast-duration-input {
+            width: 44px;
+            height: 28px;
+            padding: 0 4px;
+            font-size: 13px;
+            font-family: var(--font-mono);
+            color: var(--text-primary);
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-sm);
+            text-align: center;
+            -moz-appearance: textfield;
+            appearance: textfield;
+        }
+        .toast-duration-input::-webkit-outer-spin-button,
+        .toast-duration-input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        .toast-duration-input:focus {
+            outline: 2px solid var(--accent);
+            outline-offset: 1px;
+        }
 
         /* ============================================================
            Terminal area
@@ -692,11 +722,11 @@
            ============================================================ */
         #toast-container {
             position: fixed;
-            top: 62px;
+            bottom: 16px;
             right: 16px;
             z-index: var(--z-toast);
             display: flex;
-            flex-direction: column;
+            flex-direction: column-reverse; /* newest at bottom, stack grows upward */
             gap: 8px;
             pointer-events: none;
             max-width: calc(100vw - 32px);
@@ -718,6 +748,27 @@
             word-break: break-word;
         }
         .toast .toast-icon { flex: 0 0 auto; margin-top: 1px; }
+        .toast .toast-close {
+            flex: 0 0 auto;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px;
+            height: 20px;
+            margin: -2px -4px -2px 0;
+            padding: 0;
+            background: none;
+            border: none;
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            cursor: pointer;
+            pointer-events: auto;
+            transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+        }
+        .toast .toast-close:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
         .toast.error { border-left-color: var(--danger); }
         .toast.error .toast-icon { color: var(--danger); }
         .toast.success { border-left-color: var(--success); }
@@ -956,25 +1007,138 @@
         }
 
         /* ============================================================
-           Upload progress bar
+           Upload indicator (header ring + expandable detail panel)
            ============================================================ */
-        #upload-progress {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            height: 4px;
-            background: rgba(255, 255, 255, 0.06);
-            z-index: var(--z-progress);
+        #upload-indicator { position: relative; }
+        #upload-indicator.hidden { display: none; }
+
+        #btn-upload-indicator {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 34px;
+            height: 34px;
+            border: none;
+            border-radius: var(--radius-sm);
+            background: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
         }
-        #upload-progress.hidden { display: none; }
-        #upload-progress-bar {
-            height: 100%;
-            width: 0%;
-            background: linear-gradient(90deg, var(--accent), var(--accent-hover));
-            box-shadow: 0 0 8px rgba(78, 201, 176, 0.6);
-            transition: width 0.18s var(--ease);
+        #btn-upload-indicator:hover,
+        #btn-upload-indicator.active {
+            background: var(--bg-hover);
+            color: var(--text-primary);
         }
+        #btn-upload-indicator svg.ring .ring-rot {
+            transform: rotate(-90deg);
+            transform-origin: 8px 8px;
+        }
+        #btn-upload-indicator .ring-track {
+            stroke: var(--border-subtle);
+        }
+        #btn-upload-indicator .ring-fill {
+            stroke: var(--accent);
+            transition: stroke-dashoffset 0.2s var(--ease);
+        }
+        #btn-upload-indicator .ring-text {
+            font-size: 7.5px;
+            font-weight: 700;
+            fill: var(--accent);
+            stroke: none;
+            font-variant-numeric: tabular-nums;
+        }
+
+        #upload-panel {
+            min-width: 280px;
+            max-width: 340px;
+            padding: 0;
+            overflow: hidden;
+        }
+        #upload-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+        #upload-panel-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        #btn-cancel-all {
+            flex: 0 0 auto;
+            padding: 3px 9px;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--danger);
+            background: none;
+            border: 1px solid var(--danger);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+        }
+        #btn-cancel-all:hover {
+            background: var(--danger);
+            color: #fff;
+        }
+        #upload-panel-list {
+            max-height: 220px;
+            overflow-y: auto;
+        }
+        .upload-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+        .upload-row:last-child { border-bottom: none; }
+        .upload-row .upload-name {
+            flex: 1 1 auto;
+            min-width: 0;
+            font-size: 12px;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .upload-row .upload-status {
+            flex: 0 0 auto;
+            font-size: 11px;
+            color: var(--text-secondary);
+            font-variant-numeric: tabular-nums;
+        }
+        .upload-row .upload-status.done { color: var(--accent); }
+        .upload-row .upload-status.failed,
+        .upload-row .upload-status.cancelled { color: var(--danger); }
+        .upload-row .upload-cancel {
+            flex: 0 0 auto;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px;
+            height: 20px;
+            padding: 0;
+            background: none;
+            border: none;
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+        }
+        .upload-row .upload-cancel:hover {
+            background: var(--bg-hover);
+            color: var(--danger);
+        }
+        .upload-row.done .upload-name,
+        .upload-row.cancelled .upload-name { color: var(--text-secondary); }
 
         /* ============================================================
            Confirm modal
@@ -1097,6 +1261,24 @@
         </div>
 
         <div class="header-right">
+            <div id="upload-indicator" class="menu-anchor hidden">
+                <button id="btn-upload-indicator" class="icon-btn" title="Upload progress" aria-label="Upload progress" aria-haspopup="true">
+                    <svg class="ring" viewBox="0 0 16 16" width="17" height="17" fill="none" stroke-width="1.6" stroke-linecap="round">
+                        <g class="ring-rot">
+                            <circle class="ring-track" cx="8" cy="8" r="6.5" pathLength="100"/>
+                            <circle class="ring-fill" cx="8" cy="8" r="6.5" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100"/>
+                        </g>
+                        <text class="ring-text" x="8" y="8" text-anchor="middle" dominant-baseline="central">0</text>                    </svg>
+                </button>
+                <div id="upload-panel" class="dropdown" role="dialog" aria-label="Upload progress details">
+                    <div id="upload-panel-header">
+                        <span id="upload-panel-title">Uploading…</span>
+                        <button id="btn-cancel-all">Cancel all</button>
+                    </div>
+                    <div id="upload-panel-list"></div>
+                </div>
+            </div>
+
             <button id="btn-fullscreen" class="icon-btn" title="Toggle fullscreen" aria-label="Toggle fullscreen">
                 <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2.5H2.5V6M10 2.5h3.5V6M10 13.5h3.5V10M6 13.5H2.5V10"/></svg>
             </button>
@@ -1107,29 +1289,48 @@
                 </button>
                 <div id="settings-menu" class="dropdown" role="menu" aria-label="Terminal settings">
                     <div class="menu-group">
-                        <div class="menu-label">Font size</div>
-                        <div class="menu-controls">
-                            <button id="btn-font-dec" class="ctrl-btn" title="Decrease font size" aria-label="Decrease font size">A&minus;</button>
-                            <span id="font-size-label" class="font-size-label">14</span>
-                            <button id="btn-font-inc" class="ctrl-btn" title="Increase font size" aria-label="Increase font size">A+</button>
-                            <button id="btn-font-reset" class="ctrl-btn reset" title="Reset font size">Reset</button>
+                        <div class="menu-label">Terminal</div>
+                        <div class="menu-row">
+                            <span>Font size</span>
+                            <div class="menu-controls">
+                                <button id="btn-font-dec" class="ctrl-btn" title="Decrease font size" aria-label="Decrease font size">A&minus;</button>
+                                <span id="font-size-label" class="font-size-label">14</span>
+                                <button id="btn-font-inc" class="ctrl-btn" title="Increase font size" aria-label="Increase font size">A+</button>
+                                <button id="btn-font-reset" class="ctrl-btn reset" title="Reset font size">Reset</button>
+                            </div>
+                        </div>
+                        <div class="menu-row">
+                            <span>Cursor blink</span>
+                            <label class="switch" title="Toggle cursor blink">
+                                <input type="checkbox" id="cursor-blink-toggle" aria-label="Toggle cursor blink">
+                                <span class="switch-slider"></span>
+                            </label>
                         </div>
                     </div>
                     <div class="menu-divider"></div>
-                    <div class="menu-row">
-                        <span>Cursor blink</span>
-                        <label class="switch" title="Toggle cursor blink">
-                            <input type="checkbox" id="cursor-blink-toggle" aria-label="Toggle cursor blink">
-                            <span class="switch-slider"></span>
-                        </label>
+                    <div class="menu-group">
+                        <div class="menu-label">Notifications</div>
+                        <div class="menu-row">
+                            <span>Toast duration</span>
+                            <div class="menu-controls">
+                                <button id="btn-toast-dec" class="ctrl-btn" title="Decrease duration" aria-label="Decrease toast duration">&minus;</button>
+                                <input type="number" id="toast-duration-input" class="toast-duration-input"
+                                       min="0" step="1" value="4" title="Seconds a notification stays visible; 0 = never hide" />
+                                <button id="btn-toast-inc" class="ctrl-btn" title="Increase duration" aria-label="Increase toast duration">+</button>
+                                <button id="btn-toast-reset" class="ctrl-btn reset" title="Reset to default (4s)">Reset</button>
+                            </div>
+                        </div>
                     </div>
                     <div class="menu-divider"></div>
-                    <button id="btn-clear" class="menu-item" role="menuitem">
-                        <span class="menu-item-icon">
-                            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M5 4.5l.5 8.5h5l.5-8.5"/></svg>
-                        </span>
-                        Clear terminal
-                    </button>
+                    <div class="menu-group">
+                        <div class="menu-label">Actions</div>
+                        <button id="btn-clear" class="menu-item" role="menuitem">
+                            <span class="menu-item-icon">
+                                <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M5 4.5l.5 8.5h5l.5-8.5"/></svg>
+                            </span>
+                            Clear terminal
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -1256,11 +1457,6 @@
         </div>
     </div>
 
-    <!-- ========================= Upload progress ========================= -->
-    <div id="upload-progress" class="hidden">
-        <div id="upload-progress-bar"></div>
-    </div>
-
     <!-- ========================= Confirm modal ========================= -->
     <div id="confirm-overlay" class="hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-message">
         <div id="confirm-box">
@@ -1281,1402 +1477,6 @@
     <script src="/vendor/scripts/xterm.js"></script>
     <script src="/vendor/scripts/xterm-addon-fit.js"></script>
     <script src="/vendor/scripts/xterm-addon-web-links.js"></script>
-    <script>
-        'use strict';
-
-        // ============================================================
-        // Reusable SVG icons for dynamic content
-        // ============================================================
-        const ICONS = {
-            dir: '<svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor"><path d="M1.75 1h4.06L7.5 2.75h6.75A1.75 1.75 0 0 1 16 4.5v8.75A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25V2.75A1.75 1.75 0 0 1 1.75 1Z"/></svg>',
-            file: '<svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor"><path d="M4 1.75C4 .784 4.784 0 5.75 0h4.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 13.25 16h-7.5A1.75 1.75 0 0 1 4 14.25Zm2.5-.25v3h3.5V1.5Z"/></svg>',
-            up: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 3.5L4.5 8.5M4.5 8.5h5v5"/></svg>',
-            toastSuccess: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5"/></svg>',
-            toastError: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
-            toastInfo: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.5V11M8 5.2v.1"/></svg>'
-        };
-
-        // ============================================================
-        // xterm.js initialization
-        // ============================================================
-        const DEFAULT_FONT_SIZE = 14;
-        const MIN_FONT_SIZE = 8;
-        const MAX_FONT_SIZE = 32;
-
-        // Persisted user preferences
-        let fontSize = parseInt(localStorage.getItem('ttyd.fontSize') || String(DEFAULT_FONT_SIZE), 10);
-        if (isNaN(fontSize)) fontSize = DEFAULT_FONT_SIZE;
-        // Clamp persisted value to the valid range (handles corrupt localStorage)
-        fontSize = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, fontSize));
-        let cursorBlink = localStorage.getItem('ttyd.cursorBlink') !== 'false';
-
-        const term = new Terminal({
-            cursorBlink: cursorBlink,
-            fontSize: fontSize,
-            fontFamily: '"0xProto Nerd Font Mono", Menlo, Monaco, "Consolas", "DejaVu Sans Mono", "Courier New", monospace',
-            letterSpacing: 0,
-            theme: {
-                background: '#1e1e1e',
-                foreground: '#d4d4d4',
-                cursor: '#aeafad',
-                cursorAccent: '#1e1e1e',
-                selectionBackground: 'rgba(78, 201, 176, 0.28)',
-                black: '#000000',
-                red: '#cd3131',
-                green: '#0dbc79',
-                yellow: '#e5e510',
-                blue: '#2472c8',
-                magenta: '#bc3fbc',
-                cyan: '#11a8cd',
-                white: '#e5e5e5',
-                brightBlack: '#666666',
-                brightRed: '#f14c4c',
-                brightGreen: '#23d18b',
-                brightYellow: '#f5f543',
-                brightBlue: '#3b8eea',
-                brightMagenta: '#d670d6',
-                brightCyan: '#29b8db',
-                brightWhite: '#e5e5e5'
-            }
-        });
-
-        const fitAddon = new FitAddon.FitAddon();
-        term.loadAddon(fitAddon);
-
-        const webLinksAddon = new WebLinksAddon.WebLinksAddon();
-        term.loadAddon(webLinksAddon);
-
-        term.open(document.getElementById('terminal'));
-        fitAddon.fit();
-
-        // ============================================================
-        // DOM references
-        // ============================================================
-        const statusIndicator = document.getElementById('status-indicator');
-        const statusText = document.getElementById('status-text');
-        const sessionInfo = document.getElementById('session-info');
-        const connBanner = document.getElementById('conn-banner');
-        const bannerSpinner = document.getElementById('banner-spinner');
-        const bannerText = document.getElementById('banner-text');
-        const btnReconnect = document.getElementById('btn-reconnect');
-        const readonlyBadge = document.getElementById('readonly-badge');
-        const copyBtn = document.getElementById('copy-selection');
-        const terminalContainer = document.getElementById('terminal-container');
-
-        let currentSessionId = null;
-
-        // ============================================================
-        // Status + banner helpers
-        // ============================================================
-        /** @param {boolean} connected */
-        function setStatus(connected) {
-            statusIndicator.classList.remove('pending', 'reconnecting', 'disconnected');
-            if (connected) {
-                statusIndicator.classList.add('connected');
-                statusText.textContent = 'Connected';
-            } else {
-                statusIndicator.classList.add('disconnected');
-                statusText.textContent = 'Disconnected';
-            }
-        }
-
-        /** Show the non-intrusive connection banner.
-         *  @param {'reconnecting'|'lost'} kind
-         *  @param {string} text
-         */
-        function showBanner(kind, text) {
-            connBanner.classList.remove('hidden');
-            connBanner.classList.remove('reconnecting', 'lost');
-            connBanner.classList.add(kind);
-            bannerSpinner.classList.toggle('hidden', kind === 'lost');
-            btnReconnect.style.display = kind === 'lost' ? 'inline-block' : 'none';
-            bannerText.textContent = text;
-            // Reflect "reconnecting" in the header indicator too
-            statusIndicator.classList.remove('disconnected', 'connected', 'pending');
-            statusIndicator.classList.add(kind === 'reconnecting' ? 'reconnecting' : 'disconnected');
-            // Dim the terminal behind the banner
-            terminalContainer.classList.add('banner-active');
-        }
-
-        function hideBanner() {
-            connBanner.classList.add('hidden');
-            terminalContainer.classList.remove('banner-active');
-        }
-
-        /** @param {string} sessionId */
-        function updateSessionInfo(sessionId) {
-            currentSessionId = sessionId;
-            if (sessionId) {
-                sessionInfo.textContent = 'Session ' + sessionId.substring(0, 8);
-            }
-        }
-
-        function clearSessionInfo() {
-            currentSessionId = null;
-            sessionInfo.textContent = '';
-        }
-
-        /** Write an app-level system message to the terminal (dim gray).
-         *  @param {string} msg
-         */
-        function writeSystemMessage(msg) {
-            term.write(`\r\n\x1b[90m[${msg}]\x1b[0m\r\n`);
-        }
-
-        /** @param {string} msg */
-        function writeErrorMessage(msg) {
-            term.write(`\r\n\x1b[91m[${msg}]\x1b[0m\r\n`);
-        }
-
-        /** @param {boolean} isReadOnly */
-        function setReadOnlyBadge(isReadOnly) {
-            readonlyBadge.classList.toggle('visible', isReadOnly);
-        }
-
-        // ============================================================
-        // WebSocket connection with reconnection support
-        // ============================================================
-        /** @type {WebSocket | null} */
-        let ws = null;
-        /** @type {number | null} */
-        let reconnectTimer = null;
-        /** @type {number | null} */
-        let heartbeatTimer = null;
-        /** @type {number | null} */
-        let pongCheckTimer = null;
-        let lastPongTime = Date.now();
-        // Timestamp of the most recent transition to document.hidden === true.
-        // Used to make pongCheckTimer immune to the tab-freeze race: if the
-        // tab went hidden more recently than our last pong, `elapsed` in
-        // pongCheckTimer reflects wall-clock time that includes a frozen
-        // stretch, not real silence from the server, so it must not be
-        // trusted until the foreground probe re-validates. This check is
-        // ordering-independent - it doesn't matter whether pongCheckTimer's
-        // post-freeze catch-up tick fires before or after the
-        // visibilitychange-to-visible handler runs, because lastHiddenAt was
-        // already recorded earlier, when the tab *went* hidden.
-        let lastHiddenAt = 0;
-        // True while we're waiting on a response to the foreground probe
-        // ping (see the visibilitychange handler below). Using a flag
-        // instead of comparing Date.now() timestamps avoids a same-
-        // millisecond false positive if the pong round-trip completes
-        // within 1ms (e.g. on localhost).
-        let probeAwaitingPong = false;
-        // One-off timer used to verify the connection right after the tab
-        // becomes visible again (see the visibilitychange handler below).
-        // Kept separate from heartbeatTimer/pongCheckTimer because those are
-        // setInterval-based and, after being throttled or fully frozen by
-        // the browser while backgrounded, their next tick time is
-        // unpredictable - not suitable for a "check right now" probe.
-        /** @type {number | null} */
-        let visibilityProbeTimer = null;
-        let retryCount = 0;
-        let serverDisconnected = false;
-        let authFailed = false;
-        let hasAuthenticated = false;
-        let authRequired = false;
-        let readOnly = false;
-        /** @type {{ method: string, credentials: string } | null} */
-        let authCredentials = null;
-        const MAX_RETRIES = 10;
-        const BASE_DELAY = 1000;
-        const MAX_DELAY = 30000;
-        const HEARTBEAT_INTERVAL = 30000;
-        const PONG_TIMEOUT = 90000;
-        // Short timeout used only for the foreground probe below - the tab
-        // is actively being looked at, so we want a fast verdict rather than
-        // waiting out the full PONG_TIMEOUT.
-        const FOREGROUND_PROBE_TIMEOUT = 5000;
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws`;
-
-        const urlParams = new URLSearchParams(window.location.search);
-        const joinSessionId = urlParams.get('session');
-
-        /** Safely send a JSON message over the WebSocket.
-         *  @param {string} type
-         *  @param {object} data
-         */
-        function sendMsg(type, data) {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                try {
-                    ws.send(JSON.stringify({ type, data }));
-                } catch (e) {
-                    console.error('Failed to send message:', e);
-                }
-            }
-        }
-
-        /** Compute current terminal dimensions and send a resize (if connected). */
-        function sendResize() {
-            if (serverDisconnected) return;
-            const dims = fitAddon.proposeDimensions();
-            if (dims) {
-                sendMsg('resize', { cols: dims.cols, rows: dims.rows });
-            }
-        }
-
-        function connect() {
-            // Cancel any pending reconnect timer and close the old socket
-            if (reconnectTimer !== null) {
-                clearTimeout(reconnectTimer);
-                reconnectTimer = null;
-            }
-            authFailed = false;
-            if (ws) {
-                ws.onopen = null;
-                ws.onmessage = null;
-                ws.onerror = null;
-                ws.onclose = null;
-                if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-                    ws.close();
-                }
-                ws = null;
-            }
-
-            ws = new WebSocket(wsUrl);
-
-            ws.onopen = () => {
-                console.log('WebSocket connected');
-                retryCount = 0;
-                serverDisconnected = false;
-                hideBanner();
-
-                stopHeartbeat();
-
-                // Heartbeat ping
-                lastPongTime = Date.now();
-                heartbeatTimer = setInterval(() => {
-                    sendMsg('ping', { timestamp: Date.now() });
-                }, HEARTBEAT_INTERVAL);
-
-                // Pong timeout checker
-                pongCheckTimer = setInterval(() => {
-                    // Skip the check while the tab is hidden: timers are
-                    // throttled/frozen, so `elapsed` reflects wall-clock
-                    // silence (including the frozen stretch), not real
-                    // server silence. The foreground probe (visibilitychange
-                    // handler) does the real verification when we come back.
-                    //
-                    // The `document.hidden` check also covers the edge case
-                    // where the page was loaded in a background tab and
-                    // `visibilitychange` never fired, leaving `lastHiddenAt`
-                    // at its initial 0.
-                    if (document.hidden || lastHiddenAt > lastPongTime) return;
-                    const elapsed = Date.now() - lastPongTime;
-                    if (elapsed > PONG_TIMEOUT) {
-                        console.error('Server pong timeout, forcing reconnect');
-                        if (ws) ws.close();
-                    }
-                }, 10000);
-
-                if (authRequired && authCredentials) {
-                    sendMsg('auth', authCredentials);
-                } else {
-                    onAuthenticated();
-                }
-            };
-
-            ws.onmessage = (event) => {
-                try {
-                    const msg = JSON.parse(event.data);
-
-                    switch (msg.type) {
-                        case 'auth_ok':
-                            console.log('Auth OK');
-                            onAuthenticated();
-                            break;
-                        case 'auth_fail':
-                            console.error('Auth failed:', msg.data.reason);
-                            authFailed = true;
-                            retryCount = MAX_RETRIES;
-                            showLoginError(msg.data.reason);
-                            if (ws) ws.close();
-                            break;
-                        case 'ready':
-                            console.log('Terminal ready:', msg.data);
-                            setStatus(true);
-                            hideBanner();
-                            updateSessionInfo(msg.data.session_id);
-                            readOnly = msg.data.readonly || false;
-                            setReadOnlyBadge(readOnly);
-                            if (readOnly) {
-                                writeSystemMessage('Read-only mode: your keystrokes will not be sent.');
-                            }
-                            break;
-                        case 'output':
-                            term.write(msg.data.payload);
-                            break;
-                        case 'pong':
-                            lastPongTime = Date.now();
-                            probeAwaitingPong = false;
-                            break;
-                        case 'disconnect':
-                            console.log('Disconnected:', msg.data.reason);
-                            writeSystemMessage(`Disconnected: ${msg.data.reason}`);
-                            writeSystemMessage('Press Enter or refresh page to reconnect.');
-                            setStatus(false);
-                            setReadOnlyBadge(false);
-                            clearSessionInfo();
-                            serverDisconnected = true;
-                            stopHeartbeat();
-                            showBanner('lost', 'Session ended. Press Enter or reconnect to start a new one.');
-                            if (ws) ws.close();
-                            break;
-                        case 'error':
-                            console.error('Error:', msg.data);
-                            if (msg.data.code === 'FILE_LIST_ERROR' && !filePanelOverlay.classList.contains('hidden')) {
-                                cancelLoading();
-                                filePanelBody.innerHTML = `<div class="fp-empty">${escapeHtml(msg.data.message)}</div>`;
-                            } else {
-                                writeErrorMessage(`Error: ${msg.data.message}`);
-                            }
-                            if (msg.data.fatal) {
-                                serverDisconnected = true;
-                                if (ws) ws.close();
-                            }
-                            break;
-                        case 'file_list_result':
-                            renderFileList(msg.data);
-                            break;
-                        default:
-                            console.warn('Unknown message type:', msg.type);
-                            break;
-                    }
-                } catch (e) {
-                    console.error('Failed to parse message:', e);
-                }
-            };
-
-            ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
-            };
-
-            ws.onclose = () => {
-                console.log('WebSocket closed');
-                setMenuVisible(false);
-                stopHeartbeat();
-
-                // Auth failed: login overlay is visible, don't write to the
-                // terminal canvas behind it (causes a visible flash).
-                if (authFailed) {
-                    return;
-                }
-
-                // Auth is required but we haven't authenticated yet (e.g. the
-                // login attempt hit a network failure). Keep the login overlay
-                // as the primary surface so the user can retry, instead of
-                // stacking a reconnect banner behind it.
-                if (authRequired && !hasAuthenticated) {
-                    setStatus(false);
-                    showLoginError('无法连接服务器，请检查网络后重试');
-                    return;
-                }
-
-                setStatus(false);
-
-                if (serverDisconnected || retryCount >= MAX_RETRIES) {
-                    if (serverDisconnected) {
-                        showBanner('lost', 'Connection closed by the server. Reconnect to start a new session.');
-                    } else {
-                        showBanner('lost', 'Connection lost. Check your network and try again.');
-                    }
-                    return;
-                }
-
-                retryCount++;
-                const delay = Math.min(BASE_DELAY * Math.pow(2, retryCount - 1), MAX_DELAY);
-                statusText.textContent = `Reconnecting (${retryCount}/${MAX_RETRIES})...`;
-                console.log(`Reconnecting in ${delay}ms (attempt ${retryCount}/${MAX_RETRIES})`);
-                showBanner('reconnecting', `Reconnecting (${retryCount}/${MAX_RETRIES})...`);
-                reconnectTimer = setTimeout(connect, delay);
-            };
-        }
-
-        // When a backgrounded tab becomes visible again, don't trust the
-        // socket's reported state at face value:
-        //  - Desktop browsers throttle/freeze setInterval while hidden, so
-        //    heartbeatTimer/pongCheckTimer may not have run in a long time;
-        //    lastPongTime can be stale even though the connection is fine.
-        //  - iOS Safari (and other mobile browsers) can silently kill the
-        //    underlying socket while backgrounded without ever firing
-        //    onclose/onerror, so readyState can still read OPEN on a dead
-        //    connection.
-        // Either way, the fix is the same: record when the tab goes hidden
-        // (so pongCheckTimer can ignore stale elapsed time - see its guard
-        // above) and, on return to visibility, actively probe the
-        // connection with a short, fresh one-off timer instead of waiting
-        // on the (possibly frozen) interval timers.
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden) {
-                lastHiddenAt = Date.now();
-                return;
-            }
-
-            // Tab just became visible.
-            if (visibilityProbeTimer !== null) {
-                clearTimeout(visibilityProbeTimer);
-                visibilityProbeTimer = null;
-            }
-
-            if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
-                // Already known to be down. Reconnect right away instead of
-                // waiting out the backoff timer, since the user is looking
-                // at the page now.
-                if (!serverDisconnected && !authFailed && (!authRequired || hasAuthenticated)) {
-                    if (reconnectTimer !== null) {
-                        clearTimeout(reconnectTimer);
-                        reconnectTimer = null;
-                    }
-                    retryCount = 0;
-                    connect();
-                }
-                return;
-            }
-
-            if (ws.readyState !== WebSocket.OPEN) return; // still connecting; leave it be
-
-            probeAwaitingPong = true;
-            sendMsg('ping', { timestamp: Date.now() });
-
-            visibilityProbeTimer = setTimeout(() => {
-                visibilityProbeTimer = null;
-                if (probeAwaitingPong) {
-                    probeAwaitingPong = false;
-                    console.warn('Foreground probe got no response, forcing reconnect');
-                    if (ws) ws.close();
-                }
-            }, FOREGROUND_PROBE_TIMEOUT);
-        });
-
-        function stopHeartbeat() {
-            if (heartbeatTimer !== null) {
-                clearInterval(heartbeatTimer);
-                heartbeatTimer = null;
-            }
-            if (pongCheckTimer !== null) {
-                clearInterval(pongCheckTimer);
-                pongCheckTimer = null;
-            }
-            if (visibilityProbeTimer !== null) {
-                clearTimeout(visibilityProbeTimer);
-                visibilityProbeTimer = null;
-            }
-            probeAwaitingPong = false;
-        }
-
-        // Manual reconnect: reset retry/backoff and the session-ended flag,
-        // then start a fresh connection (rejoin the current session if it is
-        // still alive on the server, otherwise the server creates a new one).
-        btnReconnect.addEventListener('click', () => {
-            retryCount = 0;
-            serverDisconnected = false;
-            writeSystemMessage('Reconnecting...');
-            showBanner('reconnecting', 'Reconnecting...');
-            connect();
-        });
-
-        // Called after auth succeeds (or if no auth needed)
-        function onAuthenticated() {
-            hasAuthenticated = true;
-            readOnly = false;
-            setReadOnlyBadge(false);
-            setMenuVisible(true);
-            loginOverlay.classList.add('hidden');
-            loginSubmit.disabled = false;
-            loginSubmit.textContent = 'Login';
-
-            // Send resize first (required by server), then optionally join
-            sendResize();
-
-            const rejoinId = currentSessionId || joinSessionId;
-            if (rejoinId) {
-                sendMsg('join', { session_id: rejoinId });
-            }
-        }
-
-        // ============================================================
-        // Login form handling
-        // ============================================================
-        const loginOverlay = document.getElementById('login-overlay');
-        const loginUsername = document.getElementById('login-username');
-        const loginPassword = document.getElementById('login-password');
-        const loginToken = document.getElementById('login-token');
-        const loginSubmit = document.getElementById('login-submit');
-        const loginError = document.getElementById('login-error');
-        const basicFields = document.getElementById('basic-auth-fields');
-        const tokenFields = document.getElementById('token-auth-fields');
-
-        /** @param {string} msg */
-        function showLoginError(msg) {
-            loginError.textContent = msg;
-            loginError.style.display = 'block';
-            loginOverlay.classList.remove('hidden');
-            loginSubmit.disabled = false;
-            loginSubmit.textContent = 'Login';
-        }
-
-        /** UTF-8-safe Base64 encoding (btoa only supports Latin-1).
-         *  @param {string} str
-         *  @returns {string}
-         */
-        function b64Encode(str) {
-            const bytes = new TextEncoder().encode(str);
-            let binary = '';
-            for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-            return btoa(binary);
-        }
-
-        loginSubmit.addEventListener('click', () => {
-            loginError.style.display = 'none';
-            if (authRequired && authCredentials) {
-                if (authCredentials.method === 'basic') {
-                    const username = loginUsername.value;
-                    const password = loginPassword.value;
-                    if (!username || !password) {
-                        showLoginError('Please enter username and password');
-                        return;
-                    }
-                    authCredentials.credentials = b64Encode(username + ':' + password);
-                } else if (authCredentials.method === 'token') {
-                    if (!authCredentials.credentials) {
-                        showLoginError('Please enter a token');
-                        return;
-                    }
-                }
-                loginSubmit.disabled = true;
-                loginSubmit.textContent = 'Connecting...';
-                retryCount = 0;
-                connect();
-            }
-        });
-
-        // Allow Enter key to submit
-        [loginUsername, loginPassword, loginToken].forEach(el => {
-            el.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') loginSubmit.click();
-            });
-        });
-
-        // Check auth config on page load
-        async function checkAuth() {
-            try {
-                const resp = await fetch('/api/config');
-                const config = await resp.json();
-                // Store upload limit for pre-flight checks
-                maxUploadSize = config.max_upload_size || null;
-                if (config.auth_method) {
-                    authRequired = true;
-                    if (config.auth_method === 'token') {
-                        basicFields.style.display = 'none';
-                        tokenFields.style.display = 'block';
-                        authCredentials = { method: 'token', credentials: '' };
-                        loginToken.addEventListener('input', () => {
-                            authCredentials.credentials = loginToken.value;
-                        });
-                    } else {
-                        authCredentials = { method: 'basic', credentials: '' };
-                    }
-                    loginOverlay.classList.remove('hidden');
-                    statusIndicator.classList.remove('connected', 'disconnected', 'reconnecting');
-                    statusIndicator.classList.add('pending');
-                    statusText.textContent = 'Login required';
-                    hideBanner();
-                    setTimeout(() => {
-                        (config.auth_method === 'token' ? loginToken : loginUsername).focus();
-                    }, 0);
-                } else {
-                    connect();
-                }
-            } catch (e) {
-                console.error('Failed to check auth config:', e);
-                connect();
-            }
-        }
-
-        // Start
-        checkAuth();
-
-        // Send user input to server (or reconnect on Enter after disconnect)
-        term.onData((data) => {
-            if (serverDisconnected) {
-                if (data === '\r' || data === '\n') {
-                    writeSystemMessage('Reconnecting...');
-                    connect();
-                }
-                return;
-            }
-            if (!readOnly) {
-                sendMsg('input', { payload: data });
-            }
-        });
-
-        // Handle terminal resize with debounce
-        let resizeTimer = null;
-        window.addEventListener('resize', () => {
-            fitAddon.fit();
-            if (resizeTimer !== null) {
-                clearTimeout(resizeTimer);
-            }
-            resizeTimer = setTimeout(() => {
-                resizeTimer = null;
-                sendResize();
-            }, 100);
-        });
-
-        // ============================================================
-        // Font size controls (persisted)
-        // ============================================================
-        const fontSizeLabel = document.getElementById('font-size-label');
-
-        function updateFontSizeLabel() {
-            fontSizeLabel.textContent = String(fontSize);
-        }
-
-        // Sync the label with the persisted font size on load so the
-        // displayed value always matches the actual terminal font size.
-        updateFontSizeLabel();
-
-        function applyFontSize() {
-            term.options.fontSize = fontSize;
-            fitAddon.fit();
-            sendResize();
-            updateFontSizeLabel();
-            localStorage.setItem('ttyd.fontSize', String(fontSize));
-        }
-
-        function zoomIn() {
-            if (fontSize < MAX_FONT_SIZE) { fontSize++; applyFontSize(); }
-        }
-        function zoomOut() {
-            if (fontSize > MIN_FONT_SIZE) { fontSize--; applyFontSize(); }
-        }
-        function resetFont() {
-            if (fontSize !== DEFAULT_FONT_SIZE) { fontSize = DEFAULT_FONT_SIZE; applyFontSize(); }
-        }
-
-        document.getElementById('btn-font-inc').addEventListener('click', zoomIn);
-        document.getElementById('btn-font-dec').addEventListener('click', zoomOut);
-        document.getElementById('btn-font-reset').addEventListener('click', resetFont);
-
-        // Keyboard zoom (Ctrl/Cmd + = / - / 0)
-        window.addEventListener('keydown', (e) => {
-            const mod = e.ctrlKey || e.metaKey;
-            if (!mod) return;
-            if (e.key === '=' || e.key === '+') { e.preventDefault(); zoomIn(); }
-            else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomOut(); }
-            else if (e.key === '0') { e.preventDefault(); resetFont(); }
-        });
-
-        // ============================================================
-        // Cursor blink toggle (persisted)
-        // ============================================================
-        const cursorBlinkToggle = document.getElementById('cursor-blink-toggle');
-        cursorBlinkToggle.checked = cursorBlink;
-        cursorBlinkToggle.addEventListener('change', () => {
-            cursorBlink = cursorBlinkToggle.checked;
-            term.options.cursorBlink = cursorBlink;
-            localStorage.setItem('ttyd.cursorBlink', String(cursorBlink));
-        });
-
-        // ============================================================
-        // Fullscreen
-        // ============================================================
-        const btnFullscreen = document.getElementById('btn-fullscreen');
-        const FS_ENTER_SVG = '<svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2.5H2.5V6M10 2.5h3.5V6M10 13.5h3.5V10M6 13.5H2.5V10"/></svg>';
-        const FS_EXIT_SVG = '<svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2.5V6H2.5M10 2.5V6h3.5M13.5 10h-3.5V13.5M2.5 10h3.5v3.5"/></svg>';
-
-        function setFullscreenIcon(isFullscreen) {
-            btnFullscreen.innerHTML = isFullscreen ? FS_EXIT_SVG : FS_ENTER_SVG;
-            btnFullscreen.title = isFullscreen ? 'Exit fullscreen' : 'Toggle fullscreen';
-        }
-
-        function toggleFullscreen() {
-            if (!document.fullscreenElement) {
-                const p = document.documentElement.requestFullscreen();
-                if (p && p.catch) p.catch(() => {});
-            } else {
-                const p = document.exitFullscreen();
-                if (p && p.catch) p.catch(() => {});
-            }
-        }
-        btnFullscreen.addEventListener('click', toggleFullscreen);
-        document.addEventListener('fullscreenchange', () => {
-            setFullscreenIcon(!!document.fullscreenElement);
-            setTimeout(() => { fitAddon.fit(); sendResize(); }, 120);
-        });
-
-        // ============================================================
-        // Copy selection
-        // ============================================================
-        term.onSelectionChange(() => {
-            const hasSel = term.hasSelection();
-            copyBtn.classList.toggle('visible', !!hasSel);
-        });
-        copyBtn.addEventListener('click', async () => {
-            const sel = term.getSelection();
-            if (!sel) return;
-            try {
-                await navigator.clipboard.writeText(sel);
-                showToast('Copied to clipboard', 'success');
-            } catch (e) {
-                // Fallback for older browsers / non-secure contexts
-                try {
-                    const ta = document.createElement('textarea');
-                    ta.value = sel;
-                    ta.style.position = 'fixed';
-                    ta.style.opacity = '0';
-                    document.body.appendChild(ta);
-                    ta.select();
-                    document.execCommand('copy');
-                    document.body.removeChild(ta);
-                    showToast('Copied to clipboard', 'success');
-                } catch (_) {
-                    showToast('Copy failed', 'error');
-                }
-            }
-        });
-
-        // ============================================================
-        // Mobile special-key toolbar
-        // ============================================================
-        const MOBILE_KEY_SEQUENCES = {
-            Escape: '\x1b',
-            Tab: '\t',
-            ArrowUp: '\x1b[A',
-            ArrowDown: '\x1b[B',
-            ArrowRight: '\x1b[C',
-            ArrowLeft: '\x1b[D',
-            CtrlC: '\x03',
-            CtrlD: '\x04',
-            CtrlL: '\x0c',
-            PageUp: '\x1b[5~',
-            PageDown: '\x1b[6~'
-        };
-        document.getElementById('mobile-keys').addEventListener('click', (e) => {
-            const btn = e.target.closest('button[data-key]');
-            if (!btn) return;
-            if (serverDisconnected || readOnly) return;
-            const seq = MOBILE_KEY_SEQUENCES[btn.dataset.key];
-            if (seq) sendMsg('input', { payload: seq });
-        });
-
-        // ============================================================
-        // Toast notifications
-        // ============================================================
-        const toastContainer = document.getElementById('toast-container');
-        const TOAST_ICONS = { success: ICONS.toastSuccess, error: ICONS.toastError, info: ICONS.toastInfo };
-
-        /**
-         * Show a toast notification.
-         * @param {string} message
-         * @param {'success'|'error'|'info'} [type='success']
-         * @param {number} [duration=4000]
-         */
-        function showToast(message, type = 'success', duration = 4000) {
-            const el = document.createElement('div');
-            el.className = `toast ${type}`;
-            const icon = document.createElement('span');
-            icon.className = 'toast-icon';
-            icon.innerHTML = TOAST_ICONS[type] || TOAST_ICONS.info;
-            const text = document.createElement('span');
-            text.className = 'toast-text';
-            text.textContent = message;
-            el.appendChild(icon);
-            el.appendChild(text);
-            toastContainer.appendChild(el);
-            setTimeout(() => {
-                el.classList.add('fade-out');
-                setTimeout(() => el.remove(), 300);
-            }, duration);
-        }
-
-        // ============================================================
-        // Upload progress bar
-        // ============================================================
-        const uploadProgress = document.getElementById('upload-progress');
-        const uploadProgressBar = document.getElementById('upload-progress-bar');
-
-        function setUploadProgress(percent) {
-            uploadProgress.classList.remove('hidden');
-            uploadProgressBar.style.width = percent + '%';
-        }
-
-        function hideUploadProgress() {
-            uploadProgress.classList.add('hidden');
-            uploadProgressBar.style.width = '0%';
-        }
-
-        // ============================================================
-        // Dropdown menus (settings + files)
-        // ============================================================
-        const menuWrapper = document.getElementById('menu-wrapper');
-        const btnMenu = document.getElementById('btn-menu');
-        const menuDropdown = document.getElementById('menu-dropdown');
-        const settingsWrapper = document.getElementById('settings-wrapper');
-        const btnSettings = document.getElementById('btn-settings');
-        const settingsMenu = document.getElementById('settings-menu');
-
-        function closeAllMenus() {
-            menuDropdown.classList.remove('open');
-            settingsMenu.classList.remove('open');
-        }
-
-        btnMenu.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const willOpen = !menuDropdown.classList.contains('open');
-            closeAllMenus();
-            if (willOpen) menuDropdown.classList.add('open');
-        });
-
-        btnSettings.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const willOpen = !settingsMenu.classList.contains('open');
-            closeAllMenus();
-            if (willOpen) settingsMenu.classList.add('open');
-        });
-
-        // Close menus on any outside click
-        document.addEventListener('click', (e) => {
-            if (!e.target.closest('#menu-wrapper') && !e.target.closest('#settings-wrapper')) {
-                closeAllMenus();
-            }
-        });
-
-        // Menu item clicks close the menu
-        menuDropdown.addEventListener('click', (e) => {
-            if (e.target.closest('.menu-item')) closeAllMenus();
-        });
-        settingsMenu.addEventListener('click', (e) => {
-            if (e.target.closest('.menu-item')) closeAllMenus();
-        });
-
-        const btnClear = document.getElementById('btn-clear');
-        btnClear.addEventListener('click', () => {
-            term.clear();
-            closeAllMenus();
-        });
-
-        function setMenuVisible(visible) {
-            if (visible) {
-                menuWrapper.classList.remove('hidden');
-            } else {
-                menuWrapper.classList.add('hidden');
-                menuDropdown.classList.remove('open');
-            }
-        }
-
-        // ============================================================
-        // Custom confirm modal (styled, replaces window.confirm)
-        // ============================================================
-        const confirmOverlay = document.getElementById('confirm-overlay');
-        const confirmBox = document.getElementById('confirm-box');
-        const confirmMessage = document.getElementById('confirm-message');
-        const confirmOk = document.getElementById('confirm-ok');
-        const confirmCancel = document.getElementById('confirm-cancel');
-
-        /**
-         * Show a styled confirm dialog matching the app's theme.
-         * @param {string} message
-         * @param {string} [okLabel='Overwrite']
-         * @returns {Promise<boolean>}
-         */
-        function showConfirm(message, okLabel = 'Overwrite') {
-            confirmMessage.textContent = message;
-            confirmOk.textContent = okLabel;
-            confirmOverlay.classList.remove('hidden');
-            requestAnimationFrame(() => confirmOk.focus());
-            return new Promise((resolve) => {
-                function cleanup(result) {
-                    confirmOverlay.classList.add('hidden');
-                    confirmOk.removeEventListener('click', onOk);
-                    confirmCancel.removeEventListener('click', onCancel);
-                    resolve(result);
-                }
-                function onOk() { cleanup(true); }
-                function onCancel() { cleanup(false); }
-                confirmOk.addEventListener('click', onOk);
-                confirmCancel.addEventListener('click', onCancel);
-            });
-        }
-
-        // ============================================================
-        // Escape-key handling (menus + modals, without stealing terminal Esc)
-        // ============================================================
-        document.addEventListener('keydown', (e) => {
-            if (e.key !== 'Escape') return;
-            if (menuDropdown.classList.contains('open') || settingsMenu.classList.contains('open')) {
-                closeAllMenus();
-            } else if (!confirmOverlay.classList.contains('hidden')) {
-                confirmCancel.click();
-            } else if (!filePanelOverlay.classList.contains('hidden')) {
-                filePanelOverlay.classList.add('hidden');
-            }
-            // Otherwise, let xterm handle Esc (send to terminal).
-        });
-
-        // ============================================================
-        // File Upload (with progress via XHR)
-        // ============================================================
-        const btnUpload = document.getElementById('btn-upload');
-        const btnDownload = document.getElementById('btn-download');
-        const uploadInput = document.getElementById('upload-input');
-
-        /** @type {File[]} */
-        let uploadQueue = [];
-        let uploadQueueTotal = 0;
-        /** Maximum upload size in bytes (from server config, null if not set) */
-        let maxUploadSize = null;
-
-        /** Queue files for sequential upload.
-         *  @param {File[]|FileList} files
-         */
-        function queueUploads(files) {
-            const list = Array.from(files);
-            if (list.length === 0) return;
-            uploadQueue.push(...list);
-            uploadQueueTotal += list.length;
-            if (list.length > 1) {
-                showToast(`Queued ${list.length} files for upload`, 'info');
-            }
-            if (!btnUpload.disabled) {
-                processUploadQueue();
-            }
-        }
-
-        function processUploadQueue() {
-            if (uploadQueue.length === 0) {
-                uploadQueueTotal = 0;
-                return;
-            }
-            const next = uploadQueue.shift();
-            uploadFile(next);
-        }
-
-        /**
-         * Check if a file already exists on the server.
-         * @param {string} filename
-         * @returns {Promise<boolean>}
-         */
-        async function checkFileExists(filename) {
-            try {
-                const url = '/api/files/list?session_id=' + encodeURIComponent(currentSessionId || '');
-                const headers = {};
-                const authHeader = getAuthHeader();
-                if (authHeader) headers['Authorization'] = authHeader;
-                const resp = await fetch(url, { headers });
-                if (!resp.ok) return false;
-                const data = await resp.json();
-                return data.entries.some(e => e.name === filename);
-            } catch {
-                return false; // If we can't check, let the server handle it
-            }
-        }
-
-        /**
-         * Upload a file with progress tracking.
-         * @param {File} file
-         * @param {boolean} [overwrite=false]
-         */
-        async function uploadFile(file, overwrite = false) {
-            // Pre-flight: check file size against server limit
-            if (maxUploadSize && file.size > maxUploadSize) {
-                showToast(`${file.name}: file size (${formatSize(file.size)}) exceeds limit (${formatSize(maxUploadSize)})`, 'error');
-                processUploadQueue();
-                return;
-            }
-
-            // Pre-flight: check if file already exists to avoid ERR_CONNECTION_ABORTED
-            if (!overwrite) {
-                const exists = await checkFileExists(file.name);
-                if (exists) {
-                    const ok = await showConfirm(`"${file.name}" already exists. Overwrite it?`);
-                    if (ok) {
-                        uploadFile(file, true);
-                    } else {
-                        processUploadQueue();
-                    }
-                    return;
-                }
-            }
-
-            btnUpload.disabled = true;
-            const position = uploadQueueTotal - uploadQueue.length;
-            btnUpload.textContent = uploadQueueTotal > 1
-                ? `Uploading ${position}/${uploadQueueTotal}...`
-                : 'Uploading...';
-            setUploadProgress(0);
-
-            const xhr = new XMLHttpRequest();
-            const formData = new FormData();
-            formData.append('file', file);
-
-            xhr.upload.addEventListener('progress', (e) => {
-                if (e.lengthComputable) {
-                    const pct = Math.round((e.loaded / e.total) * 100);
-                    setUploadProgress(pct);
-                }
-            });
-
-            xhr.addEventListener('load', () => {
-                hideUploadProgress();
-                btnUpload.disabled = false;
-                btnUpload.innerHTML =
-                    '<span class="menu-item-icon"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 11V3M8 3L5 6M8 3l3 3M3 13h10"/></svg></span>Upload files';
-                if (xhr.status >= 200 && xhr.status < 300) {
-                    try {
-                        const data = JSON.parse(xhr.responseText);
-                        showToast(`Uploaded: ${data.filename} (${formatSize(data.size)})`, 'success');
-                    } catch (_) {
-                        showToast('Upload complete', 'success');
-                    }
-                    processUploadQueue();
-                } else if (xhr.status === 409) {
-                    showConfirm(`"${file.name}" already exists. Overwrite it?`).then((ok) => {
-                        if (ok) {
-                            uploadFile(file, true);
-                        } else {
-                            processUploadQueue();
-                        }
-                    });
-                } else {
-                    let errMsg = `Upload failed (${xhr.status})`;
-                    try {
-                        const err = JSON.parse(xhr.responseText);
-                        errMsg = err.error || errMsg;
-                    } catch (_) {}
-                    showToast(`${file.name}: ${errMsg}`, 'error');
-                    processUploadQueue();
-                }
-            });
-
-            xhr.addEventListener('error', () => {
-                hideUploadProgress();
-                btnUpload.disabled = false;
-                btnUpload.innerHTML =
-                    '<span class="menu-item-icon"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 11V3M8 3L5 6M8 3l3 3M3 13h10"/></svg></span>Upload files';
-                showToast(`${file.name}: upload failed (network error)`, 'error');
-                processUploadQueue();
-            });
-
-            let url = '/api/files/upload?session_id=' + encodeURIComponent(currentSessionId || '');
-            if (overwrite) url += '&overwrite=true';
-            xhr.open('POST', url);
-            const authHeader = getAuthHeader();
-            if (authHeader) xhr.setRequestHeader('Authorization', authHeader);
-            xhr.send(formData);
-        }
-
-        /**
-         * Build the Authorization header value from current credentials.
-         * @returns {string|null}
-         */
-        function getAuthHeader() {
-            if (!authRequired || !authCredentials || !authCredentials.credentials) return null;
-            if (authCredentials.method === 'basic') {
-                return 'Basic ' + authCredentials.credentials;
-            } else if (authCredentials.method === 'token') {
-                return 'Bearer ' + authCredentials.credentials;
-            }
-            return null;
-        }
-
-        /**
-         * Format byte size to human-readable string.
-         * @param {number} bytes
-         * @returns {string}
-         */
-        function formatSize(bytes) {
-            if (bytes < 1024) return bytes + ' B';
-            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-            if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-            return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
-        }
-
-        /** Escape a string for safe insertion into HTML.
-         *  @param {string} s
-         *  @returns {string}
-         */
-        function escapeHtml(s) {
-            // Entity strings are built from char codes so they can never be
-            // altered by any HTML-entity decoding applied to this file.
-            const ENT = {
-                '&': String.fromCharCode(38, 97, 109, 112, 59),      // amp
-                '<': String.fromCharCode(38, 108, 116, 59),          // lt
-                '>': String.fromCharCode(38, 103, 116, 59),          // gt
-                '"': String.fromCharCode(38, 113, 117, 111, 116, 59), // quot
-                "'": String.fromCharCode(38, 35, 51, 57, 59)         // apos
-            };
-            return String(s).replace(/[&<>"']/g, (c) => ENT[c]);
-        }
-
-        btnUpload.addEventListener('click', () => {
-            uploadInput.click();
-        });
-
-        uploadInput.addEventListener('change', () => {
-            if (!uploadInput.files || uploadInput.files.length === 0) return;
-            queueUploads(uploadInput.files);
-            uploadInput.value = '';
-        });
-
-        // ============================================================
-        // File List Panel
-        // ============================================================
-        const filePanelOverlay = document.getElementById('file-panel-overlay');
-        const filePanelBody = document.getElementById('file-panel-body');
-        const filePanelClose = document.getElementById('file-panel-close');
-        const filePanelRefresh = document.getElementById('file-panel-refresh');
-        const filePanelBreadcrumb = document.getElementById('file-panel-breadcrumb');
-        const showHiddenToggle = document.getElementById('show-hidden-toggle');
-        // Restore persisted "show hidden" preference (default: unchecked)
-        showHiddenToggle.checked = localStorage.getItem('ttyd.showHidden') === 'true';
-        let currentFilePath = '.';
-        let loadingTimer = null;
-        showHiddenToggle.addEventListener('change', () => {
-            // Persist the "show hidden" preference, then refresh the listing
-            localStorage.setItem('ttyd.showHidden', String(showHiddenToggle.checked));
-            showLoading();
-            requestFileList(currentFilePath);
-        });
-
-        btnDownload.addEventListener('click', () => {
-            openFilePanel();
-        });
-
-        filePanelClose.addEventListener('click', () => {
-            filePanelOverlay.classList.add('hidden');
-        });
-
-        filePanelRefresh.addEventListener('click', () => {
-            showLoading();
-            requestFileList(currentFilePath);
-        });
-
-        filePanelOverlay.addEventListener('click', (e) => {
-            if (e.target === filePanelOverlay) {
-                filePanelOverlay.classList.add('hidden');
-            }
-        });
-
-        // Show the loading spinner, but only after a short delay. If the
-        // listing arrives quickly we keep the previous content and render the
-        // new list directly — this avoids the spinner flashing for a few ms
-        // (the "flicker" seen on fast loads). Slow loads still get feedback.
-        const LOADING_DELAY = 250;
-        function showLoading() {
-            if (loadingTimer !== null) return; // already pending
-            loadingTimer = setTimeout(() => {
-                loadingTimer = null;
-                filePanelBody.innerHTML = '<div class="fp-loading"><div class="spinner"></div>Loading...</div>';
-            }, LOADING_DELAY);
-        }
-
-        function cancelLoading() {
-            if (loadingTimer !== null) {
-                clearTimeout(loadingTimer);
-                loadingTimer = null;
-            }
-        }
-
-        function renderBreadcrumb(path) {
-            filePanelBreadcrumb.innerHTML = '';
-            const rootCrumb = document.createElement('span');
-            rootCrumb.className = 'crumb';
-            rootCrumb.textContent = '~';
-            rootCrumb.addEventListener('click', () => {
-                showLoading();
-                requestFileList('.');
-            });
-            filePanelBreadcrumb.appendChild(rootCrumb);
-
-            if (path === '.' || path === '') return;
-            const parts = path.split('/').filter(Boolean);
-            let accum = '';
-            parts.forEach((part) => {
-                accum = accum ? accum + '/' + part : part;
-                const sep = document.createElement('span');
-                sep.className = 'sep';
-                sep.textContent = '/';
-                filePanelBreadcrumb.appendChild(sep);
-
-                const crumb = document.createElement('span');
-                crumb.className = 'crumb';
-                crumb.textContent = part;
-                const target = accum;
-                crumb.addEventListener('click', () => {
-                    showLoading();
-                    requestFileList(target);
-                });
-                filePanelBreadcrumb.appendChild(crumb);
-            });
-        }
-
-        function requestFileList(path) {
-            currentFilePath = path || '.';
-            renderBreadcrumb(currentFilePath);
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'file_list', data: { path: currentFilePath, show_hidden: showHiddenToggle.checked } }));
-            } else {
-                cancelLoading();
-                filePanelBody.innerHTML = '<div class="fp-empty">Not connected</div>';
-            }
-        }
-
-        function openFilePanel() {
-            filePanelOverlay.classList.remove('hidden');
-            showLoading();
-            requestFileList('.');
-            requestAnimationFrame(() => filePanelClose.focus());
-        }
-
-        function joinPath(base, name) {
-            if (base === '.' || base === '') return name;
-            return base + '/' + name;
-        }
-
-        function parentPath(path) {
-            if (path === '.' || path === '') return null;
-            const idx = path.lastIndexOf('/');
-            return idx > 0 ? path.substring(0, idx) : '.';
-        }
-
-        function renderFileList(data) {
-            cancelLoading();
-            const files = data.entries || [];
-            filePanelBody.innerHTML = '';
-
-            // ".." entry to go up
-            const parent = parentPath(currentFilePath);
-            if (parent !== null) {
-                const upItem = document.createElement('div');
-                upItem.className = 'file-item is-parent';
-                const upIcon = document.createElement('span');
-                upIcon.className = 'file-icon';
-                upIcon.innerHTML = ICONS.up;
-                const upName = document.createElement('span');
-                upName.className = 'file-item-name';
-                upName.textContent = '..';
-                upItem.appendChild(upIcon);
-                upItem.appendChild(upName);
-                upItem.addEventListener('click', () => {
-                    showLoading();
-                    requestFileList(parent);
-                });
-                filePanelBody.appendChild(upItem);
-            }
-
-            if (files.length === 0 && parent === null) {
-                filePanelBody.innerHTML =
-                    '<div class="fp-empty"><div class="empty-icon">&#128193;</div>No files in current directory</div>';
-                return;
-            }
-
-            files.forEach(f => {
-                const item = document.createElement('div');
-                item.className = 'file-item' + (f.is_dir ? ' is-dir' : '');
-
-                const icon = document.createElement('span');
-                icon.className = 'file-icon';
-                icon.innerHTML = f.is_dir ? ICONS.dir : ICONS.file;
-
-                const name = document.createElement('span');
-                name.className = 'file-item-name';
-                name.textContent = f.name;
-                name.title = f.name;
-
-                const meta = document.createElement('span');
-                meta.className = 'file-item-meta';
-                meta.textContent = f.is_dir ? 'DIR' : formatSize(f.size);
-
-                item.appendChild(icon);
-                item.appendChild(name);
-                item.appendChild(meta);
-
-                if (f.is_dir) {
-                    item.addEventListener('click', () => {
-                        showLoading();
-                        requestFileList(joinPath(currentFilePath, f.name));
-                    });
-                } else {
-                    const dl = document.createElement('button');
-                    dl.className = 'file-item-dl';
-                    dl.textContent = 'Download';
-                    dl.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        triggerDownload(joinPath(currentFilePath, f.name));
-                    });
-                    item.appendChild(dl);
-                }
-
-                filePanelBody.appendChild(item);
-            });
-        }
-
-        function triggerDownload(filename) {
-            const url = '/api/files/download?path=' + encodeURIComponent(filename) + '&session_id=' + encodeURIComponent(currentSessionId || '');
-            const headers = {};
-            const authHeader = getAuthHeader();
-            if (authHeader) headers['Authorization'] = authHeader;
-
-            showToast(`Downloading: ${filename}`, 'info');
-            fetch(url, { headers })
-                .then(resp => {
-                    if (!resp.ok) throw new Error(`Download failed (${resp.status})`);
-                    return resp.blob();
-                })
-                .then(blob => {
-                    const blobUrl = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = blobUrl;
-                    a.download = filename;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(blobUrl);
-                    showToast(`Downloaded: ${filename}`, 'success');
-                })
-                .catch(err => {
-                    showToast(err.message || 'Download failed', 'error');
-                });
-        }
-
-        // ============================================================
-        // Drag & Drop Upload
-        // ============================================================
-        const dropOverlay = document.getElementById('drop-overlay');
-        let dragCounter = 0;
-
-        document.addEventListener('dragenter', (e) => {
-            e.preventDefault();
-            dragCounter++;
-            if (dragCounter === 1) {
-                dropOverlay.classList.remove('hidden');
-            }
-        });
-
-        document.addEventListener('dragleave', (e) => {
-            e.preventDefault();
-            dragCounter--;
-            if (dragCounter <= 0) {
-                dragCounter = 0;
-                dropOverlay.classList.add('hidden');
-            }
-        });
-
-        document.addEventListener('dragover', (e) => {
-            e.preventDefault();
-        });
-
-        document.addEventListener('drop', (e) => {
-            e.preventDefault();
-            dragCounter = 0;
-            dropOverlay.classList.add('hidden');
-            const files = e.dataTransfer.files;
-            if (files && files.length > 0) {
-                queueUploads(files);
-            }
-        });
-    </script>
+    <script type="module" src="/js/main.js"></script>
 </body>
 </html>

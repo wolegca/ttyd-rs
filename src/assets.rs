@@ -73,6 +73,31 @@ mod tests {
         let html = std::str::from_utf8(&asset.data).unwrap();
         assert!(html.contains("id=\"terminal\""));
         assert!(html.contains("id=\"login-overlay\""));
-        assert!(html.contains("WebSocket"));
+        // The WebSocket logic lives in static/js/main.js; index.html must
+        // reference it (and the vendored xterm scripts) via script tags.
+        assert!(html.contains("/js/main.js"));
+        assert!(html.contains("/vendor/scripts/xterm.js"));
+        assert!(html.contains("/vendor/scripts/xterm-addon-fit.js"));
+        assert!(html.contains("/vendor/scripts/xterm-addon-web-links.js"));
+    }
+
+    #[test]
+    fn test_assets_frontend_modules_embedded() {
+        // All split frontend modules must be embedded assets.
+        for path in [
+            "js/config.js",
+            "js/icons.js",
+            "js/auth.js",
+            "js/terminal.js",
+            "js/toast.js",
+            "js/transfer.js",
+            "js/files.js",
+            "js/main.js",
+        ] {
+            assert!(
+                Assets::get(path).is_some(),
+                "missing embedded asset: {path}"
+            );
+        }
     }
 }

@@ -1,8 +1,9 @@
 use argon2::Argon2;
 /// Basic authentication implementation
-use argon2::password_hash::{
-    PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng,
-};
+///
+/// argon2 0.6 moved `PasswordHash` into the `phc` submodule of the
+/// `password-hash` crate (it used to sit directly under `password_hash::`).
+use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 use base64::{Engine as _, engine::general_purpose};
 
 /// PHC prefix identifying an Argon2id hash. A configured `password` value
@@ -20,13 +21,16 @@ pub fn is_valid_argon2_hash(s: &str) -> bool {
 /// `PasswordHash::new` alone is lenient (it accepts partial strings such as
 /// `$argon2id$malformed`), so the salt and digest fields and the algorithm
 /// identifier are checked explicitly.
-fn parse_argon2id_hash(s: &str) -> Result<PasswordHash<'_>, argon2::password_hash::Error> {
+fn parse_argon2id_hash(s: &str) -> Result<PasswordHash, argon2::password_hash::Error> {
     let parsed = PasswordHash::new(s)?;
     if parsed.algorithm != argon2::Algorithm::Argon2id.ident() {
         return Err(argon2::password_hash::Error::Algorithm);
     }
-    if parsed.salt.is_none() || parsed.hash.as_ref().is_none_or(|h| h.as_ref().is_empty()) {
-        return Err(argon2::password_hash::Error::PhcStringField);
+    if parsed.salt.is_none() {
+        return Err(argon2::password_hash::Error::SaltInvalid);
+    }
+    if parsed.hash.as_ref().is_none_or(|h| h.as_ref().is_empty()) {
+        return Err(argon2::password_hash::Error::OutputSize);
     }
     Ok(parsed)
 }
@@ -77,10 +81,15 @@ impl BasicAuth {
 
     /// Hash a plaintext password with Argon2id and a random salt, returning
     /// the PHC string suitable for the configuration file.
+    ///
+    /// As of argon2 0.6, `PasswordHasher::hash_password` no longer takes an
+    /// explicit salt argument: it generates one internally using the OS RNG
+    /// (requires the `getrandom` feature, which is on by default). To supply
+    /// your own salt bytes instead, use `hash_password_with_salt` from the
+    /// `PasswordHasher` trait.
     pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
-        let salt = SaltString::generate(&mut OsRng);
         Ok(Argon2::default()
-            .hash_password(password.as_bytes(), &salt)?
+            .hash_password(password.as_bytes())?
             .to_string())
     }
 
