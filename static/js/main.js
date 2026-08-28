@@ -6,7 +6,7 @@
 import { CONFIG } from './config.js';
 import { Auth } from './auth.js';
 import { term, fitAddon, writeSystemMessage, writeErrorMessage, initMobileKeys, onFontSizeChange } from './terminal.js';
-import { isConfirmOpen, cancelConfirm } from './toast.js';
+import { isConfirmOpen, cancelConfirm, showToast } from './toast.js';
 import { initTransfer, setServerConfig } from './transfer.js';
 import {
     openFilePanel, isFilePanelOpen, hideFilePanel, cancelLoading,
@@ -161,6 +161,7 @@ function sendMsg(type, data) {
             ws.send(JSON.stringify({ type, data }));
         } catch (e) {
             console.error('Failed to send message:', e);
+            showToast('消息发送失败，连接可能已断开', 'error');
         }
     }
 }
@@ -291,6 +292,7 @@ function connect() {
                         writeErrorMessage(`Error: ${msg.data.message}`);
                     }
                     if (msg.data.fatal) {
+                        showToast(`Fatal error: ${msg.data.message}`, 'error');
                         serverDisconnected = true;
                         if (ws) ws.close();
                     }
@@ -309,6 +311,12 @@ function connect() {
 
     ws.onerror = (error) => {
         console.error('WebSocket error:', error);
+        // The subsequent onclose handler surfaces the reconnect banner;
+        // only toast when the user is already in an active session, so
+        // initial connection failures don't double-notify.
+        if (hasAuthenticated && !serverDisconnected) {
+            showToast('WebSocket 连接发生错误', 'error');
+        }
     };
 
     ws.onclose = () => {
@@ -521,6 +529,7 @@ async function checkAuth() {
         }
     } catch (e) {
         console.error('Failed to check auth config:', e);
+        showToast('无法获取服务器配置，正在尝试直接连接…', 'error');
         connect();
     }
 }

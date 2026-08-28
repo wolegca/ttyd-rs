@@ -79,6 +79,9 @@ mod tests {
         assert!(html.contains("/vendor/scripts/xterm.js"));
         assert!(html.contains("/vendor/scripts/xterm-addon-fit.js"));
         assert!(html.contains("/vendor/scripts/xterm-addon-web-links.js"));
+        // all stylesheets should be referenced
+        assert!(html.contains("/vendor/scripts/xterm.css"));
+        assert!(html.contains("/css/main.css"));
     }
 
     #[test]

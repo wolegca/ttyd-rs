@@ -291,11 +291,16 @@ async function refreshServerFileCache() {
         const authHeader = Auth.httpHeader();
         if (authHeader) headers['Authorization'] = authHeader;
         const resp = await fetch(url, { headers });
-        if (!resp.ok) return;
+        if (!resp.ok) {
+            console.warn('File list request failed:', resp.status);
+            return;
+        }
         const data = await resp.json();
         serverFileCache = new Set(data.entries.map((e) => e.name));
-    } catch {
+    } catch (e) {
         // If we can't check, let the server's 409 flow handle conflicts.
+        console.warn('Failed to refresh server file cache:', e);
+        showToast('无法获取服务端文件列表，覆盖检查可能不可用', 'info');
     }
 }
 
