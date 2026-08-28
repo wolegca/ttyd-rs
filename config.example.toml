@@ -4,11 +4,13 @@
 #
 # All sections and fields are optional. Any that are omitted fall back to
 # the built-in default, so a minimal file with just `bind` and `command`
-# works. Unknown fields and sections, however, are rejected at startup —
-# remove unused keys rather than leaving them in. The one caveat: file
-# transfer is enabled by default, so without an [auth] section the server
-# refuses to start unless you set `[file_transfer] enabled = false` (see
-# the note below).
+# works. Unknown top-level fields and sections, however, are rejected at
+# startup — remove unused keys rather than leaving them in. Strictness
+# currently covers the top level only: an unrecognized key nested inside a
+# table (e.g. `reconect_windwo` under [session]) is silently ignored.
+# The one caveat: file transfer is enabled by default, so without an [auth]
+# section the server refuses to start unless you set
+# `[file_transfer] enabled = false` (see the note below).
 #
 # Validate a configuration without starting the server:
 #   ttyd-rs -t --config /path/to/config.toml
@@ -42,6 +44,7 @@ command = ["bash", "-l"]
 # Session configuration
 [session]
 # Session mode: "isolated", "shared_readonly", or "shared_readwrite"
+# ("shared-ro" / "shared-rw" are accepted aliases, matching --session-mode)
 # - isolated: Each client gets its own PTY (default)
 # - shared_readonly: Multiple clients share one PTY, read-only
 # - shared_readwrite: Multiple clients share one PTY, all can write
@@ -75,6 +78,16 @@ password = "$argon2id$v=19$m=19456,t=2,p=1$REPLACE_WITH_YOUR_GENERATED_HASH"
 # Note: any value starting with `$argon2id$` is treated as a pre-hashed
 # credential and validated at startup, so a literal plaintext password that
 # happens to begin with that prefix is not supported.
+
+# To use token authentication instead, replace method/username/password with:
+#
+#   method = "token"
+#   token = "<long random secret>"        # e.g. `openssl rand -hex 32`
+#
+# Clients then present it as `Authorization: Bearer <token>` over HTTP and as
+# the `credentials` field of the WebSocket `auth` message. Tokens are compared
+# by SHA-256 digest, so unlike basic auth there is no Argon2 work factor —
+# use a long random value, never a passphrase.
 
 # Audit logging configuration
 [audit]

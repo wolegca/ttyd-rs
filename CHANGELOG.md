@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- File uploads now verify that the target directory is writable (`access(2)`
+  with `W_OK`) before any multipart body is read. An unwritable target fails
+  fast with 403 and a message naming the directory, instead of transferring
+  (potentially large) file bytes and then surfacing an opaque 500. Covered by a
+  new integration test that is skipped when running as root.
+
+### Documentation
+
+- Corrected the annotated `src/` tree in CLAUDE.md: it omitted `lib.rs` and the
+  whole `server/websocket/` submodule split (`handshake`, `auth`,
+  `message_loop`, `pty_io`, `session_lifecycle`, `utils`), and referenced a
+  `ttyd/` reference checkout that is gitignored and normally absent. Added a
+  Configuration & CLI section describing config discovery, override precedence,
+  and the logging filter order.
+- Scoped the "unknown config fields are rejected" claim to the top level in
+  `README.md`, `config.example.toml`, and `docs/PROJECT_STATUS.md`: only
+  `Config` declares `deny_unknown_fields`, so unrecognized keys nested inside a
+  table are still silently ignored.
+- Documented the previously missing CLI flags (`-c/--config`,
+  `-w/--working-dir`, `--username`, `--password`, `--no-file-transfer`) and the
+  complete set of `Config::validate` rules, including the two safety guards.
+- `docs/PROTOCOL.md`: replaced the invented error-code table with the ten codes
+  the server actually emits, corrected the heartbeat timings (30s server ping /
+  90s timeout), distinguished the fixed 64 KB frame cap from `max_input_size`,
+  listed the real `auth_fail` reasons and `disconnect` reasons, and noted that
+  `auth_ok.readonly` is always `false` while `ready.readonly` is authoritative.
+- `docs/PROJECT_STATUS.md`: expanded the REST API reference with `/ws`, the
+  static routes, per-endpoint auth, and the real status codes (401/403/404/409/
+  413/429/503); corrected the audit event count (six emitted, two defined but
+  unwired) and the upload/static test counts.
+
 ## 1.1.0 — 2026-08-27
 
 ### Added

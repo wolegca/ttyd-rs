@@ -2,7 +2,9 @@
 
 **Target Platforms**: Linux only (no Windows or macOS support)
 
-**Current Status**: v1.1.0 released. All core milestones (M1–M6) are complete; see [PROJECT_STATUS.md](PROJECT_STATUS.md) for release verification status.
+**Current Status**: v1.1.0 released; post-1.1.0 work in progress (see
+[CHANGELOG.md → Unreleased](../CHANGELOG.md)). All core milestones (M1–M6) are
+complete; see [PROJECT_STATUS.md](PROJECT_STATUS.md) for release verification status.
 
 ---
 
@@ -43,7 +45,7 @@
 
 - Basic Auth + Token Auth with constant-time comparison (`subtle` crate)
 - Sliding-window rate limiting (per-IP), input validation (size, payload, credentials)
-- Audit logging (8 event types)
+- Audit logging (8 event types defined, 6 currently emitted)
 
 ---
 
@@ -115,8 +117,16 @@ Post-1.0 hardening (strict config validation, `--check-config`) shipped in v1.1.
 
 ### Compatibility Goals
 
-- **CLI**: 100% compatible with original ttyd CLI flags
-- **WebSocket Protocol**: Compatible with original ttyd protocol
-- **Configuration**: Support same config file format (with extensions)
+- **CLI**: Aims at the original's flag names for common options, but is **not
+  verified flag by flag** — the `ttyd/` reference checkout is gitignored and
+  usually absent, so treat `ttyd --help` as the authority before relying on
+  equivalence. ttyd-rs at least gives `-b` (bind address) and `-c` (config
+  file) meanings that differ from a naive reading of the original's flags
+- **WebSocket Protocol**: **Not wire-compatible** with original ttyd clients.
+  The message set is conceptually similar but the JSON envelope and message
+  types differ, so an adaptation layer is required (see
+  [PROTOCOL.md → Compatibility](PROTOCOL.md#compatibility))
+- **Configuration**: ttyd has no configuration file format (CLI only), so the
+  TOML schema is a ttyd-rs extension rather than a compatibility target
 
 ---

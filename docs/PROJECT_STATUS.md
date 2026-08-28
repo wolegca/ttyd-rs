@@ -32,9 +32,9 @@
 - **Input validation**: Terminal size bounds, payload size limits, credential format checks
 - **No path traversal**: Static files embedded at compile time via `rust-embed`; `..` path segments are explicitly rejected
 - **No XSS risk**: Server does not reflect user input into HTML
-- **Security headers on static responses**: strict same-origin `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` (see [Static File Serving](#static-file-serving--))
-- **Rate limiting**: Sliding window algorithm, per-IP tracking
-- **Audit logging**: 8 event types (connection, auth, session, error)
+- **Security headers on static responses**: strict same-origin `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` (see Static File Serving below)
+- **Rate limiting**: Sliding window algorithm, per-IP tracking, with a separate bucket for the file endpoints
+- **Audit logging**: JSONL events; six types are emitted (`connection_opened`, `connection_closed`, `auth_success`, `auth_failure`, `session_started`, `error_occurred`) and two more — `command_executed`, `session_ended` — are defined in the enum but not wired up yet
 
 ### 3. Resource Management — Excellent
 
@@ -57,9 +57,10 @@ Milestone history (M1–M6) is maintained in [docs/ROADMAP.md](ROADMAP.md#develo
 
 ### Security Layer (M4) — details
 - Password can be configured as an Argon2id PHC hash (`ttyd-rs --hash-password` generates it; plaintext triggers a startup warning)
-- Rate limiting: sliding window, per-IP
+- Rate limiting: sliding window, per-IP, with a separate limiter for file operations
 - Input validation: terminal size, payload, credentials
-- Audit logging: connection, auth, session events
+- Audit logging: `connection_opened` / `connection_closed`, `auth_success` / `auth_failure`, `session_started`, `error_occurred`
+- WebSocket auth fails closed when `[auth]` cannot be built, and defers credential hashing until after the rate-limit check
 
 ### Session Management (M5) — details
 - Session timeout and auto-cleanup (30s interval)
@@ -83,7 +84,8 @@ Milestone history (M1–M6) is maintained in [docs/ROADMAP.md](ROADMAP.md#develo
 - Content-Disposition filename sanitization
 - Session isolation: invalid session_id returns 404 (no fallback)
 - `UploadFileGuard` (RAII): automatic partial-file cleanup on all error paths
-- 6 dedicated upload integration tests (success, conflict, overwrite, size-exceeded, missing field, binary)
+- Pre-flight directory write-permission check (`access(2)`/`W_OK`): an unwritable target returns 403 before any upload bytes are read, instead of a mid-stream 500
+- 9 dedicated upload integration tests (success, conflict, overwrite, size-exceeded, missing field, binary, read-only directory, no leftover temp files, original intact after a failed size check)
 - Configurable: enable/disable, fixed directory override, max upload size
 
 ### Static File Serving ✅
@@ -93,7 +95,7 @@ Milestone history (M1–M6) is maintained in [docs/ROADMAP.md](ROADMAP.md#develo
 - **Caching**: vendor assets served with `Cache-Control: public, max-age=31536000, immutable`; `index.html` served with `Cache-Control: no-cache` so clients pick up a new entry point after an upgrade
 - **Security headers**: strict same-origin `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
 - **Path traversal**: `..` segments explicitly rejected (404)
-- 4 dedicated tests covering font non-compression, cache headers, security headers, and path traversal
+- 6 dedicated tests covering font non-compression, cache headers, security headers, path traversal, `[compression] enabled = false`, and API responses staying uncompressed
 
 ---
 
@@ -105,17 +107,33 @@ See [Project Structure](../CLAUDE.md#project-structure) in CLAUDE.md for the ann
 
 ## REST API
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | /api/health | Health check |
-| GET | /api/config | Client-facing config (auth method, max_upload_size, file_transfer_enabled) |
-| GET | /api/sessions | List active sessions |
-| GET | /api/sessions/:id | Get session info |
-| DELETE | /api/sessions/:id | Terminate session |
-| GET | /api/stats | Server statistics |
-| POST | /api/files/upload | Upload file (multipart; requires auth unless explicitly enabled for an unauthenticated loopback deployment) |
-| GET | /api/files/download?path= | Download file (same access policy as upload) |
-| GET | /api/files/list | List files in working dir (same access policy as upload) |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | /api/health | public | Health check — `{status, version}` |
+| GET | /api/config | public | Client-facing config (`auth_method` always; `max_upload_size` and `file_transfer_enabled` only when auth is disabled) |
+| GET | /ws | over socket | WebSocket endpoint. Authentication happens on the socket, not via HTTP headers. Returns 503 once `max_connections` is reached |
+| GET | /api/sessions | required | List active sessions — `{sessions, total}` |
+| GET | /api/sessions/:id | required | Session info; 404 `{error}` if unknown |
+| DELETE | /api/sessions/:id | required | Terminate session; 204 on success, 404 if unknown |
+| GET | /api/stats | required | Server statistics |
+| POST | /api/files/upload | required¹ | Multipart upload; query `session_id`, `overwrite`. Returns `{filename, size}`; 403 if the target directory is not writable (checked before the body is read), 409 if the file exists and `overwrite` is not set, 413 if it exceeds `max_upload_size`, 404 for an unknown `session_id` |
+| GET | /api/files/download?path= | required¹ | Streaming download with `Content-Disposition`; 403 on traversal or an unresolvable path, 404 if missing |
+| GET | /api/files/list | required¹ | Directory listing (`path` defaults to `.`); dotfiles hidden unless `show_hidden=true` |
+| GET | / and /* | public | Embedded static assets (`index.html`, `vendor/*`), gzipped and security-headered |
+
+¹ Present only when `[file_transfer] enabled = true`, and additionally guarded by
+a dedicated rate limiter that answers 429 with
+`{error: "Rate limit exceeded. Try again in N seconds"}`.
+The auth middleware wraps the whole protected group (sessions, stats, files)
+whenever `[auth]` is configured, so file routes are never reachable without
+credentials in that setup. `create_router` applies it uniformly;
+`[file_transfer] allow_unauthenticated` is not a routing exemption but a
+startup gate — it must be `true` for the server to boot at all when file
+transfer is enabled and no `[auth]` section exists.
+
+Protected routes answer 401 `{error: "Unauthorized"}` when credentials are
+missing or invalid: send `Authorization: Basic <base64 user:password>` for
+basic auth or `Authorization: Bearer <token>` for token auth.
 
 ### Examples
 
@@ -142,21 +160,30 @@ See [docs/PROTOCOL.md](PROTOCOL.md) for the full message type reference, state m
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| -p, --port | 7681 | Listen port |
+| -p, --port | config `bind` / 7681 | Listen port; applied to the configured bind address |
 | -b, --bind | 127.0.0.1 | Bind address: a bare IP (IPv4 or IPv6) or an `ip:port` socket address |
-| -s, --shell | bash | Shell command; supports shell-style quoting/escaping (e.g. `-s 'bash -c "echo hi"'`) |
-| --session-mode | isolated | Session mode |
-| --session-timeout | 3600 | Session timeout (seconds) |
-| --reconnect-window | 60 | Reconnect window (seconds) |
+| -c, --config | — | Configuration file path. When omitted, a `config.toml` next to the executable is loaded if present, otherwise built-in defaults apply |
+| -s, --shell | bash --login | Shell command; supports shell-style quoting/escaping (e.g. `-s 'bash -c "echo hi"'`) |
+| -w, --working-dir | `$HOME` | Working directory for the shell |
+| --log-level | info | Log level: bare level name (`trace`, `debug`, `info`, `warn`, `error`, `off`, case-insensitive) or an EnvFilter directive (e.g. `ttyd_rs=debug`); invalid values are rejected at startup. Resolution order: `--log-level` → `RUST_LOG` → config `log_level` |
+| --session-mode | isolated | Session mode: `isolated`, `shared-ro`/`shared_readonly`, `shared-rw`/`shared_readwrite` |
+| --session-timeout | 3600 | Session timeout (seconds); 0 disables it |
+| --reconnect-window | 60 | How long empty sessions are kept for reconnection (seconds) |
 | --max-connections | 100 | Max concurrent connections |
-| --auth | false | Enable authentication |
-| --allow-unauthenticated | false | Explicitly allow an unauthenticated non-loopback terminal (trusted reverse proxy only). Three-state: accepts `--flag=true\|false` to override the config file in either direction; the bare flag means `true` |
-| --trust-proxy | false | Trust proxy headers. Three-state: accepts `--flag=true\|false`; the bare flag means `true` |
+| --auth | false | Enable basic authentication. Replaces the whole `[auth]` table from the config file; requires `--username` and `--password` |
+| --username | — | Basic auth username; requires `--auth` |
+| --password | — | Basic auth password (plaintext or an Argon2id PHC hash); requires `--auth` |
 | --audit | false | Enable audit logging |
 | --audit-file | — | Audit log file path (requires `--audit`) |
-| --log-level | info | Log level: bare level name (`trace`, `debug`, `info`, `warn`, `error`, `off`, case-insensitive) or an EnvFilter directive (e.g. `ttyd_rs=debug`); invalid values are rejected at startup |
+| --trust-proxy | false | Trust `X-Real-IP` / `X-Forwarded-For` for the client IP. Three-state: accepts `--flag=true\|false`; the bare flag means `true` |
+| --allow-unauthenticated | false | Explicitly allow an unauthenticated non-loopback terminal (trusted reverse proxy only). Three-state, same rules as `--trust-proxy` |
+| --no-file-transfer | false | Disable the upload/download/list endpoints entirely |
 | --hash-password | — | Read a password from stdin, print its Argon2id hash, and exit |
 | -t, --check-config | — | Load the configuration, apply CLI overrides, run validation, and exit without starting the server. Exit code 0 = valid |
+
+Token auth and the `[validation]`, `[rate_limit]`, `[compression]`, and
+`[file_transfer] allow_unauthenticated` settings have no CLI equivalents — they
+are config-file only.
 
 ### Configuration Validation
 
@@ -168,10 +195,24 @@ The configuration is validated after merging config file + CLI overrides
 - `log_level` must be a bare level name or an EnvFilter directive containing
   `=`; anything else is rejected (previously it silently filtered out nearly
   all log output).
-- Auth `method` matching is case-insensitive (`basic` / `token`).
-- Unknown fields or sections in the config file are rejected
-  (`deny_unknown_fields`), so typos fail loudly instead of falling back to
-  defaults.
+- `session.mode` must be one of `isolated`, `shared-ro`/`shared_readonly`, or
+  `shared-rw`/`shared_readwrite` (case-insensitive).
+- `[validation]` ranges must be ordered: `min_cols` < `max_cols` and
+  `min_rows` < `max_rows`.
+- `[rate_limit]` `max_requests` and `window_seconds` must both be greater than 0.
+- `[compression] level` must be within 1..=9 when compression is enabled.
+- Auth `method` matching is case-insensitive (`basic` / `token`); `basic`
+  requires both `username` and `password`, `token` requires `token`, and a
+  `password` starting with `$argon2id$` must be a well-formed PHC string.
+- Safety guards refuse startup unless explicitly overridden: file transfer
+  without `[auth]` (needs `[file_transfer] allow_unauthenticated = true` or
+  `--no-file-transfer`), and an unauthenticated terminal bound to a
+  non-loopback address (needs `allow_unauthenticated = true`).
+- Unknown **top-level** fields or sections in the config file are rejected
+  (`deny_unknown_fields` on `Config`), so a typo like `[file_tranfer]` fails
+  loudly instead of falling back to defaults. Only the top level is strict
+  today: the nested tables do not declare `deny_unknown_fields`, so an
+  unrecognized key inside one of them is still silently ignored.
 
 Pre-flight check for deployments: `ttyd-rs -t --config /etc/ttyd-rs/config.toml`.
 

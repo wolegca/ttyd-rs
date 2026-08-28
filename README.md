@@ -76,9 +76,12 @@ enabled = true
 Config files are *partial*: any omitted top-level table (`[auth]`, `[session]`,
 `[validation]`, `[rate_limit]`, `[audit]`, ...) and any omitted field inside them
 falls back to the built-in default (same defaults the CLI uses). So a file with
-just `bind` and `command` works. Unknown fields and sections, however, are
-rejected at startup — a typo like `[file_tranfer]` fails loudly instead of
-being silently ignored. Note that file transfer is enabled by default,
+just `bind` and `command` works. Unknown top-level fields and sections, however,
+are rejected at startup — a typo like `[file_tranfer]` fails loudly instead of
+being silently ignored. Caveat: strictness currently applies only to the
+top level, so an unrecognized key *nested inside* a table (for example
+`reconect_windwo` under `[session]`) is still silently ignored.
+Note that file transfer is enabled by default,
 so a config with no `[auth]` will refuse to start unless you disable
 `[file_transfer]` — add auth or set `[file_transfer] enabled = false`.
 An unauthenticated terminal is also refused on non-loopback addresses unless
@@ -88,16 +91,25 @@ that enforces authentication.
 CLI arguments override config file values. Run `ttyd-rs --help` for all options.
 Notable behaviors:
 
+- Without `--config`, the binary also looks for a `config.toml` next to itself,
+  and falls back to built-in defaults when neither is present.
+- `--auth` replaces the whole `[auth]` table (as basic auth using
+  `--username`/`--password`); those two flags require `--auth` on their own.
 - `--bind` accepts a bare IP (`127.0.0.1`, `::1`) or an explicit `ip:port`
   socket address; combined with `--port`, the explicit socket address wins.
 - `--shell` honors shell-style quoting/escaping, e.g. `-s 'bash -c "echo hi"'`.
+- `--session-mode` accepts both spellings: `shared-ro`/`shared-rw` and
+  `shared_readonly`/`shared_readwrite`.
+- `--no-file-transfer` turns off the upload/download/list endpoints, which is
+  the quickest way to satisfy the unauthenticated-file-transfer safety check.
 - `--audit-file` requires `--audit`; using it alone is an error.
 - `--trust-proxy` and `--allow-unauthenticated` accept explicit values
   (`--flag=true|false`), so the CLI can override the config file in either
   direction; the bare flag means `true`.
 - `--log-level` accepts bare level names (`trace`, `debug`, `info`, `warn`,
   `error`, `off`, case-insensitive) or EnvFilter directives (e.g.
-  `ttyd_rs=debug`); invalid values are rejected at startup.
+  `ttyd_rs=debug`); invalid values are rejected at startup. The effective
+  filter resolves as `--log-level` → `RUST_LOG` → config `log_level`.
 
 Validate a configuration without starting the server (like `nginx -t`):
 
