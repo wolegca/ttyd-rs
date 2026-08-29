@@ -5,6 +5,8 @@ A Rust rewrite of [ttyd](https://github.com/tsl0922/ttyd) — Share your termina
 **Status**: Production-ready
 **Platform**: Linux only
 
+![ttyd-rs screenshot](docs/img/screenshot.png)
+
 ## Features
 
 - **Web Terminal**: Full xterm.js terminal in the browser via WebSocket
