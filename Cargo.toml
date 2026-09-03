@@ -29,9 +29,9 @@ subtle = "2.6.1"
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["fs", "full", "io-util"] }
 tokio-util = { version = "0.7.19", features = ["io", "rt"] }
-toml = "1.1.4"
+toml = "1.1.5"
 tower = "0.5.3"
-tower-http = { version = "0.7.0", features = ["compression-gzip"] }
+tower-http = { version = "0.7.1", features = ["compression-gzip"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 uuid = { version = "1.26.0", features = ["v4"] }
@@ -42,7 +42,7 @@ shlex = "2.0.1"
 default = []
 
 [dev-dependencies]
-flate2 = "1.1.9"
+flate2 = "1.1.10"
 tokio-tungstenite = "0.30.0"
 
 [profile.release]

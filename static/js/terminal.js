@@ -92,10 +92,21 @@ document.getElementById('btn-font-inc').addEventListener('click', zoomIn);
 document.getElementById('btn-font-dec').addEventListener('click', zoomOut);
 document.getElementById('btn-font-reset').addEventListener('click', resetFont);
 
-// Keyboard zoom (Ctrl/Cmd + = / - / 0)
+// Keyboard zoom (Ctrl/Cmd + = / - / 0) + Copy shortcut (Ctrl/Cmd + Shift + C)
 window.addEventListener('keydown', (e) => {
     const mod = e.ctrlKey || e.metaKey;
     if (!mod) return;
+
+    // Ctrl/Cmd + Shift + C: Copy selection
+    if (e.shiftKey && e.key === 'C') {
+        e.preventDefault();
+        if (term.hasSelection()) {
+            copySelection();
+        }
+        return;
+    }
+
+    // Font size shortcuts
     if (e.key === '=' || e.key === '+') { e.preventDefault(); zoomIn(); }
     else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomOut(); }
     else if (e.key === '0') { e.preventDefault(); resetFont(); }
@@ -147,7 +158,8 @@ term.onSelectionChange(() => {
     const hasSel = term.hasSelection();
     copyBtn.classList.toggle('visible', !!hasSel);
 });
-copyBtn.addEventListener('click', async () => {
+
+async function copySelection() {
     const sel = term.getSelection();
     if (!sel) return;
     try {
@@ -169,6 +181,22 @@ copyBtn.addEventListener('click', async () => {
             showToast('Copy failed', 'error');
         }
     }
+}
+
+copyBtn.addEventListener('click', copySelection);
+
+// Double-click on selection to copy
+let lastClickTime = 0;
+term.element.addEventListener('mousedown', () => {
+    const now = Date.now();
+    if (now - lastClickTime < 300) { // 300ms double-click threshold
+        setTimeout(() => {
+            if (term.hasSelection()) {
+                copySelection();
+            }
+        }, 10); // Small delay to let selection complete
+    }
+    lastClickTime = now;
 });
 
 // ============================================================

@@ -168,6 +168,31 @@ function renderTransferPanel() {
     } else {
         uploadIndicator.classList.remove('hidden');
     }
+
+    // Auto-expand/collapse logic:
+    // - Expand when first item becomes active
+    // - Keep open if there are failures
+    // - Auto-collapse after 2s when all done successfully
+    const hasActive = active.length > 0;
+    const hasFailed = transferItems.some((i) => i.state === 'failed');
+
+    if (hasActive && !uploadPanel.classList.contains('open')) {
+        // First upload/download started: auto-expand
+        uploadPanel.classList.add('open');
+        btnUploadIndicator.classList.add('active');
+    } else if (!hasActive && uploadPanel.classList.contains('open')) {
+        // All transfers finished
+        if (hasFailed) {
+            // Keep open if there are failures (user needs to see)
+            btnUploadIndicator.classList.add('active');
+        } else {
+            // All succeeded: auto-collapse after 2s
+            setTimeout(() => {
+                uploadPanel.classList.remove('open');
+                btnUploadIndicator.classList.remove('active');
+            }, 2000);
+        }
+    }
 }
 
 function setUploadProgress(percent) {
@@ -247,6 +272,7 @@ let maxUploadSize = null;
 /** @param {object} config response from /api/config */
 export function setServerConfig(config) {
     maxUploadSize = config.max_upload_size || null;
+    return config.file_transfer_enabled !== false; // Return whether file transfer is enabled
 }
 
 /** Queue files for sequential upload.

@@ -4,7 +4,7 @@
 
 import { CONFIG, Prefs } from './config.js';
 import { ICONS } from './icons.js';
-import { formatSize, triggerDownload } from './transfer.js';
+import { formatSize, triggerDownload, escapeHtml } from './transfer.js';
 
 const filePanelOverlay = document.getElementById('file-panel-overlay');
 const filePanelBody = document.getElementById('file-panel-body');

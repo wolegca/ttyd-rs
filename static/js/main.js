@@ -141,6 +141,7 @@ let serverDisconnected = false;
 let authFailed = false;
 let hasAuthenticated = false;
 let readOnly = false;
+let hasShownReadOnlyWarning = false; // Track if we've shown the one-time warning
 // True while a reconnect attempt is starting up (used to debounce
 // the Enter-to-reconnect path in term.onData).
 let reconnecting = false;
@@ -260,6 +261,7 @@ function connect() {
                     hideBanner();
                     updateSessionInfo(msg.data.session_id);
                     readOnly = msg.data.readonly || false;
+                    hasShownReadOnlyWarning = false; // Reset warning flag for new session
                     setReadOnlyBadge(readOnly);
                     if (readOnly) {
                         writeSystemMessage('Read-only mode: your keystrokes will not be sent.');
@@ -286,7 +288,8 @@ function connect() {
                     break;
                 case 'error':
                     console.error('Error:', msg.data);
-                    if (msg.data.code === 'FILE_LIST_ERROR' && isFilePanelOpen()) {
+                    // File-related errors should update the file panel if it's open
+                    if ((msg.data.code === 'FILE_LIST_ERROR' || msg.data.code === 'FILE_TRANSFER_DISABLED') && isFilePanelOpen()) {
                         renderFileListError(msg.data.message);
                     } else {
                         writeErrorMessage(`Error: ${msg.data.message}`);
@@ -352,10 +355,27 @@ function connect() {
         }
 
         const delay = ReconnectPolicy.nextDelay();
-        statusText.textContent = `Reconnecting (${ReconnectPolicy.count}/${CONFIG.reconnect.MAX_RETRIES})...`;
+        const retryText = `Reconnecting (${ReconnectPolicy.count}/${CONFIG.reconnect.MAX_RETRIES})`;
+        statusText.textContent = retryText + '...';
         console.log(`Reconnecting in ${delay}ms (attempt ${ReconnectPolicy.count}/${CONFIG.reconnect.MAX_RETRIES})`);
-        showBanner('reconnecting', `Reconnecting (${ReconnectPolicy.count}/${CONFIG.reconnect.MAX_RETRIES})...`);
-        reconnectTimer = setTimeout(connect, delay);
+
+        // Show countdown in banner
+        let remaining = Math.ceil(delay / 1000);
+        showBanner('reconnecting', `${retryText} — retrying in ${remaining}s`);
+
+        const countdownInterval = setInterval(() => {
+            remaining--;
+            if (remaining > 0) {
+                bannerText.textContent = `${retryText} — retrying in ${remaining}s`;
+            } else {
+                clearInterval(countdownInterval);
+            }
+        }, 1000);
+
+        reconnectTimer = setTimeout(() => {
+            clearInterval(countdownInterval);
+            connect();
+        }, delay);
     };
 }
 
@@ -513,7 +533,13 @@ async function checkAuth() {
     try {
         const resp = await fetch('/api/config');
         const config = await resp.json();
-        setServerConfig(config);
+        const fileTransferEnabled = setServerConfig(config);
+
+        // Hide file menu if file transfer is disabled
+        if (!fileTransferEnabled) {
+            menuWrapper.classList.add('hidden');
+        }
+
         const authMethod = Auth.init(config);
         if (authMethod) {
             loginOverlay.classList.remove('hidden');
@@ -550,9 +576,15 @@ term.onData((data) => {
         }
         return;
     }
-    if (!readOnly) {
-        sendMsg('input', { payload: data });
+    if (readOnly) {
+        // Show one-time warning on first input attempt
+        if (!hasShownReadOnlyWarning) {
+            hasShownReadOnlyWarning = true;
+            showToast('This is a read-only session. You cannot send input.', 'info');
+        }
+        return;
     }
+    sendMsg('input', { payload: data });
 });
 
 initMobileKeys(
@@ -643,18 +675,51 @@ function setMenuVisible(visible) {
 }
 
 // ============================================================
-// Escape-key handling (menus + modals, without stealing terminal Esc)
+// Global keyboard shortcuts
 // ============================================================
 document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
-    if (menuDropdown.classList.contains('open') || settingsMenu.classList.contains('open') || uploadPanel.classList.contains('open')) {
-        closeAllMenus();
-    } else if (isConfirmOpen()) {
-        cancelConfirm();
-    } else if (isFilePanelOpen()) {
-        hideFilePanel();
+    // Escape: close menus/modals without stealing terminal Esc
+    if (e.key === 'Escape') {
+        if (menuDropdown.classList.contains('open') || settingsMenu.classList.contains('open') || uploadPanel.classList.contains('open')) {
+            closeAllMenus();
+        } else if (isConfirmOpen()) {
+            cancelConfirm();
+        } else if (isFilePanelOpen()) {
+            hideFilePanel();
+        }
+        // Otherwise, let xterm handle Esc (send to terminal).
+        return;
     }
-    // Otherwise, let xterm handle Esc (send to terminal).
+
+    // Skip shortcuts when typing in input fields or login overlay is visible
+    if (e.target.tagName === 'INPUT' || !loginOverlay.classList.contains('hidden')) {
+        return;
+    }
+
+    const mod = e.ctrlKey || e.metaKey;
+
+    // Ctrl/Cmd + K: Clear terminal
+    if (mod && e.key === 'k') {
+        e.preventDefault();
+        term.clear();
+        return;
+    }
+
+    // Ctrl/Cmd + Shift + F: Open file browser
+    if (mod && e.shiftKey && e.key === 'F') {
+        e.preventDefault();
+        if (!isFilePanelOpen()) {
+            openFilePanel();
+        }
+        return;
+    }
+
+    // Ctrl/Cmd + Shift + U: Open upload dialog
+    if (mod && e.shiftKey && e.key === 'U') {
+        e.preventDefault();
+        uploadInput.click();
+        return;
+    }
 });
 
 // ============================================================

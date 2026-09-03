@@ -284,6 +284,18 @@ button {
 }
 #readonly-badge.visible {
   display: inline-block;
+  animation: badge-pulse 2s var(--ease) infinite;
+}
+
+@keyframes badge-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.05);
+  }
 }
 
 /* Icon buttons */

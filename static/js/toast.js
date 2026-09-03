@@ -42,6 +42,7 @@ document.getElementById('btn-toast-reset').addEventListener('click', () => {
 // ============================================================
 const toastContainer = document.getElementById('toast-container');
 const TOAST_ICONS = { success: ICONS.toastSuccess, error: ICONS.toastError, info: ICONS.toastInfo };
+const MAX_TOASTS = 3; // Maximum visible toasts at once
 
 /**
  * Show a toast notification.
@@ -50,6 +51,23 @@ const TOAST_ICONS = { success: ICONS.toastSuccess, error: ICONS.toastError, info
  * @param {number} [duration] seconds; defaults to the configured value; 0 = sticky
  */
 export function showToast(message, type = 'success', duration = toast.duration) {
+    // Check if same message already visible (de-duplicate)
+    const existing = Array.from(toastContainer.querySelectorAll('.toast')).find(
+        (t) => t.querySelector('.toast-text')?.textContent === message
+    );
+    if (existing) {
+        // Message already shown, flash it briefly to indicate duplicate
+        existing.style.transform = 'scale(1.05)';
+        setTimeout(() => { existing.style.transform = ''; }, 150);
+        return;
+    }
+
+    // Limit to MAX_TOASTS: remove oldest if we're at capacity
+    const allToasts = toastContainer.querySelectorAll('.toast');
+    if (allToasts.length >= MAX_TOASTS) {
+        allToasts[0].remove();
+    }
+
     const el = document.createElement('div');
     el.className = `toast ${type}`;
     const icon = document.createElement('span');
@@ -67,6 +85,20 @@ export function showToast(message, type = 'success', duration = toast.duration) 
     el.appendChild(icon);
     el.appendChild(text);
     el.appendChild(close);
+
+    // Click toast to copy its text (useful for error messages)
+    text.style.cursor = 'pointer';
+    text.addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(message);
+            // Brief visual feedback
+            text.style.opacity = '0.5';
+            setTimeout(() => { text.style.opacity = ''; }, 100);
+        } catch (_) {
+            // Ignore clipboard errors
+        }
+    });
+
     toastContainer.appendChild(el);
 
     let removed = false;
