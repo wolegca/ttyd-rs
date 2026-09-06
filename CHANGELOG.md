@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Reconnect loop when a stale `?session=` URL parameter pointed to an already
+  reclaimed session: the fatal `SESSION_NOT_FOUND` error no longer keeps the
+  dead session ID, so the next Reconnect starts a fresh session instead of
+  failing forever (`static/js/main.js`).
+- `file_list` WebSocket messages now go through `sendMsg()` for consistent
+  try/catch and toast error handling, matching all other WS messages
+  (`static/js/main.js`).
+
 ## 1.2.1 — 2026-08-28
 
 ### Fixed

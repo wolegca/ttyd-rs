@@ -150,7 +150,7 @@ const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 const wsUrl = `${protocol}//${window.location.host}/ws`;
 
 const urlParams = new URLSearchParams(window.location.search);
-const joinSessionId = urlParams.get('session');
+let joinSessionId = urlParams.get('session');
 
 /** Safely send a JSON message over the WebSocket.
  *  @param {string} type
@@ -296,6 +296,14 @@ function connect() {
                     }
                     if (msg.data.fatal) {
                         showToast(`Fatal error: ${msg.data.message}`, 'error');
+                        // A stale join target (e.g. from a ?session= URL param)
+                        // will keep failing on every reconnect. Clear it so the
+                        // next attempt starts a fresh session instead of looping
+                        // on SESSION_NOT_FOUND.
+                        if (msg.data.code === 'SESSION_NOT_FOUND') {
+                            joinSessionId = null;
+                            clearSessionInfo();
+                        }
                         serverDisconnected = true;
                         if (ws) ws.close();
                     }
@@ -732,7 +740,7 @@ initTransfer(
 
 initFilePanel((path) => {
     if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'file_list', data: { path, show_hidden: showHiddenEnabled() } }));
+        sendMsg('file_list', { path, show_hidden: showHiddenEnabled() });
     } else {
         cancelLoading();
         renderNotConnected();
