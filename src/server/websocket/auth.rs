@@ -251,7 +251,11 @@ async fn perform_auth(
             }
         },
         _ => {
-            // Connection closed or non-text message
+            // Connection closed or unexpected frame type (binary, ping, etc.)
+            warn!(
+                "Unexpected message during auth phase from {}; closing connection",
+                remote_addr
+            );
             return Ok(AuthResult::Close(CloseReason::ClientClosed));
         }
     };

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Shared state for file transfer handlers
 #[derive(Clone)]
@@ -73,10 +73,14 @@ impl UploadFileGuard {
 
 impl Drop for UploadFileGuard {
     fn drop(&mut self) {
-        if !self.0.as_os_str().is_empty() {
-            // Best-effort cleanup; the file may have already been removed
-            // or the path may be invalid. Ignore errors.
-            let _ = std::fs::remove_file(&self.0);
+        if !self.0.as_os_str().is_empty()
+            && let Err(e) = std::fs::remove_file(&self.0)
+        {
+            warn!(
+                "Failed to clean up partial upload at {}: {}",
+                self.0.display(),
+                e
+            );
         }
     }
 }
@@ -175,27 +179,30 @@ fn safe_resolve(base: &Path, relative: &str) -> Result<PathBuf, (StatusCode, Str
     let candidate = base.join(relative);
 
     // Canonicalize the base to get a stable prefix
-    let canonical_base = base.canonicalize().map_err(|_| {
+    let canonical_base = base.canonicalize().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            "Base directory not accessible".to_string(),
+            format!("Base directory not accessible: {}", e),
         )
     })?;
 
     // For files that don't exist yet (upload), canonicalize the parent
     let canonical_candidate = if candidate.exists() {
-        candidate
-            .canonicalize()
-            .map_err(|_| (StatusCode::FORBIDDEN, "Path resolution failed".to_string()))?
+        candidate.canonicalize().map_err(|e| {
+            (
+                StatusCode::FORBIDDEN,
+                format!("Path resolution failed: {}", e),
+            )
+        })?
     } else {
         // Canonicalize parent directory, then append filename
         let parent = candidate
             .parent()
             .ok_or_else(|| (StatusCode::FORBIDDEN, "Invalid path".to_string()))?;
-        let canonical_parent = parent.canonicalize().map_err(|_| {
+        let canonical_parent = parent.canonicalize().map_err(|e| {
             (
                 StatusCode::FORBIDDEN,
-                "Parent directory not accessible".to_string(),
+                format!("Parent directory not accessible: {}", e),
             )
         })?;
         let file_name = candidate

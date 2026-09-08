@@ -153,6 +153,19 @@ impl AuditLogger {
         .await;
     }
 
+    /// Log a session ended event
+    pub async fn log_session_ended(&self, remote_addr: &str, session_id: &str) {
+        self.log_event(AuditEvent {
+            timestamp: Utc::now(),
+            event_type: AuditEventType::SessionEnded,
+            remote_addr: remote_addr.to_string(),
+            username: None,
+            session_id: Some(session_id.to_string()),
+            details: "Terminal session ended".to_string(),
+        })
+        .await;
+    }
+
     /// Log an error event
     pub async fn log_error(&self, remote_addr: &str, session_id: &str, error: &str) {
         self.log_event(AuditEvent {

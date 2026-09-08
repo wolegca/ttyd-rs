@@ -77,7 +77,7 @@ pub(crate) async fn create_or_join_session(
 
     // Create a new session (either no Join was received, or the target was not found)
     let session_id = uuid::Uuid::new_v4().to_string();
-    let new_session = state
+    let new_session = match state
         .session_manager
         .create_session(
             session_id.clone(),
@@ -92,9 +92,22 @@ pub(crate) async fn create_or_join_session(
             None,
         )
         .await
-        .map_err(|e| {
+    {
+        Ok(session) => session,
+        Err(e) => {
             warn!("Failed to create session: {}", e);
-        })?;
+            // Notify the client before closing so they see a reason rather
+            // than a silent WebSocket drop.
+            let _ = send_ws_error(
+                ws_sender,
+                "SESSION_CREATE_FAILED",
+                format!("Failed to start terminal session: {}", e),
+                true,
+            )
+            .await;
+            return Err(());
+        }
+    };
 
     Ok(ResolvedSession {
         session: new_session,

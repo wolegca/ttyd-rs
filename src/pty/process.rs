@@ -17,7 +17,7 @@ use std::ffi::CString;
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
 use std::path::Path;
 use thiserror::Error;
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[derive(Debug, Error)]
 pub enum PtyError {
@@ -271,7 +271,9 @@ impl PtyProcess {
         if flags >= 0 {
             let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
             if rc < 0 {
-                debug!(
+                // FD_CLOEXEC failure means the PTY master fd may leak into
+                // child processes spawned later; treat it as a warning.
+                warn!(
                     "Failed to set FD_CLOEXEC on fd {}: {}",
                     fd,
                     std::io::Error::last_os_error()

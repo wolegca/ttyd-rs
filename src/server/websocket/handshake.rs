@@ -118,7 +118,13 @@ pub(crate) async fn read_handshake(
     // Read first message
     match ws_receiver.next().await {
         Some(Ok(WsMessage::Text(text))) => {
-            let msg = Message::from_json(&text).map_err(|_| ())?;
+            let msg = match Message::from_json(&text) {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!("Failed to parse first handshake message: {}", e);
+                    return Err(());
+                }
+            };
             process_handshake_message(state, ws_sender, remote_addr, client_id, msg, &mut hs)
                 .await?;
         }

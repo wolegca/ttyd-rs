@@ -199,7 +199,14 @@ async fn handle_resize(ctx: &MessageLoopContext<'_>, data: &ResizeData) {
     // Resize PTY
     let mut pty_guard = ctx.pty_session.lock().await;
     if let Err(e) = pty_guard.resize(data.cols, data.rows) {
-        error!("Failed to resize PTY: {}", e);
+        warn!("Failed to resize PTY: {}", e);
+        let _ = send_ws_error(
+            ctx.ws_sender,
+            "RESIZE_FAILED",
+            format!("Failed to resize terminal: {}", e),
+            false,
+        )
+        .await;
     } else {
         debug!("PTY resized to {}x{}", data.cols, data.rows);
     }

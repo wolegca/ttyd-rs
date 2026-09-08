@@ -322,8 +322,14 @@ async fn run_session(
     let is_readonly = resolved.is_readonly;
 
     // Add this client to the session
-    if let Err(e) =
-        session_lifecycle::add_client(session, client_id, remote_addr, username, is_readonly).await
+    if let Err(e) = session_lifecycle::add_client(
+        session,
+        client_id,
+        remote_addr,
+        username.clone(),
+        is_readonly,
+    )
+    .await
     {
         warn!("Failed to register client in session: {}", e);
         return Ok(CloseReason::SessionSetupFailed);
@@ -332,15 +338,7 @@ async fn run_session(
     // Log session started
     state
         .audit_logger
-        .log_session_started(
-            remote_addr,
-            state
-                .config
-                .auth
-                .as_ref()
-                .and_then(|a| a.username.as_deref()),
-            session_id,
-        )
+        .log_session_started(remote_addr, username.as_deref(), session_id)
         .await;
 
     // Send ready message
@@ -414,6 +412,11 @@ async fn run_session(
     subscriber_task.abort();
 
     session_lifecycle::cleanup_client(state, session, session_id, client_id).await;
+
+    state
+        .audit_logger
+        .log_session_ended(remote_addr, session_id)
+        .await;
 
     // Send disconnect message
     let disconnect = crate::protocol::Message::Disconnect(crate::protocol::DisconnectData {

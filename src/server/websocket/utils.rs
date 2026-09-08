@@ -102,8 +102,10 @@ pub(crate) fn message_type_name(msg: &Message) -> &'static str {
 
 /// Send a JSON-serialized protocol message to the client.
 ///
-/// Silently ignores serialization/send errors — use [`send_ws_error`] when
-/// the caller needs to know about failures.
+/// Logs a warning on serialization failure (which would mean a bug in the
+/// protocol types). Send errors are silently ignored — the connection may
+/// already be closing and the caller can't act on it here. Use
+/// [`send_ws_error`] when the caller needs to know about failures.
 ///
 /// Generic over the sink type (see [`send_ws_error`]) so it can be unit-tested
 /// with a mock sender.
@@ -112,8 +114,13 @@ where
     S: Sink<WsMessage> + Unpin,
     S::Error: std::error::Error + 'static,
 {
-    if let Ok(json) = msg.to_json() {
-        let _ = sender.lock().await.send(WsMessage::Text(json.into())).await;
+    match msg.to_json() {
+        Ok(json) => {
+            let _ = sender.lock().await.send(WsMessage::Text(json.into())).await;
+        }
+        Err(e) => {
+            tracing::warn!("Failed to serialize outbound message: {}", e);
+        }
     }
 }
 

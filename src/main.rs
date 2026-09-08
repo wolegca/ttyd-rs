@@ -170,7 +170,7 @@ async fn main() {
     }
 
     tracing::info!("Starting ttyd-rs v{}", env!("CARGO_PKG_VERSION"));
-    tracing::info!("Configuration: {:?}", config);
+    tracing::debug!("Configuration: {:?}", config);
 
     if config
         .auth

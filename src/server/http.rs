@@ -119,38 +119,24 @@ pub async fn start_server(
     let app = create_router(&config, app_state, api_state);
     let addr = config.bind;
 
-    info!("Starting server on {}", addr);
-    info!("WebSocket endpoint: ws://{}/ws", addr);
+    info!("Listening on {} — ws://{}/ws", addr, addr);
     info!(
-        "Authentication: {}",
-        if config.auth.is_some() {
-            "enabled"
+        "Auth: {}  |  Audit: {}  |  Rate limit: {}/{}s",
+        if config.auth.is_some() { "on" } else { "off" },
+        if config.audit.enabled { "on" } else { "off" },
+        config.rate_limit.max_requests,
+        config.rate_limit.window_seconds,
+    );
+    info!(
+        "Sessions: mode={}, timeout={}s  |  Compression: {}",
+        config.session.mode,
+        config.session.timeout,
+        if config.compression.enabled {
+            format!("gzip level {}", config.compression.level)
         } else {
-            "disabled"
-        }
+            "off".to_string()
+        },
     );
-    info!(
-        "Audit logging: {}",
-        if config.audit.enabled {
-            "enabled"
-        } else {
-            "disabled"
-        }
-    );
-    info!(
-        "Rate limiting: enabled ({} requests per {} seconds)",
-        config.rate_limit.max_requests, config.rate_limit.window_seconds
-    );
-    info!("Session mode: {}", config.session.mode);
-    info!("Session timeout: {}s", config.session.timeout);
-    if config.compression.enabled {
-        info!(
-            "Compression: gzip enabled (level {}, static assets only)",
-            config.compression.level
-        );
-    } else {
-        info!("Compression: disabled");
-    }
 
     // Spawn task to cancel token when shutdown signal is received.
     // This must happen before with_graceful_shutdown so that WebSocket handlers
