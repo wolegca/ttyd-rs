@@ -70,10 +70,22 @@ pub struct PingData {
     pub timestamp: i64,
 }
 
+/// Runtime capabilities the server exposes to the client after authentication.
+///
+/// Sent inside `auth_ok` so the frontend learns what is available in one
+/// round-trip, rather than having to re-query `/api/config` after login.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientCapabilities {
+    pub file_transfer: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_upload_size: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthOkData {
     pub client_id: String,
     pub readonly: bool,
+    pub capabilities: ClientCapabilities,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -298,6 +310,10 @@ mod tests {
             Message::AuthOk(AuthOkData {
                 client_id: "client-1".to_string(),
                 readonly: false,
+                capabilities: ClientCapabilities {
+                    file_transfer: false,
+                    max_upload_size: None,
+                },
             }),
             Message::AuthFail(AuthFailData {
                 reason: "bad creds".to_string(),

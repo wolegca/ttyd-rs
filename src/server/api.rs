@@ -31,8 +31,10 @@ pub struct SessionInfo {
     pub session_id: String,
     pub mode: String,
     pub clients: usize,
-    pub created_at: String,
-    pub last_activity: String,
+    /// Unix timestamp (seconds since epoch) when the session was created.
+    pub created_at: u64,
+    /// Unix timestamp (seconds since epoch) of the last activity.
+    pub last_activity: u64,
     pub terminal: TerminalInfo,
 }
 
@@ -87,8 +89,8 @@ pub async fn list_sessions(
             session_id: metadata.session_id.clone(),
             mode: metadata.mode.to_string(),
             clients: client_count,
-            created_at: format_instant(metadata.created_at),
-            last_activity: format_instant(last_activity),
+            created_at: system_time_to_unix(metadata.created_at),
+            last_activity: instant_to_unix(last_activity),
             terminal: TerminalInfo { cols, rows },
         });
     }
@@ -132,8 +134,8 @@ pub async fn get_session(
         session_id: metadata.session_id.clone(),
         mode: metadata.mode.to_string(),
         clients: client_count,
-        created_at: format_instant(metadata.created_at),
-        last_activity: format_instant(last_activity),
+        created_at: system_time_to_unix(metadata.created_at),
+        last_activity: instant_to_unix(last_activity),
         terminal: TerminalInfo { cols, rows },
     }))
 }
@@ -183,17 +185,24 @@ pub async fn health_check() -> Json<HealthResponse> {
 #[derive(Debug, Serialize)]
 pub struct ConfigResponse {
     pub auth_method: Option<String>,
+    /// Exposed only when auth is not configured (unauthenticated deployments).
+    /// Authenticated clients learn about file-transfer capabilities via the
+    /// `auth_ok` WebSocket message instead, so there is nothing to leak here
+    /// before they log in.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_upload_size: Option<usize>,
     pub file_transfer_enabled: bool,
 }
 
 /// Get client-facing configuration.
 ///
-/// This endpoint stays public (unauthenticated) because the frontend calls
-/// it on page load to decide whether to show the login overlay. To limit
-/// reconnaissance value, deployment details (`max_upload_size`,
-/// `file_transfer_enabled`) are only revealed when auth is disabled —
-/// with auth enabled the client learns nothing beyond the auth method.
+/// Always exposes `auth_method` so the frontend can decide whether to show
+/// the login overlay. When auth is disabled, `file_transfer_enabled` and
+/// `max_upload_size` are also exposed so the frontend can initialise its
+/// file panel in one round-trip. When auth is enabled those fields are
+/// omitted — the client learns about them from the `auth_ok` WebSocket
+/// message after a successful login, which avoids leaking deployment
+/// details to unauthenticated callers.
 pub async fn get_config(State(state): State<ApiState>) -> Json<ConfigResponse> {
     let expose_details = state.config.auth.is_none();
     Json(ConfigResponse {
@@ -207,81 +216,39 @@ pub async fn get_config(State(state): State<ApiState>) -> Json<ConfigResponse> {
     })
 }
 
-/// Format Instant as ISO 8601 string (relative to now)
-fn format_instant(instant: std::time::Instant) -> String {
-    let now = std::time::Instant::now();
-    let duration = if now > instant {
-        now.duration_since(instant)
-    } else {
-        std::time::Duration::from_secs(0)
-    };
+/// Convert a `SystemTime` to a Unix timestamp (seconds since epoch).
+///
+/// Returns 0 on the rare case `duration_since(UNIX_EPOCH)` fails (clock
+/// before epoch), which is preferable to panicking or returning garbage.
+fn system_time_to_unix(t: std::time::SystemTime) -> u64 {
+    t.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
-    let secs = duration.as_secs();
-    if secs < 60 {
-        format!("{}s ago", secs)
-    } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
-    } else if secs < 86400 {
-        format!("{}h ago", secs / 3600)
-    } else {
-        format!("{}d ago", secs / 86400)
-    }
+/// Convert an `Instant` (last-activity) to an approximate Unix timestamp.
+///
+/// `Instant` has no wall-clock anchor, so we derive one by subtracting how
+/// long ago the instant was from the current `SystemTime`. The result is
+/// approximate (millisecond-level drift is fine for "last seen" display).
+fn instant_to_unix(instant: std::time::Instant) -> u64 {
+    let elapsed = instant.elapsed();
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|now_secs| now_secs.saturating_sub(elapsed).as_secs())
+        .unwrap_or(0)
 }
 
 /// Pre-built authenticator for the API auth middleware.
 ///
-/// Built once at router construction: Argon2 password hashing is
-/// expensive (~100 ms), so it must never run per request.
-#[derive(Clone)]
-pub(crate) enum ApiAuth {
-    Basic {
-        authenticator: crate::auth::BasicAuth,
-    },
-    Token {
-        authenticator: crate::auth::TokenAuth,
-    },
-}
-
-impl ApiAuth {
-    /// Build from the pre-built WebSocket authenticator.
-    ///
-    /// Reuses the validator already constructed once at startup
-    /// (`AppState.auth_method`) instead of re-running the expensive Argon2
-    /// password hash a second time. Returns `None` when the variant is
-    /// unexpected (fail closed — the middleware then denies every request).
-    pub(crate) fn from_auth_method(method: &crate::server::websocket::AuthMethod) -> Option<Self> {
-        match method {
-            crate::server::websocket::AuthMethod::Basic { validator, .. } => Some(Self::Basic {
-                authenticator: validator.clone(),
-            }),
-            crate::server::websocket::AuthMethod::Token { validator } => Some(Self::Token {
-                authenticator: validator.clone(),
-            }),
-        }
-    }
-
-    /// Validate an `Authorization` header value against the configured method.
-    ///
-    /// Supports:
-    /// - Basic auth: `Authorization: Basic <base64(user:pass)>`
-    /// - Token auth: `Authorization: Bearer <token>`
-    fn validate_header(&self, header: &str) -> bool {
-        match self {
-            Self::Basic { authenticator } => header
-                .strip_prefix("Basic ")
-                .is_some_and(|credentials| authenticator.validate(credentials)),
-            Self::Token { authenticator } => header
-                .strip_prefix("Bearer ")
-                .is_some_and(|token| authenticator.validate(token)),
-        }
-    }
-}
-
-/// State for the API auth middleware
+/// Holds an `Arc<dyn Authenticator>` built once at router startup so that
+/// Argon2 password hashing (~100 ms) never runs per request. The concrete
+/// type (`BasicAuth` or `TokenAuth`) is behind the trait so this module has
+/// no direct dependency on the `websocket::auth::AuthMethod` enum.
 #[derive(Clone)]
 pub(crate) struct ApiAuthState {
     /// Pre-built authenticator; `None` means auth is misconfigured — deny all.
-    pub auth: Option<ApiAuth>,
+    pub auth: Option<Arc<dyn crate::auth::Authenticator>>,
 }
 
 /// Middleware: validate Authorization header against configured credentials.
@@ -336,31 +303,26 @@ mod tests {
     }
 
     #[test]
-    fn test_format_instant() {
-        let now = std::time::Instant::now();
-        let result = format_instant(now);
-        assert!(result.ends_with("ago"));
+    fn test_system_time_to_unix() {
+        let t = std::time::SystemTime::now();
+        let unix = system_time_to_unix(t);
+        // Should be within a few seconds of now
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(now_secs.abs_diff(unix) < 5);
     }
 
     #[test]
-    fn test_format_instant_seconds() {
-        let past = std::time::Instant::now() - Duration::from_secs(30);
-        let result = format_instant(past);
-        assert!(result.ends_with("s ago"));
-    }
-
-    #[test]
-    fn test_format_instant_minutes() {
-        let past = std::time::Instant::now() - Duration::from_secs(120);
-        let result = format_instant(past);
-        assert!(result.ends_with("m ago"));
-    }
-
-    #[test]
-    fn test_format_instant_hours() {
-        let past = std::time::Instant::now() - Duration::from_secs(7200);
-        let result = format_instant(past);
-        assert!(result.ends_with("h ago"));
+    fn test_instant_to_unix() {
+        let t = std::time::Instant::now();
+        let unix = instant_to_unix(t);
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(now_secs.abs_diff(unix) < 5);
     }
 
     #[tokio::test]

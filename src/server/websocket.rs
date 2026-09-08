@@ -63,6 +63,10 @@ pub struct AppState {
     /// bucket would let heavy file usage lock a client out of WebSocket
     /// authentication entirely.
     pub(crate) file_rate_limiter: Arc<RateLimiter>,
+    /// File-transfer config shared via `Arc` so `handle_file_list` in the
+    /// message loop can build a `FileTransferState` without cloning the
+    /// full config struct on every `file_list` message.
+    pub(crate) file_transfer_config: Arc<crate::config::FileTransferConfig>,
 }
 
 impl AppState {
@@ -448,7 +452,7 @@ mod tests {
         ));
 
         AppState {
-            config: Arc::new(config),
+            config: Arc::new(config.clone()),
             audit_logger: Arc::new(audit_logger),
             validation: Arc::new(validation),
             rate_limiter: Arc::new(rate_limiter),
@@ -457,6 +461,7 @@ mod tests {
             active_connections: Arc::new(AtomicUsize::new(0)),
             auth_method: None,
             file_rate_limiter: Arc::new(RateLimiter::new(10, 60)),
+            file_transfer_config: Arc::new(config.file_transfer.clone()),
         }
     }
 

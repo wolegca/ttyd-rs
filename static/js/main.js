@@ -245,7 +245,20 @@ function connect() {
 
             switch (msg.type) {
                 case 'auth_ok':
-                    console.log('Auth OK');
+                    console.log('Auth OK, capabilities:', msg.data.capabilities);
+                    // Apply server capabilities now that we have authenticated.
+                    // When auth is required, /api/config intentionally omits
+                    // file-transfer details; they arrive here instead.
+                    if (msg.data.capabilities) {
+                        const cap = msg.data.capabilities;
+                        const fileEnabled = setServerConfig({
+                            file_transfer_enabled: cap.file_transfer,
+                            max_upload_size: cap.max_upload_size,
+                        });
+                        if (fileEnabled) {
+                            menuWrapper.classList.remove('hidden');
+                        }
+                    }
                     onAuthenticated();
                     break;
                 case 'auth_fail':

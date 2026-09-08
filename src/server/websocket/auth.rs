@@ -145,10 +145,20 @@ async fn send_auth_fail(
 async fn send_auth_ok(
     ws_sender: &WsSender,
     client_id: &str,
+    config: &crate::config::Config,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let capabilities = crate::protocol::ClientCapabilities {
+        file_transfer: config.file_transfer.enabled,
+        max_upload_size: if config.file_transfer.enabled {
+            Some(config.file_transfer.max_upload_size)
+        } else {
+            None
+        },
+    };
     let msg = Message::AuthOk(AuthOkData {
         client_id: client_id.to_string(),
         readonly: false,
+        capabilities,
     });
     ws_sender
         .lock()
@@ -289,7 +299,7 @@ async fn perform_auth(
         .log_auth_attempt(remote_addr, auth_method.audit_name(), true, client_id)
         .await;
     state.rate_limiter.reset(rate_limit_key).await;
-    send_auth_ok(ws_sender, client_id).await?;
+    send_auth_ok(ws_sender, client_id, &state.config).await?;
 
     Ok(AuthResult::Success(auth_method.success_username()))
 }

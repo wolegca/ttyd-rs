@@ -250,7 +250,7 @@ async fn handle_file_list(ctx: &MessageLoopContext<'_>, data: &FileListData) {
     }
 
     let file_state = super::super::files::FileTransferState {
-        config: Arc::new(ctx.state.config.file_transfer.clone()),
+        config: ctx.state.file_transfer_config.clone(),
         session_manager: ctx.state.session_manager.clone(),
     };
 

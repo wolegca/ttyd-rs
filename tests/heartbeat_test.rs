@@ -190,7 +190,7 @@ async fn test_session_cleanup_after_reconnect_window() {
         client_id: "client1".to_string(),
         remote_addr: "127.0.0.1".to_string(),
         username: None,
-        connected_at: std::time::Instant::now(),
+        connected_at: std::time::SystemTime::now(),
         readonly: false,
     };
     session.add_client(client).await.unwrap();
@@ -245,7 +245,7 @@ async fn test_reconnect_within_window_reuses_session() {
         client_id: "client1".to_string(),
         remote_addr: "127.0.0.1".to_string(),
         username: None,
-        connected_at: std::time::Instant::now(),
+        connected_at: std::time::SystemTime::now(),
         readonly: false,
     };
     session.add_client(client1).await.unwrap();
@@ -272,7 +272,7 @@ async fn test_reconnect_within_window_reuses_session() {
         client_id: "client2".to_string(),
         remote_addr: "127.0.0.1".to_string(),
         username: None,
-        connected_at: std::time::Instant::now(),
+        connected_at: std::time::SystemTime::now(),
         readonly: false,
     };
     session_again.unwrap().add_client(client2).await.unwrap();

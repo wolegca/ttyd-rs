@@ -111,7 +111,7 @@ async fn test_session_manager_reconnect_window() {
         client_id: "c1".to_string(),
         remote_addr: "127.0.0.1".to_string(),
         username: None,
-        connected_at: Instant::now(),
+        connected_at: std::time::SystemTime::now(),
         readonly: false,
     };
     session.add_client(client).await.unwrap();
@@ -147,7 +147,7 @@ async fn test_isolated_session_immediate_cleanup() {
         client_id: "c1".to_string(),
         remote_addr: "127.0.0.1".to_string(),
         username: None,
-        connected_at: Instant::now(),
+        connected_at: std::time::SystemTime::now(),
         readonly: false,
     };
     session.add_client(client).await.unwrap();
@@ -184,7 +184,7 @@ async fn test_shared_session_kept_alive() {
         client_id: "c1".to_string(),
         remote_addr: "127.0.0.1".to_string(),
         username: None,
-        connected_at: Instant::now(),
+        connected_at: std::time::SystemTime::now(),
         readonly: false,
     };
     session.add_client(client).await.unwrap();

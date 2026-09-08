@@ -1,6 +1,6 @@
 /// Session lifecycle management: create/join sessions, add clients, and clean up.
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::SystemTime;
 
 use tracing::{info, warn};
 
@@ -115,7 +115,7 @@ pub(crate) async fn add_client(
         client_id: client_id.to_string(),
         remote_addr: remote_addr.to_string(),
         username,
-        connected_at: Instant::now(),
+        connected_at: SystemTime::now(),
         readonly: is_readonly,
     };
     session.add_client(client).await?;

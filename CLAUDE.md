@@ -62,6 +62,10 @@ cargo add --dev <crate>
 cargo add --build <crate>
 ```
 
+### Module File Convention
+
+**Never create `mod.rs` files.** Use the named-file style (`auth.rs` alongside `auth/`) instead. This project already follows that convention throughout — `src/auth.rs`, `src/server/websocket.rs`, etc. A new submodule `foo/bar` is declared in `foo.rs` (or `foo/bar.rs` for deeper nesting), never in `foo/mod.rs`.
+
 ## Architecture
 
 ```

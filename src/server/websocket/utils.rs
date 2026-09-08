@@ -316,6 +316,10 @@ mod tests {
                 Message::AuthOk(AuthOkData {
                     client_id: "c".to_string(),
                     readonly: false,
+                    capabilities: crate::protocol::ClientCapabilities {
+                        file_transfer: false,
+                        max_upload_size: None,
+                    },
                 }),
                 "auth_ok",
             ),

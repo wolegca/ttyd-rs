@@ -2,7 +2,7 @@
 use crate::pty::PtySession;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
@@ -61,7 +61,9 @@ pub struct Client {
     pub client_id: String,
     pub remote_addr: String,
     pub username: Option<String>,
-    pub connected_at: Instant,
+    /// Wall-clock time the client connected. Use `SystemTime` rather than
+    /// `Instant` so the value can be formatted and exposed via the REST API.
+    pub connected_at: SystemTime,
     pub readonly: bool,
 }
 
@@ -70,7 +72,9 @@ pub struct Client {
 pub struct SessionMetadata {
     pub session_id: String,
     pub mode: SessionMode,
-    pub created_at: Instant,
+    /// Wall-clock creation time. Use `SystemTime` rather than `Instant` so the
+    /// value can be serialised to a Unix timestamp in the REST API.
+    pub created_at: SystemTime,
     pub command: Vec<String>,
     pub working_dir: Option<String>,
 }
@@ -118,7 +122,7 @@ impl Session {
             metadata: SessionMetadata {
                 session_id,
                 mode,
-                created_at: Instant::now(),
+                created_at: SystemTime::now(),
                 command: command.to_vec(),
                 working_dir,
             },
@@ -530,7 +534,7 @@ mod tests {
             client_id: "client1".to_string(),
             remote_addr: "127.0.0.1".to_string(),
             username: Some("test".to_string()),
-            connected_at: Instant::now(),
+            connected_at: SystemTime::now(),
             readonly: false,
         };
 
@@ -554,7 +558,7 @@ mod tests {
             client_id: "client1".to_string(),
             remote_addr: "127.0.0.1".to_string(),
             username: None,
-            connected_at: Instant::now(),
+            connected_at: SystemTime::now(),
             readonly: false,
         };
 
@@ -562,7 +566,7 @@ mod tests {
             client_id: "client2".to_string(),
             remote_addr: "127.0.0.1".to_string(),
             username: None,
-            connected_at: Instant::now(),
+            connected_at: SystemTime::now(),
             readonly: false,
         };
 
@@ -642,7 +646,7 @@ mod tests {
             client_id: "c1".to_string(),
             remote_addr: "127.0.0.1".to_string(),
             username: None,
-            connected_at: Instant::now(),
+            connected_at: SystemTime::now(),
             readonly: false,
         };
         session.add_client(client).await.unwrap();
@@ -673,7 +677,7 @@ mod tests {
             client_id: "c1".to_string(),
             remote_addr: "127.0.0.1".to_string(),
             username: None,
-            connected_at: Instant::now(),
+            connected_at: SystemTime::now(),
             readonly: false,
         };
         session.add_client(client).await.unwrap();
@@ -702,7 +706,7 @@ mod tests {
                 client_id: "c1".to_string(),
                 remote_addr: "127.0.0.1".to_string(),
                 username: None,
-                connected_at: Instant::now(),
+                connected_at: SystemTime::now(),
                 readonly: false,
             })
             .await
@@ -738,7 +742,7 @@ mod tests {
             client_id: "writer".to_string(),
             remote_addr: "127.0.0.1".to_string(),
             username: None,
-            connected_at: Instant::now(),
+            connected_at: SystemTime::now(),
             readonly: false,
         };
         srw.add_client(client).await.unwrap();
@@ -748,7 +752,7 @@ mod tests {
             client_id: "reader".to_string(),
             remote_addr: "127.0.0.1".to_string(),
             username: None,
-            connected_at: Instant::now(),
+            connected_at: SystemTime::now(),
             readonly: true,
         };
         srw.add_client(ro_client).await.unwrap();
@@ -774,7 +778,7 @@ mod tests {
                 client_id: "c1".to_string(),
                 remote_addr: "127.0.0.1".to_string(),
                 username: Some("alice".to_string()),
-                connected_at: Instant::now(),
+                connected_at: SystemTime::now(),
                 readonly: false,
             })
             .await
@@ -785,7 +789,7 @@ mod tests {
                 client_id: "c2".to_string(),
                 remote_addr: "127.0.0.2".to_string(),
                 username: None,
-                connected_at: Instant::now(),
+                connected_at: SystemTime::now(),
                 readonly: true,
             })
             .await

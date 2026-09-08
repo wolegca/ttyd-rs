@@ -84,6 +84,7 @@ pub async fn start_server(
         active_connections: Arc::new(AtomicUsize::new(0)),
         auth_method: ws_auth_method,
         file_rate_limiter: file_rate_limiter.clone(),
+        file_transfer_config: Arc::new(config.file_transfer.clone()),
     };
     let api_state = ApiState {
         session_manager: session_manager.clone(),
@@ -328,12 +329,19 @@ fn create_router(config: &Config, app_state: AppState, api_state: ApiState) -> R
     // Reuses the authenticator already built once at startup
     // (`app_state.auth_method`) — no second Argon2 hash pass.
     let protected_api = if config.auth.is_some() {
-        let auth_state = super::api::ApiAuthState {
-            auth: app_state
-                .auth_method
-                .as_deref()
-                .and_then(super::api::ApiAuth::from_auth_method),
-        };
+        let auth: Option<Arc<dyn crate::auth::Authenticator>> =
+            app_state.auth_method.as_deref().map(|method| {
+                let a: Arc<dyn crate::auth::Authenticator> = match method {
+                    crate::server::websocket::AuthMethod::Basic { validator, .. } => {
+                        Arc::new(validator.clone())
+                    }
+                    crate::server::websocket::AuthMethod::Token { validator } => {
+                        Arc::new(validator.clone())
+                    }
+                };
+                a
+            });
+        let auth_state = super::api::ApiAuthState { auth };
         protected_api.layer(middleware::from_fn_with_state(
             auth_state,
             super::api::api_auth_middleware,
@@ -492,6 +500,7 @@ mod tests {
             active_connections: Arc::new(AtomicUsize::new(0)),
             auth_method: None,
             file_rate_limiter: Arc::new(RateLimiter::new(10, 60)),
+            file_transfer_config: Arc::new(config_arc.file_transfer.clone()),
         };
 
         let api_state = ApiState {
@@ -677,6 +686,7 @@ mod tests {
             active_connections: Arc::new(AtomicUsize::new(0)),
             auth_method: None,
             file_rate_limiter: Arc::new(RateLimiter::new(10, 60)),
+            file_transfer_config: Arc::new(config_arc.file_transfer.clone()),
         };
         let api_state = ApiState {
             session_manager,
@@ -1026,6 +1036,7 @@ mod tests {
             active_connections: Arc::new(AtomicUsize::new(0)),
             auth_method,
             file_rate_limiter: Arc::new(RateLimiter::new(10, 60)),
+            file_transfer_config: Arc::new(config_arc.file_transfer.clone()),
         };
 
         let api_state = ApiState {
@@ -1349,6 +1360,7 @@ mod tests {
             shutdown_token: shutdown_token.clone(),
             active_connections: Arc::new(AtomicUsize::new(0)),
             auth_method: ws_auth_method,
+            file_transfer_config: Arc::new(config.file_transfer.clone()),
         };
         let api_state = ApiState {
             session_manager,
