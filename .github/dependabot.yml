@@ -11,3 +11,7 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+
+    # ignore dtolnay/rust-toolchain to stop bogus MSRV bump PRs
+    ignore:
+      - dependency-name: "dtolnay/rust-toolchain"
