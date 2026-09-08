@@ -123,6 +123,17 @@ let lastPongTime = Date.now();
 // visibilitychange-to-visible handler runs, because lastHiddenAt was
 // already recorded earlier, when the tab *went* hidden.
 let lastHiddenAt = 0;
+// Timestamp of the most recent transition back to visible.
+// Guards against a subtler race: if the browser ran a throttled
+// heartbeat ping/pong while the tab was backgrounded, lastPongTime
+// can be newer than lastHiddenAt even though the connection has not
+// been verified from the foreground yet. Without this guard,
+// pongCheckTimer's catch-up tick would see lastHiddenAt < lastPongTime
+// (guard cleared), compute elapsed from that stale pong, and fire a
+// false "Server pong timeout" before the foreground probe completes.
+// Setting lastVisibleAt when the tab returns keeps the check
+// suppressed until the probe pong actually lands.
+let lastVisibleAt = 0;
 // True while we're waiting on a response to the foreground probe
 // ping (see the visibilitychange handler below). Using a flag
 // instead of comparing Date.now() timestamps avoids a same-
@@ -223,7 +234,7 @@ function connect() {
             // where the page was loaded in a background tab and
             // `visibilitychange` never fired, leaving `lastHiddenAt`
             // at its initial 0.
-            if (document.hidden || lastHiddenAt > lastPongTime) return;
+            if (document.hidden || lastHiddenAt > lastPongTime || lastVisibleAt > lastPongTime) return;
             const elapsed = Date.now() - lastPongTime;
             if (elapsed > CONFIG.heartbeat.PONG_TIMEOUT) {
                 console.error('Server pong timeout, forcing reconnect');
@@ -420,7 +431,10 @@ document.addEventListener('visibilitychange', () => {
         return;
     }
 
-    // Tab just became visible.
+    // Tab just became visible. Record the time so pongCheckTimer's guard
+    // suppresses the check until the foreground probe pong lands and
+    // advances lastPongTime past this timestamp.
+    lastVisibleAt = Date.now();
     if (visibilityProbeTimer !== null) {
         clearTimeout(visibilityProbeTimer);
         visibilityProbeTimer = null;
