@@ -1,0 +1,20 @@
+# Safe defaults installed by the ttyd-rs Debian package.
+#
+# The service listens only on localhost. Edit this file before exposing the
+# service through a reverse proxy or changing the bind address.
+bind = "127.0.0.1:7681"
+command = ["bash", "--login"]
+log_level = "info"
+max_connections = 100
+
+# Authentication is intentionally left disabled for localhost-only use.
+# Configure [auth] (prefer an Argon2id password hash) before public exposure.
+
+[file_transfer]
+# File transfer is disabled because it is unsafe without authentication.
+enabled = false
+
+[session]
+mode = "isolated"
+timeout = 3600
+reconnect_window = 60

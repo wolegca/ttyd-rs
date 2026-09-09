@@ -1,0 +1,32 @@
+[Unit]
+Description=ttyd-rs - Share terminal over the web
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ttyd-rs
+Group=ttyd-rs
+WorkingDirectory=/var/lib/ttyd-rs
+Environment=HOME=/var/lib/ttyd-rs
+
+# Validate before starting (and before every restart after a config change).
+ExecStartPre=/usr/bin/ttyd-rs --check-config --config /etc/ttyd-rs/config.toml
+ExecStart=/usr/bin/ttyd-rs --config /etc/ttyd-rs/config.toml
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal
+
+# Keep the service confined while allowing the configured shell to use its
+# state directory. Additional paths can be granted with a drop-in if needed.
+StateDirectory=ttyd-rs
+ReadWritePaths=/var/lib/ttyd-rs
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

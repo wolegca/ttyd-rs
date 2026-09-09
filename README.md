@@ -34,6 +34,31 @@ ttyd-rs --config config.toml
 
 Then open `http://localhost:7681` in your browser.
 
+### Debian package
+
+Release builds also provide a Debian package. Install it with `dpkg -i` (or
+`apt install ./ttyd-rs_*.deb`):
+
+```bash
+sudo apt install ./ttyd-rs_*.deb
+```
+
+The package installs `/usr/bin/ttyd-rs`, a safe localhost-only configuration
+at `/etc/ttyd-rs/config.toml`, and the `ttyd-rs.service` systemd unit. A
+dedicated `ttyd-rs` system user and state directory are created, and the unit
+is enabled during installation. Review the configuration, add authentication
+before changing `bind` to a non-loopback address, then start or restart it:
+
+```bash
+sudoedit /etc/ttyd-rs/config.toml
+sudo systemctl restart ttyd-rs
+systemctl status ttyd-rs
+```
+
+The configuration is a dpkg conffile, so local edits are preserved across
+upgrades. Generate an Argon2id password hash with
+`printf 'secret\n' | ttyd-rs --hash-password`.
+
 ### Basic Usage
 
 ```bash

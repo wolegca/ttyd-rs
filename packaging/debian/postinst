@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = configure ]; then
+    if ! getent group ttyd-rs >/dev/null 2>&1; then
+        addgroup --system ttyd-rs >/dev/null
+    fi
+    if ! getent passwd ttyd-rs >/dev/null 2>&1; then
+        adduser --system --ingroup ttyd-rs --home /var/lib/ttyd-rs \
+            --no-create-home --shell /usr/sbin/nologin ttyd-rs >/dev/null
+    fi
+    install -d -o ttyd-rs -g ttyd-rs -m 0750 /var/lib/ttyd-rs
+
+    # Register the unit when systemd is available. Do not fail package
+    # installation in containers or chroots without a running systemd.
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload || true
+        systemctl enable ttyd-rs.service >/dev/null 2>&1 || true
+    fi
+fi
+
+exit 0

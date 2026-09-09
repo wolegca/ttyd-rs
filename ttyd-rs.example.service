@@ -12,7 +12,7 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-KillMode=progress
+KillMode=control-group
 
 # Security hardening
 ReadWritePaths=/var/log/ttyd-rs

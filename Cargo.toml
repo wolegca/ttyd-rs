@@ -52,3 +52,22 @@ opt-level = "s"
 strip = "symbols"
 panic = "abort"
 codegen-units = 1
+
+# Debian package metadata used by cargo-deb (`cargo install cargo-deb`).
+# The package ships a safe, loopback-only configuration and a systemd unit.
+[package.metadata.deb]
+maintainer = "wcx"
+copyright = "2026, wcx"
+section = "utils"
+priority = "optional"
+depends = "$auto, adduser, systemd"
+extended-description = "A secure Rust implementation of ttyd for sharing terminal sessions over WebSocket."
+assets = [
+    ["target/release/ttyd-rs", "usr/bin/ttyd-rs", "755"],
+    ["packaging/ttyd-rs.service", "lib/systemd/system/ttyd-rs.service", "644"],
+    ["packaging/default-config.toml", "etc/ttyd-rs/config.toml", "644"],
+    ["README.md", "usr/share/doc/ttyd-rs/README.md", "644"],
+    ["LICENSE", "usr/share/doc/ttyd-rs/LICENSE", "644"],
+]
+conf-files = ["/etc/ttyd-rs/config.toml"]
+maintainer-scripts = "packaging/debian"

@@ -49,6 +49,12 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Build Debian package
+        run: cargo deb --no-build
+
       - name: Package release artifacts
         shell: bash
         run: |
@@ -68,5 +74,6 @@ jobs:
           generate_release_notes: true
           files: |
             target/release/${{ env.BINARY_NAME }}
+            target/debian/${{ env.BINARY_NAME }}_*.deb
             dist/${{ env.BINARY_NAME }}-v*.tar.gz
             dist/${{ env.BINARY_NAME }}-v*.tar.gz.sha256

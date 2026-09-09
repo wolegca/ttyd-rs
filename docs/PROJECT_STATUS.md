@@ -257,6 +257,7 @@ None. Previously listed items have been resolved or reclassified:
 7. **Set `trust_proxy`** — enable only when behind a trusted reverse proxy (a startup warning is logged otherwise)
 8. **Configure file transfer** — set `[file_transfer]` dir or rely on dynamic `$PWD` tracking
 9. **Rotate audit logs** — configure logrotate (copytruncate) for the audit log file
+10. **Debian deployments** — install the release `.deb`; it provides `/etc/ttyd-rs/config.toml`, a dedicated `ttyd-rs` service user, and a systemd unit that performs `--check-config` before startup. The shipped config listens on localhost and disables file transfer until you explicitly configure authentication.
 
 ---
 

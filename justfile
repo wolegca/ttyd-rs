@@ -13,6 +13,10 @@ build:
 build-release:
     cargo build --release
 
+# Build a Debian package (requires: cargo install cargo-deb)
+deb:
+    cargo deb
+
 # Run the project
 run *ARGS:
     cargo run -- {{ARGS}}
