@@ -41,6 +41,8 @@ export const CONFIG = {
             CURSOR_BLINK: 'cursorBlink',
             TOAST_DURATION: 'toastDuration',
             SHOW_HIDDEN: 'showHidden',
+            SHORTCUTS: 'shortcuts',
+            SHORTCUT_BAR_VISIBLE: 'shortcutBarVisible',
         },
     },
 };

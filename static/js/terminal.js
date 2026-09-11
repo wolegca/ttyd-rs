@@ -200,32 +200,100 @@ term.element.addEventListener('mousedown', () => {
 });
 
 // ============================================================
-// Mobile special-key toolbar
+// Special-key toolbar and user-configurable keyboard shortcuts
 // ============================================================
-const MOBILE_KEY_SEQUENCES = {
-    Escape: '\x1b',
-    Tab: '\t',
-    ArrowUp: '\x1b[A',
-    ArrowDown: '\x1b[B',
-    ArrowRight: '\x1b[C',
-    ArrowLeft: '\x1b[D',
-    CtrlC: '\x03',
-    CtrlD: '\x04',
-    CtrlL: '\x0c',
-    PageUp: '\x1b[5~',
-    PageDown: '\x1b[6~',
-};
+const DEFAULT_SHORTCUTS = [
+    { id: 'escape', label: 'Esc', sequence: '\x1b', visible: true },
+    { id: 'tab', label: 'Tab', sequence: '\t', visible: true },
+    { id: 'up', label: '↑', sequence: '\x1b[A', visible: true },
+    { id: 'down', label: '↓', sequence: '\x1b[B', visible: true },
+    { id: 'left', label: '←', sequence: '\x1b[D', visible: true },
+    { id: 'right', label: '→', sequence: '\x1b[C', visible: true },
+    { id: 'ctrl-c', label: 'Ctrl+C', sequence: '\x03', visible: true },
+    { id: 'ctrl-d', label: 'Ctrl+D', sequence: '\x04', visible: true },
+    { id: 'ctrl-l', label: 'Ctrl+L', sequence: '\x0c', visible: true },
+    { id: 'page-up', label: 'PgUp', sequence: '\x1b[5~', visible: true },
+    { id: 'page-down', label: 'PgDn', sequence: '\x1b[6~', visible: true },
+];
+
+function cloneDefaults() { return DEFAULT_SHORTCUTS.map((shortcut) => ({ ...shortcut })); }
+export function decodeTerminalSequence(value) {
+    return value.replace(/\\x([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+        .replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
+}
+
+function loadShortcuts() {
+    const raw = Prefs.get(CONFIG.storage.KEYS.SHORTCUTS);
+    if (!raw) return cloneDefaults();
+    try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return cloneDefaults();
+        const valid = parsed.filter((s) => s && typeof s.id === 'string' && typeof s.label === 'string' && typeof s.sequence === 'string')
+            .map((s) => ({ id: s.id, label: s.label.slice(0, 32), sequence: s.sequence.slice(0, 128), visible: s.visible !== false, enabled: s.enabled !== false }));
+        return valid.length ? valid : cloneDefaults();
+    } catch { return cloneDefaults(); }
+}
+
+export let shortcuts = loadShortcuts();
+let shortcutInput = () => {};
+
+export function setShortcuts(next) {
+    shortcuts = next.map((s) => ({ ...s }));
+    Prefs.set(CONFIG.storage.KEYS.SHORTCUTS, JSON.stringify(shortcuts));
+    renderShortcutButtons();
+}
+
+export function resetShortcuts() { setShortcuts(cloneDefaults()); }
+
+function renderShortcutButtons() {
+    const bar = document.getElementById('mobile-keys');
+    if (!bar) return;
+    bar.replaceChildren();
+    shortcuts.filter((s) => s.visible).forEach((shortcut) => {
+        const button = document.createElement('button');
+        button.dataset.shortcutId = shortcut.id;
+        button.textContent = shortcut.label;
+        button.setAttribute('aria-label', shortcut.label);
+        button.addEventListener('click', () => shortcutInput(shortcut.sequence));
+        bar.appendChild(button);
+    });
+}
+
+function normalizeKey(key) {
+    if (key === ' ') return 'Space';
+    if (key.length === 1) return key.toUpperCase();
+    return key.replace(/^Arrow/, 'Arrow');
+}
+
+function shortcutMatches(event, label) {
+    const parts = label.split('+').map((part) => part.trim());
+    const key = parts[parts.length - 1];
+    const modifiers = new Set(parts.slice(0, -1).map((part) => part.toLowerCase()));
+    const wantsCtrl = modifiers.has('ctrl') || modifiers.has('control');
+    const wantsMeta = modifiers.has('cmd') || modifiers.has('meta') || modifiers.has('command');
+    const wantsShift = modifiers.has('shift');
+    const wantsAlt = modifiers.has('alt') || modifiers.has('option');
+    return normalizeKey(event.key) === normalizeKey(key)
+        && event.ctrlKey === wantsCtrl && event.metaKey === wantsMeta
+        && event.shiftKey === wantsShift && event.altKey === wantsAlt;
+}
 
 /** @param {() => boolean} inputBlocked returns true when input must not be sent */
 export function initMobileKeys(inputBlocked, sendInput) {
-    document.getElementById('mobile-keys').addEventListener('click', (e) => {
-        const btn = e.target.closest('button[data-key]');
-        if (!btn) return;
-        if (inputBlocked()) return;
-        const seq = MOBILE_KEY_SEQUENCES[btn.dataset.key];
-        if (seq) sendInput(seq);
-    });
+    shortcutInput = (sequence) => { if (!inputBlocked()) sendInput(sequence); };
+    renderShortcutButtons();
+    document.addEventListener('keydown', (event) => {
+        if (event.target.closest('#shortcuts-overlay') || event.target.closest('#login-overlay')) return;
+        if (event.target.matches('input, textarea') && !event.target.closest('#terminal')) return;
+        const shortcut = shortcuts.find((s) => s.enabled !== false && s.label.includes('+') && shortcutMatches(event, s.label));
+        if (!shortcut || inputBlocked()) return;
+        event.preventDefault();
+        event.stopPropagation();
+        sendInput(shortcut.sequence);
+    }, true);
 }
+
+export { DEFAULT_SHORTCUTS };
 
 // ============================================================
 // System messages written into the terminal canvas

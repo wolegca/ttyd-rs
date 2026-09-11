@@ -1453,6 +1453,9 @@ button {
   -webkit-overflow-scrolling: touch;
   touch-action: pan-x;
 }
+#mobile-keys.shortcut-bar-visible {
+  display: flex;
+}
 #mobile-keys button {
   flex: 0 0 auto;
   background: var(--bg-elevated);
@@ -1473,9 +1476,7 @@ button {
   border-color: var(--accent);
 }
 @media (max-width: 768px) {
-  #mobile-keys {
-    display: flex;
-  }
+  #mobile-keys.shortcut-bar-visible { display: flex; }
   #session-info {
     display: none;
   }
@@ -1483,6 +1484,47 @@ button {
     padding: 0 10px;
     gap: 8px;
   }
+}
+
+/* Shortcut manager */
+#shortcuts-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: var(--bg-overlay);
+  backdrop-filter: blur(2px);
+  z-index: var(--z-overlay);
+}
+#shortcuts-overlay.hidden { display: none; }
+#shortcuts-box {
+  width: min(560px, 100%);
+  max-height: min(80vh, 680px);
+  overflow: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  box-shadow: var(--shadow-lg);
+}
+.shortcuts-header { display: flex; align-items: center; justify-content: space-between; }
+.shortcuts-header h2 { margin: 0; font-size: 16px; color: var(--text-primary); }
+#shortcuts-close { background: none; border: 0; color: var(--text-muted); font-size: 22px; cursor: pointer; }
+.shortcuts-help { color: var(--text-muted); font-size: 12px; line-height: 1.5; margin: 8px 0 14px; }
+.shortcut-manager-row { display: grid; grid-template-columns: 1fr minmax(70px, 1.2fr) auto auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border-subtle); }
+.shortcut-manager-label { color: var(--text-primary); font-size: 13px; }
+.shortcut-manager-row code { color: var(--text-secondary); font-size: 11px; font-family: var(--font-mono); }
+.shortcut-remove { border: 0; background: none; color: var(--danger); cursor: pointer; font-size: 11px; }
+.shortcuts-add { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 14px; }
+.shortcuts-add input { min-width: 0; padding: 8px; background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-primary); }
+.shortcuts-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+@media (max-width: 520px) {
+  .shortcut-manager-row { grid-template-columns: 1fr auto auto; }
+  .shortcut-manager-row code { display: none; }
+  .shortcuts-add { grid-template-columns: 1fr 1fr; }
+  .shortcuts-add .ctrl-btn { grid-column: 1 / -1; }
 }
 
 /* ============================================================

@@ -2,7 +2,7 @@
 
 **Target Platforms**: Linux only (no Windows or macOS support)
 
-**Current Status**: v1.2.2 released; post-1.2.2 work in progress (see
+**Current Status**: v1.3.0 work in progress (see
 [CHANGELOG.md](../CHANGELOG.md)). All core milestones (M1–M6) are
 complete; see [PROJECT_STATUS.md](PROJECT_STATUS.md) for release verification status.
 

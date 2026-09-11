@@ -3,9 +3,9 @@
 // dispatch, menus, and app startup.
 // ============================================================
 
-import { CONFIG } from './config.js';
+import { CONFIG, Prefs } from './config.js';
 import { Auth } from './auth.js';
-import { term, fitAddon, writeSystemMessage, writeErrorMessage, initMobileKeys, onFontSizeChange } from './terminal.js';
+import { term, fitAddon, writeSystemMessage, writeErrorMessage, initMobileKeys, onFontSizeChange, shortcuts, setShortcuts, resetShortcuts, decodeTerminalSequence } from './terminal.js';
 import { isConfirmOpen, cancelConfirm, showToast } from './toast.js';
 import { initTransfer, setServerConfig } from './transfer.js';
 import {
@@ -653,6 +653,110 @@ const settingsWrapper = document.getElementById('settings-wrapper');
 const btnSettings = document.getElementById('btn-settings');
 const settingsMenu = document.getElementById('settings-menu');
 const uploadPanel = document.getElementById('upload-panel');
+const shortcutsBar = document.getElementById('mobile-keys');
+const btnShortcuts = document.getElementById('btn-shortcuts');
+const shortcutsOverlay = document.getElementById('shortcuts-overlay');
+const shortcutsList = document.getElementById('shortcuts-list');
+
+const shortcutBarDefault = false;
+let shortcutBarVisible = Prefs.getBool(CONFIG.storage.KEYS.SHORTCUT_BAR_VISIBLE, shortcutBarDefault);
+
+function setShortcutBarVisible(visible) {
+    shortcutBarVisible = visible;
+    shortcutsBar.classList.toggle('shortcut-bar-visible', visible);
+    btnShortcuts.setAttribute('aria-expanded', String(visible));
+    btnShortcuts.title = visible ? 'Hide shortcuts' : 'Show shortcuts';
+    Prefs.set(CONFIG.storage.KEYS.SHORTCUT_BAR_VISIBLE, String(visible));
+    // The xterm fit addon ran before the toolbar state was applied. Refit on
+    // the next frame so the terminal uses the space left by the toolbar.
+    requestAnimationFrame(() => {
+        fitAddon.fit();
+        sendResize();
+    });
+}
+setShortcutBarVisible(shortcutBarVisible);
+btnShortcuts.addEventListener('click', () => setShortcutBarVisible(!shortcutBarVisible));
+
+// Keep xterm in sync with toolbar size changes (including font loading and
+// responsive layout changes that do not emit a window resize event).
+const terminalLayoutObserver = new ResizeObserver(() => fitAddon.fit());
+terminalLayoutObserver.observe(document.getElementById('terminal-container'));
+terminalLayoutObserver.observe(shortcutsBar);
+
+function renderShortcutManager() {
+    shortcutsList.replaceChildren();
+    shortcuts.forEach((shortcut) => {
+        const row = document.createElement('div');
+        row.className = 'shortcut-manager-row';
+        const label = document.createElement('span');
+        label.className = 'shortcut-manager-label';
+        label.textContent = shortcut.label;
+        const sequence = document.createElement('code');
+        sequence.textContent = Array.from(shortcut.sequence, (char) => {
+            const code = char.charCodeAt(0);
+            return code < 32 ? `\\x${code.toString(16).padStart(2, '0')}` : char;
+        }).join('');
+        const toggleLabel = document.createElement('label');
+        toggleLabel.className = 'switch';
+        const toggle = document.createElement('input');
+        toggle.type = 'checkbox';
+        toggle.checked = shortcut.visible;
+        toggle.setAttribute('aria-label', `Show ${shortcut.label}`);
+        toggle.addEventListener('change', () => {
+            setShortcuts(shortcuts.map((item) => item.id === shortcut.id ? { ...item, visible: toggle.checked } : item));
+            renderShortcutManager();
+        });
+        const slider = document.createElement('span');
+        slider.className = 'switch-slider';
+        toggleLabel.append(toggle, slider);
+        const remove = document.createElement('button');
+        remove.className = 'shortcut-remove';
+        remove.textContent = 'Remove';
+        remove.addEventListener('click', () => {
+            setShortcuts(shortcuts.filter((item) => item.id !== shortcut.id));
+            renderShortcutManager();
+        });
+        row.append(label, sequence, toggleLabel, remove);
+        shortcutsList.appendChild(row);
+    });
+}
+
+function openShortcutManager() {
+    renderShortcutManager();
+    shortcutsOverlay.classList.remove('hidden');
+    document.getElementById('shortcut-label-input').focus();
+}
+function closeShortcutManager() { shortcutsOverlay.classList.add('hidden'); }
+
+document.getElementById('btn-manage-shortcuts').addEventListener('click', () => {
+    closeAllMenus();
+    openShortcutManager();
+});
+document.getElementById('shortcuts-close').addEventListener('click', closeShortcutManager);
+document.getElementById('shortcuts-done').addEventListener('click', closeShortcutManager);
+document.getElementById('shortcuts-reset').addEventListener('click', () => {
+    resetShortcuts();
+    renderShortcutManager();
+});
+document.getElementById('shortcut-add-btn').addEventListener('click', () => {
+    const labelInput = document.getElementById('shortcut-label-input');
+    const sequenceInput = document.getElementById('shortcut-sequence-input');
+    const label = labelInput.value.trim();
+    const sequence = decodeTerminalSequence(sequenceInput.value.trim());
+    if (!label || !sequence || !label.includes('+')) {
+        showToast('Enter a label such as Ctrl+T and a terminal sequence', 'error');
+        return;
+    }
+    if (shortcuts.some((shortcut) => shortcut.label.toLowerCase() === label.toLowerCase())) {
+        showToast('That shortcut already exists', 'error');
+        return;
+    }
+    setShortcuts([...shortcuts, { id: `custom-${Date.now()}`, label, sequence, visible: true }]);
+    labelInput.value = '';
+    sequenceInput.value = '';
+    renderShortcutManager();
+});
+shortcutsOverlay.addEventListener('click', (event) => { if (event.target === shortcutsOverlay) closeShortcutManager(); });
 
 function closeAllMenus() {
     menuDropdown.classList.remove('open');
@@ -715,7 +819,9 @@ function setMenuVisible(visible) {
 document.addEventListener('keydown', (e) => {
     // Escape: close menus/modals without stealing terminal Esc
     if (e.key === 'Escape') {
-        if (menuDropdown.classList.contains('open') || settingsMenu.classList.contains('open') || uploadPanel.classList.contains('open')) {
+        if (!shortcutsOverlay.classList.contains('hidden')) {
+            closeShortcutManager();
+        } else if (menuDropdown.classList.contains('open') || settingsMenu.classList.contains('open') || uploadPanel.classList.contains('open')) {
             closeAllMenus();
         } else if (isConfirmOpen()) {
             cancelConfirm();

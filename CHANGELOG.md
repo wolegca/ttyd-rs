@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.3.0 — 2026-09-11
+
+### Added
+
+- Configurable terminal shortcut bar: toggle it from the header, and manage
+  shortcut visibility and custom terminal sequences from Settings. Configured
+  combinations are captured before browser defaults when the browser permits
+  it, helping with shortcuts such as `Ctrl+T`.
+- Debian packaging with a dedicated system user, safe default configuration,
+  and a systemd service unit.
+
+### Changed
+
+- Authentication and API internals now share an `Authenticator` abstraction;
+  session timestamps use Unix time, file-transfer configuration is cached, and
+  handshake capabilities advertise file-transfer availability.
+- Startup output and error handling are more concise and actionable, with
+  warnings for previously silent WebSocket, PTY, and file-operation failures.
+- Connection liveness no longer reports a false pong timeout after a browser
+  tab resumes from the background.
+- Dependabot now ignores `dtolnay/rust-toolchain` updates that caused bogus
+  MSRV bump pull requests.
+
 ## 1.2.2 — 2026-09-07
 
 ### Fixed
