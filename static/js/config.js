@@ -27,7 +27,7 @@ export const CONFIG = {
         MIN_FONT_SIZE: 8,
         MAX_FONT_SIZE: 32,
         TOAST_DEFAULT_DURATION: 4,   // seconds; 0 = sticky
-        UPLOAD_HIDE_DELAY: 4000,     // ms finished transfers stay visible
+        UPLOAD_HIDE_DELAY: 4000,     // ms before finished transfers settle into the idle icon
         RESIZE_DEBOUNCE: 100,        // ms
         LOADING_DELAY: 250,          // ms before file-panel spinner shows
         FULLSCREEN_FIT_DELAY: 120,   // ms before refit after fullscreen change

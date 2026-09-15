@@ -60,6 +60,7 @@ const uploadPanel = document.getElementById('upload-panel');
 const uploadPanelTitle = document.getElementById('upload-panel-title');
 const uploadPanelList = document.getElementById('upload-panel-list');
 const btnCancelAll = document.getElementById('btn-cancel-all');
+const btnClearTransfers = document.getElementById('btn-clear-transfers');
 const ringFill = btnUploadIndicator.querySelector('.ring-fill');
 const ringText = btnUploadIndicator.querySelector('.ring-text');
 
@@ -68,10 +69,19 @@ const ringText = btnUploadIndicator.querySelector('.ring-text');
  * Upload items carry `file`; download items carry `name` and `total` bytes.
  * @type {Array<{id: number, kind: 'upload'|'download', name: string, file?: File,
  *               state: 'queued'|'uploading'|'done'|'failed'|'cancelled', pct: number,
- *               total?: number, controller?: AbortController}>}
+ *               batch: number, total?: number, controller?: AbortController}>}
  */
 const transferItems = [];
 let transferItemId = 0;
+/** Identifies the batch currently driving the progress ring/title. Items
+ *  from older batches stay in the list as history until cleared manually. */
+let currentBatchId = 0;
+
+/** Start a new batch when no transfer is active, otherwise join the running one. */
+function assignBatchId() {
+    if (!transferItems.some((i) => i.state === 'uploading' || i.state === 'queued')) currentBatchId++;
+    return currentBatchId;
+}
 /** XHR of the currently active upload, if any */
 let activeUploadXhr = null;
 /** Set when the user cancels the active upload so its error handler stays quiet */
@@ -84,10 +94,11 @@ function uploadBusy() {
     return transferItems.some((i) => i.state === 'uploading' && i.kind === 'upload');
 }
 
-/** Compute overall progress (0-100) across all transfer items. */
+/** Compute overall progress (0-100) across the current batch. */
 function computeOverallProgress() {
-    if (transferItems.length === 0) return 0;
-    return transferItems.reduce((sum, i) => sum + (i.state === 'done' ? 100 : i.pct), 0) / transferItems.length;
+    const batch = transferItems.filter((i) => i.batch === currentBatchId);
+    if (batch.length === 0) return 0;
+    return batch.reduce((sum, i) => sum + (i.state === 'done' ? 100 : i.pct), 0) / batch.length;
 }
 
 function renderTransferPanel() {
@@ -95,6 +106,11 @@ function renderTransferPanel() {
     for (const item of transferItems) {
         const row = document.createElement('div');
         row.className = 'upload-row ' + item.state;
+
+        const kind = document.createElement('span');
+        kind.className = 'upload-kind';
+        kind.innerHTML = item.kind === 'upload' ? ICONS.arrowUp : ICONS.arrowDown;
+        kind.title = item.kind === 'upload' ? 'Upload' : 'Download';
 
         const name = document.createElement('span');
         name.className = 'upload-name';
@@ -118,6 +134,7 @@ function renderTransferPanel() {
             status.classList.add('cancelled');
         }
 
+        row.appendChild(kind);
         row.appendChild(name);
         row.appendChild(status);
 
@@ -137,44 +154,49 @@ function renderTransferPanel() {
         uploadPanelList.appendChild(row);
     }
 
-    // Header summary
+    // Header summary (counts reflect the current batch; older history
+    // rows stay listed but don't skew the numbers)
     const active = transferItems.filter((i) => i.state === 'uploading' || i.state === 'queued');
-    const done = transferItems.filter((i) => i.state === 'done').length;
-    const hasDownload = transferItems.some((i) => i.kind === 'download');
+    const batchItems = transferItems.filter((i) => i.batch === currentBatchId);
+    const batchDone = batchItems.filter((i) => i.state === 'done').length;
+    const hasDownload = batchItems.some((i) => i.kind === 'download');
     const verb = hasDownload ? 'Transferring' : 'Uploading';
     if (active.length > 0) {
         const current = transferItems.find((i) => i.state === 'uploading');
         const overall = Math.round(computeOverallProgress());
-        uploadPanelTitle.textContent = transferItems.length > 1
-            ? `${verb} ${done + 1}/${transferItems.length} · ${overall}%`
+        uploadPanelTitle.textContent = batchItems.length > 1
+            ? `${verb} ${batchDone + 1}/${batchItems.length} · ${overall}%`
             : `${verb} · ${overall}%`;
         if (current) uploadPanelTitle.title = current.name;
     } else {
+        const done = transferItems.filter((i) => i.state === 'done').length;
         const failed = transferItems.filter((i) => i.state === 'failed' || i.state === 'cancelled').length;
         uploadPanelTitle.textContent = failed > 0
             ? `Finished · ${done} ok, ${failed} cancelled/failed`
             : `Finished · ${done} transferred`;
     }
     btnCancelAll.style.display = active.length > 0 ? '' : 'none';
+    btnClearTransfers.style.display = active.length === 0 && transferItems.length > 0 ? '' : 'none';
 
-    // Ring progress + center task count
+    // Ring progress + center task count (current batch only)
     ringFill.style.strokeDashoffset = String(100 - computeOverallProgress());
-    ringText.textContent = String(transferItems.length);
+    ringText.textContent = String(batchItems.length);
 
-    // Icon visibility
+    const hasActive = active.length > 0;
+    const hasFailed = transferItems.some((i) => i.state === 'failed');
+
+    // Icon visibility & mode: progress ring while transfers are active,
+    // a plain transfer icon once finished (history stays one click away).
     if (transferItems.length === 0) {
         uploadIndicator.classList.add('hidden');
         uploadPanel.classList.remove('open');
     } else {
         uploadIndicator.classList.remove('hidden');
+        btnUploadIndicator.classList.toggle('idle', !hasActive);
+        const modeLabel = hasActive ? 'Transfer progress' : 'Transfer history';
+        btnUploadIndicator.title = modeLabel;
+        btnUploadIndicator.setAttribute('aria-label', modeLabel);
     }
-
-    // Auto-expand/collapse logic:
-    // - Expand when first item becomes active
-    // - Keep open if there are failures
-    // - Auto-collapse after 2s when all done successfully
-    const hasActive = active.length > 0;
-    const hasFailed = transferItems.some((i) => i.state === 'failed');
 
     if (hasActive && !uploadPanel.classList.contains('open')) {
         // First upload/download started: auto-expand
@@ -242,6 +264,13 @@ btnCancelAll.addEventListener('click', (e) => {
     cancelAllTransfers();
 });
 
+btnClearTransfers.addEventListener('click', (e) => {
+    e.stopPropagation();
+    transferItems.length = 0;
+    transferItemId = 0;
+    renderTransferPanel();
+});
+
 btnUploadIndicator.addEventListener('click', (e) => {
     e.stopPropagation();
     const willOpen = !uploadPanel.classList.contains('open');
@@ -249,16 +278,18 @@ btnUploadIndicator.addEventListener('click', (e) => {
     if (willOpen) uploadPanel.classList.add('open');
 });
 
-// Keep finished items visible briefly, then auto-hide
+// Keep finished items visible briefly, then settle into the idle icon.
+// Items are kept so the history remains accessible via the indicator button.
 let transferHideTimer = null;
 function scheduleTransferHide() {
     if (transferHideTimer) clearTimeout(transferHideTimer);
     transferHideTimer = setTimeout(() => {
-        transferItems.length = 0;
-        transferItemId = 0;
+        uploadPanel.classList.remove('open');
+        btnUploadIndicator.classList.remove('active');
         renderTransferPanel();
     }, CONFIG.ui.UPLOAD_HIDE_DELAY);
 }
+
 
 // ============================================================
 // Upload
@@ -282,8 +313,9 @@ export function queueUploads(files) {
     const list = Array.from(files);
     if (list.length === 0) return;
     if (transferHideTimer) clearTimeout(transferHideTimer);
+    const batch = assignBatchId();
     for (const file of list) {
-        transferItems.push({ id: ++transferItemId, kind: 'upload', name: file.name, file, state: 'queued', pct: 0 });
+        transferItems.push({ id: ++transferItemId, kind: 'upload', name: file.name, file, state: 'queued', pct: 0, batch });
     }
     renderTransferPanel();
     showToast(
@@ -488,8 +520,9 @@ export function triggerDownload(filename) {
         total: 0,
         controller: new AbortController(),
     };
-    transferItems.push(item);
     if (transferHideTimer) clearTimeout(transferHideTimer);
+    item.batch = assignBatchId();
+    transferItems.push(item);
     renderTransferPanel();
     showToast(`Downloading: ${filename}`, 'info');
 

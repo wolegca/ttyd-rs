@@ -7,6 +7,7 @@ import { CONFIG, Prefs } from './config.js';
 import { Auth } from './auth.js';
 import { term, fitAddon, writeSystemMessage, writeErrorMessage, initMobileKeys, onFontSizeChange, shortcuts, setShortcuts, resetShortcuts, decodeTerminalSequence } from './terminal.js';
 import { isConfirmOpen, cancelConfirm, showToast } from './toast.js';
+import { ICONS } from './icons.js';
 import { initTransfer, setServerConfig } from './transfer.js';
 import {
     openFilePanel, isFilePanelOpen, hideFilePanel, cancelLoading,
@@ -814,7 +815,9 @@ function renderShortcutManager() {
         toggleLabel.append(toggle, slider);
         const remove = document.createElement('button');
         remove.className = 'shortcut-remove';
-        remove.textContent = 'Remove';
+        remove.innerHTML = ICONS.trash;
+        remove.title = 'Remove shortcut';
+        remove.setAttribute('aria-label', `Remove ${shortcut.label}`);
         remove.addEventListener('click', () => {
             setShortcuts(shortcuts.filter((item) => item.id !== shortcut.id));
             renderShortcutManager();

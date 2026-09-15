@@ -1266,6 +1266,15 @@ button {
   stroke: none;
   font-variant-numeric: tabular-nums;
 }
+#btn-upload-indicator .transfer-icon {
+  display: none;
+}
+#btn-upload-indicator.idle svg.ring {
+  display: none;
+}
+#btn-upload-indicator.idle .transfer-icon {
+  display: block;
+}
 
 #upload-panel {
   min-width: 280px;
@@ -1288,6 +1297,24 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+#btn-clear-transfers {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+#btn-clear-transfers:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 #btn-cancel-all {
   flex: 0 0 auto;
@@ -1320,6 +1347,12 @@ button {
 }
 .upload-row:last-child {
   border-bottom: none;
+}
+.upload-row .upload-kind {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
 }
 .upload-row .upload-name {
   flex: 1 1 auto;
@@ -1502,13 +1535,16 @@ button {
 #shortcuts-box {
   width: min(560px, 100%);
   max-height: min(80vh, 680px);
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   padding: 20px;
   box-shadow: var(--shadow-lg);
 }
+#shortcuts-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .shortcuts-header { display: flex; align-items: center; justify-content: space-between; }
 .shortcuts-header h2 { margin: 0; font-size: 16px; color: var(--text-primary); }
 #shortcuts-close { background: none; border: 0; color: var(--text-muted); font-size: 22px; cursor: pointer; }
@@ -1518,24 +1554,25 @@ button {
 .shortcut-manager-row.drop-before { box-shadow: 0 -2px 0 var(--accent); }
 .shortcut-manager-row.drop-after { box-shadow: 0 2px 0 var(--accent); }
 .shortcut-reorder { display: flex; align-items: center; gap: 6px; }
-.shortcut-move-stack { display: flex; flex-direction: column; gap: 2px; }
+.shortcut-move-stack { display: flex; flex-direction: row; gap: 6px; }
 .shortcut-drag-handle { color: var(--text-muted); cursor: grab; user-select: none; touch-action: none; padding: 2px; line-height: 1; }
 .shortcut-drag-handle:hover { color: var(--text-primary); }
 .shortcut-drag-handle:active { cursor: grabbing; }
-.shortcut-move { border: 1px solid var(--border-subtle); background: none; color: var(--text-muted); cursor: pointer; font-size: 9px; line-height: 1; padding: 3px 5px; border-radius: var(--radius-sm); }
+.shortcut-move { border: 1px solid var(--border-subtle); background: none; color: var(--text-muted); cursor: pointer; font-size: 13px; line-height: 1; padding: 5px 8px; border-radius: var(--radius-sm); }
 .shortcut-move:hover:not(:disabled) { color: var(--text-primary); }
 .shortcut-move:disabled { opacity: 0.35; cursor: default; }
 .shortcut-edit { min-width: 0; width: 100%; padding: 4px 6px; background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-primary); font-size: 13px; }
 .shortcut-edit:hover { border-color: var(--border-subtle); }
 .shortcut-edit:focus { background: var(--bg-base); border-color: var(--accent); outline: none; }
 .shortcut-edit-sequence { color: var(--text-secondary); font-size: 11px; font-family: var(--font-mono); }
-.shortcut-remove { border: 0; background: none; color: var(--danger); cursor: pointer; font-size: 11px; }
+.shortcut-remove { display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--text-muted); cursor: pointer; padding: 4px; border-radius: var(--radius-sm); }
+.shortcut-remove:hover { color: var(--danger); }
 .shortcuts-add { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 14px; }
 .shortcuts-add input { min-width: 0; padding: 8px; background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-primary); }
 .shortcuts-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 @media (max-width: 520px) {
-  .shortcut-manager-row { grid-template-columns: auto 1fr auto auto; }
-  .shortcut-manager-row .shortcut-edit-sequence { display: none; }
+  .shortcut-manager-row { grid-template-columns: auto 1fr minmax(48px, 0.8fr) auto auto; gap: 6px; }
+  .shortcut-manager-row .shortcut-edit-sequence { text-overflow: ellipsis; }
   .shortcuts-add { grid-template-columns: 1fr 1fr; }
   .shortcuts-add .ctrl-btn { grid-column: 1 / -1; }
 }
