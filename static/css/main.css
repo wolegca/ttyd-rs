@@ -1513,16 +1513,29 @@ button {
 .shortcuts-header h2 { margin: 0; font-size: 16px; color: var(--text-primary); }
 #shortcuts-close { background: none; border: 0; color: var(--text-muted); font-size: 22px; cursor: pointer; }
 .shortcuts-help { color: var(--text-muted); font-size: 12px; line-height: 1.5; margin: 8px 0 14px; }
-.shortcut-manager-row { display: grid; grid-template-columns: 1fr minmax(70px, 1.2fr) auto auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border-subtle); }
-.shortcut-manager-label { color: var(--text-primary); font-size: 13px; }
-.shortcut-manager-row code { color: var(--text-secondary); font-size: 11px; font-family: var(--font-mono); }
+.shortcut-manager-row { display: grid; grid-template-columns: auto 1fr minmax(70px, 1.2fr) auto auto; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--border-subtle); }
+.shortcut-manager-row.dragging { opacity: 0.5; }
+.shortcut-manager-row.drop-before { box-shadow: 0 -2px 0 var(--accent); }
+.shortcut-manager-row.drop-after { box-shadow: 0 2px 0 var(--accent); }
+.shortcut-reorder { display: flex; align-items: center; gap: 6px; }
+.shortcut-move-stack { display: flex; flex-direction: column; gap: 2px; }
+.shortcut-drag-handle { color: var(--text-muted); cursor: grab; user-select: none; touch-action: none; padding: 2px; line-height: 1; }
+.shortcut-drag-handle:hover { color: var(--text-primary); }
+.shortcut-drag-handle:active { cursor: grabbing; }
+.shortcut-move { border: 1px solid var(--border-subtle); background: none; color: var(--text-muted); cursor: pointer; font-size: 9px; line-height: 1; padding: 3px 5px; border-radius: var(--radius-sm); }
+.shortcut-move:hover:not(:disabled) { color: var(--text-primary); }
+.shortcut-move:disabled { opacity: 0.35; cursor: default; }
+.shortcut-edit { min-width: 0; width: 100%; padding: 4px 6px; background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-primary); font-size: 13px; }
+.shortcut-edit:hover { border-color: var(--border-subtle); }
+.shortcut-edit:focus { background: var(--bg-base); border-color: var(--accent); outline: none; }
+.shortcut-edit-sequence { color: var(--text-secondary); font-size: 11px; font-family: var(--font-mono); }
 .shortcut-remove { border: 0; background: none; color: var(--danger); cursor: pointer; font-size: 11px; }
 .shortcuts-add { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 14px; }
 .shortcuts-add input { min-width: 0; padding: 8px; background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); color: var(--text-primary); }
 .shortcuts-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 @media (max-width: 520px) {
-  .shortcut-manager-row { grid-template-columns: 1fr auto auto; }
-  .shortcut-manager-row code { display: none; }
+  .shortcut-manager-row { grid-template-columns: auto 1fr auto auto; }
+  .shortcut-manager-row .shortcut-edit-sequence { display: none; }
   .shortcuts-add { grid-template-columns: 1fr 1fr; }
   .shortcuts-add .ctrl-btn { grid-column: 1 / -1; }
 }

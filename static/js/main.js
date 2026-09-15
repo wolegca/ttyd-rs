@@ -683,19 +683,122 @@ const terminalLayoutObserver = new ResizeObserver(() => fitAddon.fit());
 terminalLayoutObserver.observe(document.getElementById('terminal-container'));
 terminalLayoutObserver.observe(shortcutsBar);
 
+function moveShortcut(id, offset) {
+    const index = shortcuts.findIndex((item) => item.id === id);
+    const target = index + offset;
+    if (index < 0 || target < 0 || target >= shortcuts.length) return;
+    const next = [...shortcuts];
+    [next[index], next[target]] = [next[target], next[index]];
+    setShortcuts(next);
+    renderShortcutManager();
+}
+
+function moveShortcutTo(id, targetId, after) {
+    if (id === targetId) return;
+    const moved = shortcuts.find((item) => item.id === id);
+    if (!moved) return;
+    const next = shortcuts.filter((item) => item.id !== id);
+    let target = next.findIndex((item) => item.id === targetId);
+    if (target < 0) return;
+    if (after) target += 1;
+    next.splice(target, 0, moved);
+    setShortcuts(next);
+    renderShortcutManager();
+}
+
+let draggedShortcutId = null;
+
+function clearDropIndicator() {
+    shortcutsList.querySelectorAll('.drop-before, .drop-after')
+        .forEach((el) => el.classList.remove('drop-before', 'drop-after'));
+}
+
+function formatShortcutSequence(sequence) {
+    return Array.from(sequence, (char) => {
+        const code = char.charCodeAt(0);
+        return code < 32 ? `\\x${code.toString(16).padStart(2, '0')}` : char;
+    }).join('');
+}
+
 function renderShortcutManager() {
     shortcutsList.replaceChildren();
-    shortcuts.forEach((shortcut) => {
+    shortcuts.forEach((shortcut, index) => {
         const row = document.createElement('div');
         row.className = 'shortcut-manager-row';
-        const label = document.createElement('span');
-        label.className = 'shortcut-manager-label';
-        label.textContent = shortcut.label;
-        const sequence = document.createElement('code');
-        sequence.textContent = Array.from(shortcut.sequence, (char) => {
-            const code = char.charCodeAt(0);
-            return code < 32 ? `\\x${code.toString(16).padStart(2, '0')}` : char;
-        }).join('');
+        const reorder = document.createElement('span');
+        reorder.className = 'shortcut-reorder';
+        const handle = document.createElement('span');
+        handle.className = 'shortcut-drag-handle';
+        handle.textContent = '⠿';
+        handle.title = 'Drag to reorder';
+        handle.draggable = true;
+        handle.addEventListener('dragstart', (event) => {
+            draggedShortcutId = shortcut.id;
+            row.classList.add('dragging');
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setDragImage(row, 16, 16);
+        });
+        handle.addEventListener('dragend', () => {
+            draggedShortcutId = null;
+            row.classList.remove('dragging');
+            clearDropIndicator();
+        });
+        const moveStack = document.createElement('span');
+        moveStack.className = 'shortcut-move-stack';
+        const moveUp = document.createElement('button');
+        moveUp.className = 'shortcut-move';
+        moveUp.textContent = '↑';
+        moveUp.setAttribute('aria-label', `Move ${shortcut.label} up`);
+        moveUp.disabled = index === 0;
+        moveUp.addEventListener('click', () => moveShortcut(shortcut.id, -1));
+        const moveDown = document.createElement('button');
+        moveDown.className = 'shortcut-move';
+        moveDown.textContent = '↓';
+        moveDown.setAttribute('aria-label', `Move ${shortcut.label} down`);
+        moveDown.disabled = index === shortcuts.length - 1;
+        moveDown.addEventListener('click', () => moveShortcut(shortcut.id, 1));
+        moveStack.append(moveUp, moveDown);
+        reorder.append(handle, moveStack);
+        const label = document.createElement('input');
+        label.className = 'shortcut-edit shortcut-edit-label';
+        label.type = 'text';
+        label.value = shortcut.label;
+        label.maxLength = 32;
+        label.setAttribute('aria-label', `Label for ${shortcut.label}`);
+        label.addEventListener('change', () => {
+            const next = label.value.trim();
+            if (next === shortcut.label) return;
+            if (!next) {
+                showToast('Label cannot be empty', 'error');
+                renderShortcutManager();
+                return;
+            }
+            if (shortcuts.some((item) => item.id !== shortcut.id && item.label.toLowerCase() === next.toLowerCase())) {
+                showToast('That shortcut already exists', 'error');
+                renderShortcutManager();
+                return;
+            }
+            setShortcuts(shortcuts.map((item) => item.id === shortcut.id ? { ...item, label: next } : item));
+            renderShortcutManager();
+        });
+        const sequence = document.createElement('input');
+        sequence.className = 'shortcut-edit shortcut-edit-sequence';
+        sequence.type = 'text';
+        sequence.value = formatShortcutSequence(shortcut.sequence);
+        sequence.maxLength = 128;
+        sequence.spellcheck = false;
+        sequence.setAttribute('aria-label', `Sequence for ${shortcut.label}`);
+        sequence.addEventListener('change', () => {
+            const next = decodeTerminalSequence(sequence.value.trim());
+            if (next === shortcut.sequence) return;
+            if (!next) {
+                showToast('Sequence cannot be empty', 'error');
+                renderShortcutManager();
+                return;
+            }
+            setShortcuts(shortcuts.map((item) => item.id === shortcut.id ? { ...item, sequence: next } : item));
+            renderShortcutManager();
+        });
         const toggleLabel = document.createElement('label');
         toggleLabel.className = 'switch';
         const toggle = document.createElement('input');
@@ -716,10 +819,31 @@ function renderShortcutManager() {
             setShortcuts(shortcuts.filter((item) => item.id !== shortcut.id));
             renderShortcutManager();
         });
-        row.append(label, sequence, toggleLabel, remove);
+        row.append(reorder, label, sequence, toggleLabel, remove);
+        row.addEventListener('dragover', (event) => {
+            if (!draggedShortcutId) return;
+            clearDropIndicator();
+            if (draggedShortcutId === shortcut.id) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+            const rect = row.getBoundingClientRect();
+            const after = event.clientY > rect.top + rect.height / 2;
+            row.classList.add(after ? 'drop-after' : 'drop-before');
+        });
+        row.addEventListener('drop', (event) => {
+            event.preventDefault();
+            if (!draggedShortcutId || draggedShortcutId === shortcut.id) return;
+            const rect = row.getBoundingClientRect();
+            const after = event.clientY > rect.top + rect.height / 2;
+            moveShortcutTo(draggedShortcutId, shortcut.id, after);
+        });
         shortcutsList.appendChild(row);
     });
 }
+
+shortcutsList.addEventListener('dragleave', (event) => {
+    if (!shortcutsList.contains(event.relatedTarget)) clearDropIndicator();
+});
 
 function openShortcutManager() {
     renderShortcutManager();
