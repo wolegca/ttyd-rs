@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.4.0 — 2026-09-22
+
+### Added
+
+- Debian package releases now include a dedicated `ttyd-rs` system user, a
+  safe default configuration, and a systemd service with pre-start config
+  validation.
+- Shortcut management now supports drag-and-drop and arrow-based reordering,
+  with persisted order and inline label/sequence editing.
+
+### Changed
+
+- Transfer history remains available after completion, with explicit clearing,
+  upload/download indicators, and progress scoped to the active batch.
+- Updated `clap` and `rand` dependencies and refreshed the lockfile.
+
 ## 1.3.0 — 2026-09-11
 
 ### Added
