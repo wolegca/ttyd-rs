@@ -8,8 +8,8 @@ description = "A Rust rewrite of ttyd - Share your terminal over the web"
 license = "AGPL-3.0-only"
 
 [lints.clippy]
-unwrap-used = "deny"
-expect-used = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
 panic = "deny"
 
 [dependencies]
