@@ -83,7 +83,11 @@ pub(crate) fn spawn_pty_reader(
             return;
         }
 
-        let async_fd = match tokio::io::unix::AsyncFd::new(dup_fd) {
+        // SAFETY: `dup_fd` was just duplicated from the PTY master and the
+        // fcntl calls above confirmed it is a valid, open descriptor; it stays
+        // open and points at the same file description until the `AsyncFd`
+        // (which owns it) is dropped at the end of this task.
+        let async_fd = match unsafe { tokio::io::unix::AsyncFd::register(dup_fd) } {
             Ok(fd) => fd,
             Err(e) => {
                 error!("Failed to register PTY fd with the reactor: {}", e);
