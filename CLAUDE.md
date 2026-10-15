@@ -124,6 +124,7 @@ src/
     ├── http.rs          # Routing, static file serving, gzip, background tasks
     ├── api.rs           # REST API endpoints + HTTP auth middleware
     ├── files.rs         # File transfer (upload/download/list)
+    ├── status.rs        # Status endpoint: application vs host /proc metrics, CPU samplers, uptime
     ├── websocket.rs     # WS handler: upgrade, connection slots, lifecycle
     └── websocket/
         ├── handshake.rs         # resize/join handshake before the main loop

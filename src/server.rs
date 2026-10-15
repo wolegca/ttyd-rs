@@ -2,6 +2,7 @@
 pub mod api;
 pub mod files;
 pub mod http;
+pub mod status;
 pub mod websocket;
 
 pub use http::start_server;

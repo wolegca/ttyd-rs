@@ -68,6 +68,7 @@ Milestone history (M1–M6) is maintained in [docs/ROADMAP.md](ROADMAP.md#develo
 ### Frontend Integration (M6) — details
 - Three-dot kebab menu (upload/browse files, visible only when authenticated)
 - Connection status indicator (green=connected, yellow=login required, red=disconnected)
+- Server status quick-view panel in the header (version, uptime, connections, sessions, RSS/CPU/load), auto-refreshing while open
 
 ### File Transfer ✅
 - HTTP multipart upload with streaming size limit enforcement
@@ -97,6 +98,13 @@ Milestone history (M1–M6) is maintained in [docs/ROADMAP.md](ROADMAP.md#develo
 - **Path traversal**: `..` segments explicitly rejected (404)
 - 6 dedicated tests covering font non-compression, cache headers, security headers, path traversal, `[compression] enabled = false`, and API responses staying uncompressed
 
+### Server Status Quick View ✅
+- `GET /api/status` (auth-protected like the rest of the API group): version, uptime, session/connection counters, with metrics split into `application` (the ttyd-rs process) and `server` (the host) groups
+- Application metrics: `VmRSS` from `/proc/self/status`; process CPU usage sampled by a background task every 5s (`utime`+`stime` delta from `/proc/self/stat`, aborted on shutdown) and served as fixed-point milli-percent; can exceed 100% on multi-core
+- Server (host) metrics, read directly from `/proc` (no extra dependency): total/used/available memory from `/proc/meminfo` (`used = total − available`), host CPU usage from the aggregate `cpu` line of `/proc/stat` (same 5s sampler), 1/5/15-minute load from `/proc/loadavg`, uptime from `/proc/uptime`, kernel release from `/proc/sys/kernel/osrelease`
+- Header dropdown panel (button appears after authentication) split into Application / Sessions / Server groups, refreshed every 5s while open; closes on outside click / Escape like the other menus
+- Application metrics reflect the ttyd-rs process only, not PTY children
+
 ---
 
 ## Module Structure
@@ -116,6 +124,7 @@ See [Project Structure](../CLAUDE.md#project-structure) in CLAUDE.md for the ann
 | GET | /api/sessions/:id | required | Session info; 404 `{error}` if unknown |
 | DELETE | /api/sessions/:id | required | Terminate session; 204 on success, 404 if unknown |
 | GET | /api/stats | required | Server statistics |
+| GET | /api/status | required | Status snapshot — `{version, uptime_seconds, sessions{total,isolated,shared,clients}, connections{active,max}, application{rss_bytes,cpu_percent}, server{cpu_percent,load_average,memory{total_bytes,used_bytes,available_bytes},uptime_seconds,kernel}}`; `application`/`server` fields other than `cpu_percent` are omitted when `/proc` is unreadable |
 | POST | /api/files/upload | required¹ | Multipart upload; query `session_id`, `overwrite`. Returns `{filename, size}`; 403 if the target directory is not writable (checked before the body is read), 409 if the file exists and `overwrite` is not set, 413 if it exceeds `max_upload_size`, 404 for an unknown `session_id` |
 | GET | /api/files/download?path= | required¹ | Streaming download with `Content-Disposition`; 403 on traversal or an unresolvable path, 404 if missing |
 | GET | /api/files/list | required¹ | Directory listing (`path` defaults to `.`); dotfiles hidden unless `show_hidden=true` |
@@ -141,6 +150,7 @@ basic auth or `Authorization: Bearer <token>` for token auth.
 curl http://localhost:7681/api/health
 curl http://localhost:7681/api/sessions
 curl http://localhost:7681/api/stats
+curl -u admin:secret http://localhost:7681/api/status
 
 # File operations (with auth)
 curl -u admin:secret -F "file=@myfile.txt" http://localhost:7681/api/files/upload

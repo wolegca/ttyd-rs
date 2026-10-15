@@ -1,5 +1,6 @@
 /// REST API endpoints for session management
 use crate::config::Config;
+use crate::server::status::StatusState;
 use crate::session::SessionManager;
 use axum::{
     Json,
@@ -16,6 +17,8 @@ use std::sync::Arc;
 pub struct ApiState {
     pub session_manager: Arc<SessionManager>,
     pub config: Arc<Config>,
+    /// Counters backing `GET /api/status` (uptime, live connections, CPU).
+    pub status: StatusState,
 }
 
 /// Response for session list
@@ -298,6 +301,7 @@ mod tests {
         let api_state = ApiState {
             session_manager: session_manager.clone(),
             config: Arc::new(config),
+            status: StatusState::new(),
         };
         (api_state, session_manager)
     }
@@ -357,6 +361,7 @@ mod tests {
         let api_state = ApiState {
             session_manager,
             config: Arc::new(cfg),
+            status: StatusState::new(),
         };
         let Json(config) = get_config(axum::extract::State(api_state)).await;
         assert_eq!(config.auth_method.unwrap(), "basic");

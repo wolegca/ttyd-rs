@@ -48,6 +48,38 @@
                 </div>
             </div>
 
+            <div id="status-wrapper" class="menu-anchor hidden">
+                <button id="btn-status" class="icon-btn" title="Server status" aria-label="Server status" aria-haspopup="true" aria-controls="status-panel" aria-expanded="false">
+                    <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8h2.5l1.5-4 2.5 8L10 6l1.5 2h3"/></svg>
+                </button>
+                <div id="status-panel" class="dropdown" role="dialog" aria-label="Server status">
+                    <div class="menu-group">
+                        <div class="menu-label">Application</div>
+                        <div class="menu-row status-row"><span>Version</span><span class="status-value" id="status-version">–</span></div>
+                        <div class="menu-row status-row"><span>Uptime</span><span class="status-value" id="status-uptime">–</span></div>
+                        <div class="menu-row status-row"><span>Connections</span><span class="status-value" id="status-connections">–</span></div>
+                        <div class="menu-row status-row"><span>Memory</span><span class="status-value" id="status-app-memory">–</span></div>
+                        <div class="menu-row status-row"><span>CPU</span><span class="status-value" id="status-app-cpu">–</span></div>
+                    </div>
+                    <div class="menu-divider"></div>
+                    <div class="menu-group">
+                        <div class="menu-label">Sessions</div>
+                        <div class="menu-row status-row"><span>Total</span><span class="status-value" id="status-sessions-total">–</span></div>
+                        <div class="menu-row status-row"><span>Isolated / Shared</span><span class="status-value" id="status-sessions-split">–</span></div>
+                        <div class="menu-row status-row"><span>Clients</span><span class="status-value" id="status-sessions-clients">–</span></div>
+                    </div>
+                    <div class="menu-divider"></div>
+                    <div class="menu-group">
+                        <div class="menu-label">Server</div>
+                        <div class="menu-row status-row"><span>Memory</span><span class="status-value" id="status-host-memory">–</span></div>
+                        <div class="menu-row status-row"><span>CPU</span><span class="status-value" id="status-host-cpu">–</span></div>
+                        <div class="menu-row status-row"><span>Load avg</span><span class="status-value" id="status-host-load">–</span></div>
+                        <div class="menu-row status-row"><span>Uptime</span><span class="status-value" id="status-host-uptime">–</span></div>
+                        <div class="menu-row status-row"><span>Kernel</span><span class="status-value" id="status-host-kernel">–</span></div>
+                    </div>
+                </div>
+            </div>
+
             <button id="btn-fullscreen" class="icon-btn" title="Toggle fullscreen" aria-label="Toggle fullscreen">
                 <svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2.5H2.5V6M10 2.5h3.5V6M10 13.5h3.5V10M6 13.5H2.5V10"/></svg>
             </button>

@@ -9,6 +9,7 @@ import { term, fitAddon, writeSystemMessage, writeErrorMessage, initMobileKeys, 
 import { isConfirmOpen, cancelConfirm, showToast } from './toast.js';
 import { ICONS } from './icons.js';
 import { initTransfer, setServerConfig } from './transfer.js';
+import { initStatusPanel, closeStatusPanel, isStatusPanelOpen, showStatusButton } from './status.js';
 import {
     openFilePanel, isFilePanelOpen, hideFilePanel, cancelLoading,
     renderFileList, renderFileListError, initFilePanel,
@@ -509,6 +510,7 @@ function onAuthenticated() {
     readOnly = false;
     setReadOnlyBadge(false);
     setMenuVisible(true);
+    showStatusButton();
     loginOverlay.classList.add('hidden');
     loginSubmit.disabled = false;
     loginSubmit.textContent = 'Login';
@@ -889,6 +891,7 @@ function closeAllMenus() {
     menuDropdown.classList.remove('open');
     settingsMenu.classList.remove('open');
     uploadPanel.classList.remove('open');
+    closeStatusPanel();
 }
 
 btnMenu.addEventListener('click', (e) => {
@@ -907,7 +910,7 @@ btnSettings.addEventListener('click', (e) => {
 
 // Close menus on any outside click
 document.addEventListener('click', (e) => {
-    if (!e.target.closest('#menu-wrapper') && !e.target.closest('#settings-wrapper') && !e.target.closest('#upload-indicator')) {
+    if (!e.target.closest('#menu-wrapper') && !e.target.closest('#settings-wrapper') && !e.target.closest('#upload-indicator') && !e.target.closest('#status-wrapper')) {
         closeAllMenus();
     }
 });
@@ -948,7 +951,7 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         if (!shortcutsOverlay.classList.contains('hidden')) {
             closeShortcutManager();
-        } else if (menuDropdown.classList.contains('open') || settingsMenu.classList.contains('open') || uploadPanel.classList.contains('open')) {
+        } else if (menuDropdown.classList.contains('open') || settingsMenu.classList.contains('open') || uploadPanel.classList.contains('open') || isStatusPanelOpen()) {
             closeAllMenus();
         } else if (isConfirmOpen()) {
             cancelConfirm();
@@ -997,6 +1000,8 @@ initTransfer(
     () => currentSessionId,
     closeAllMenus,
 );
+
+initStatusPanel(closeAllMenus);
 
 initFilePanel((path) => {
     if (ws && ws.readyState === WebSocket.OPEN) {

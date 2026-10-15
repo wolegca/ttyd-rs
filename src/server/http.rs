@@ -86,9 +86,27 @@ pub async fn start_server(
         file_rate_limiter: file_rate_limiter.clone(),
         file_transfer_config: Arc::new(config.file_transfer.clone()),
     };
+
+    // Status endpoint state: shares the live connection counter with
+    // AppState so the numbers cannot diverge, and carries the CPU samplers'
+    // milli-percent slots plus the server start instant (uptime).
+    let status_state = crate::server::status::StatusState {
+        active_connections: app_state.active_connections.clone(),
+        started_at: std::time::Instant::now(),
+        cpu_percent_milli: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        host_cpu_percent_milli: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+    };
+    // Background CPU sampler (process + host) for /api/status (aborted on
+    // shutdown below, same pattern as the limiter/session cleanup tasks).
+    let cpu_sampler_task = crate::server::status::spawn_cpu_sampler(
+        status_state.cpu_percent_milli.clone(),
+        status_state.host_cpu_percent_milli.clone(),
+    );
+
     let api_state = ApiState {
         session_manager: session_manager.clone(),
         config: Arc::new(config.clone()),
+        status: status_state,
     };
 
     // Spawn cleanup task for both rate limiters
@@ -168,6 +186,7 @@ pub async fn start_server(
     // Abort background tasks so the tokio runtime can shut down cleanly
     limiter_task.abort();
     session_task.abort();
+    cpu_sampler_task.abort();
 
     info!("Shutdown complete");
 
@@ -266,6 +285,10 @@ fn create_router(config: &Config, app_state: AppState, api_state: ApiState) -> R
         .route(
             "/api/stats",
             get(super::api::get_stats).with_state(api_state.clone()),
+        )
+        .route(
+            "/api/status",
+            get(super::status::get_status).with_state(api_state.clone()),
         );
 
     // File transfer routes (conditionally enabled)
@@ -492,6 +515,7 @@ mod tests {
         let api_state = ApiState {
             session_manager,
             config: config_arc,
+            status: crate::server::status::StatusState::new(),
         };
         (app_state, api_state)
     }
@@ -609,6 +633,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_api_status() {
+        let config = Config::default();
+        let (app_state, api_state) = test_state();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/api/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["version"].is_string());
+        assert!(json["uptime_seconds"].is_u64());
+        assert_eq!(json["sessions"]["total"], 0);
+        assert_eq!(json["sessions"]["clients"], 0);
+        assert!(json["connections"]["max"].is_u64());
+        // Process/host metrics may be absent on exotic /proc setups, but
+        // the cpu_percent fields are always present (samplers start at 0)
+        assert!(json["application"]["cpu_percent"].is_f64());
+        assert!(json["server"]["cpu_percent"].is_f64());
+    }
+
+    #[tokio::test]
+    async fn test_api_status_401_without_credentials() {
+        let (config, app_state, api_state) = test_state_with_basic_auth();
+        let app = create_router(&config, app_state, api_state);
+
+        let req = Request::builder()
+            .uri("/api/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn test_no_cors_headers_by_default() {
         let config = Config::default();
         let (app_state, api_state) = test_state();
@@ -677,6 +744,7 @@ mod tests {
         let api_state = ApiState {
             session_manager,
             config: config_arc,
+            status: crate::server::status::StatusState::new(),
         };
         let app = create_router(&config, app_state, api_state);
 
@@ -1028,6 +1096,7 @@ mod tests {
         let api_state = ApiState {
             session_manager,
             config: config_arc,
+            status: crate::server::status::StatusState::new(),
         };
         (config, app_state, api_state)
     }
@@ -1351,6 +1420,7 @@ mod tests {
         let api_state = ApiState {
             session_manager,
             config: Arc::new(config.clone()),
+            status: crate::server::status::StatusState::new(),
         };
 
         let app = create_router(&config, app_state, api_state);

@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.5.0 — 2026-10-15
+
+### Added
+
+- Server status quick view: a new `GET /api/status` endpoint (auth-protected)
+  reports version, uptime, live connection/session counters, and metrics
+  split into `application` (process RSS and CPU usage) and `server`
+  (host-wide CPU, total/used/available memory, load averages, host uptime,
+  kernel release) groups, all read directly from `/proc` with background
+  CPU samplers instead of an extra dependency.
+- Header status panel: an activity-icon dropdown (shown after authentication)
+  renders the status snapshot split into Application / Sessions / Server
+  groups and refreshes every 5 seconds while open.
+
 ## 1.4.0 — 2026-09-22
 
 ### Added
