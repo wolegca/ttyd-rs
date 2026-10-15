@@ -151,6 +151,17 @@ pub struct MemoryStatus {
 pub async fn get_status(State(state): State<ApiState>) -> Json<StatusResponse> {
     let stats = state.session_manager.stats().await;
 
+    // Read the `/proc` files concurrently instead of one after another; each
+    // read is offloaded to the blocking pool by `tokio::fs`, so the reactor
+    // thread is never parked on filesystem I/O.
+    let (rss_bytes, load_average, memory, host_uptime_seconds, kernel) = tokio::join!(
+        read_rss_bytes(),
+        read_loadavg(),
+        read_memory_status(),
+        read_host_uptime_seconds(),
+        read_kernel_release(),
+    );
+
     Json(StatusResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_seconds: state.status.started_at.elapsed().as_secs(),
@@ -165,7 +176,7 @@ pub async fn get_status(State(state): State<ApiState>) -> Json<StatusResponse> {
             max: state.config.max_connections,
         },
         application: ApplicationStatus {
-            rss_bytes: read_rss_bytes(),
+            rss_bytes,
             cpu_percent: Some(
                 state.status.cpu_percent_milli.load(Ordering::Relaxed) as f64 / 1000.0,
             ),
@@ -174,10 +185,10 @@ pub async fn get_status(State(state): State<ApiState>) -> Json<StatusResponse> {
             cpu_percent: Some(
                 state.status.host_cpu_percent_milli.load(Ordering::Relaxed) as f64 / 1000.0,
             ),
-            load_average: read_loadavg(),
-            memory: read_memory_status(),
-            uptime_seconds: read_host_uptime_seconds(),
-            kernel: read_kernel_release(),
+            load_average,
+            memory,
+            uptime_seconds: host_uptime_seconds,
+            kernel,
         },
     })
 }
@@ -206,7 +217,7 @@ pub fn spawn_cpu_sampler(
         loop {
             interval.tick().await;
 
-            if let Some(ticks) = read_process_cpu_ticks() {
+            if let Some(ticks) = read_process_cpu_ticks().await {
                 let now = Instant::now();
                 if let Some((prev_ticks, prev_at)) = previous_process {
                     let busy = ticks.saturating_sub(prev_ticks) as f64 / CLK_TCK;
@@ -224,7 +235,7 @@ pub fn spawn_cpu_sampler(
             // else: unreadable /proc (container stripped?) — keep the last
             // value rather than zeroing out, and retry next round.
 
-            if let Some((busy, total)) = read_host_cpu_ticks() {
+            if let Some((busy, total)) = read_host_cpu_ticks().await {
                 if let Some((prev_busy, prev_total)) = previous_host {
                     let busy_delta = busy.saturating_sub(prev_busy) as f64;
                     let total_delta = total.saturating_sub(prev_total) as f64;
@@ -246,8 +257,8 @@ pub fn spawn_cpu_sampler(
 ///
 /// Returns bytes; `None` when the file or `VmRSS` line is missing or
 /// malformed.
-fn read_rss_bytes() -> Option<u64> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+async fn read_rss_bytes() -> Option<u64> {
+    let status = tokio::fs::read_to_string("/proc/self/status").await.ok()?;
     parse_rss_bytes(&status)
 }
 
@@ -263,8 +274,8 @@ fn parse_rss_bytes(status: &str) -> Option<u64> {
 ///
 /// Returns bytes; `None` when the file or the `MemTotal`/`MemAvailable`
 /// lines are missing or malformed.
-fn read_memory_status() -> Option<MemoryStatus> {
-    let content = std::fs::read_to_string("/proc/meminfo").ok()?;
+async fn read_memory_status() -> Option<MemoryStatus> {
+    let content = tokio::fs::read_to_string("/proc/meminfo").await.ok()?;
     parse_memory_status(&content)
 }
 
@@ -295,8 +306,8 @@ fn parse_memory_status(content: &str) -> Option<MemoryStatus> {
 /// `/proc/stat`.
 ///
 /// Returns `(busy, total)` ticks; `None` on parse failure.
-fn read_host_cpu_ticks() -> Option<(u64, u64)> {
-    let stat = std::fs::read_to_string("/proc/stat").ok()?;
+async fn read_host_cpu_ticks() -> Option<(u64, u64)> {
+    let stat = tokio::fs::read_to_string("/proc/stat").await.ok()?;
     parse_host_cpu_ticks(&stat)
 }
 
@@ -328,8 +339,8 @@ fn parse_host_cpu_ticks(stat: &str) -> Option<(u64, u64)> {
 }
 
 /// Read host uptime in seconds from `/proc/uptime` (first field).
-fn read_host_uptime_seconds() -> Option<u64> {
-    let content = std::fs::read_to_string("/proc/uptime").ok()?;
+async fn read_host_uptime_seconds() -> Option<u64> {
+    let content = tokio::fs::read_to_string("/proc/uptime").await.ok()?;
     parse_uptime_seconds(&content)
 }
 
@@ -340,8 +351,10 @@ fn parse_uptime_seconds(content: &str) -> Option<u64> {
 }
 
 /// Read the kernel release from `/proc/sys/kernel/osrelease`.
-fn read_kernel_release() -> Option<String> {
-    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").ok()?;
+async fn read_kernel_release() -> Option<String> {
+    let release = tokio::fs::read_to_string("/proc/sys/kernel/osrelease")
+        .await
+        .ok()?;
     let trimmed = release.trim();
     if trimmed.is_empty() {
         None
@@ -351,8 +364,8 @@ fn read_kernel_release() -> Option<String> {
 }
 
 /// Read the 1/5/15-minute load averages from `/proc/loadavg`.
-fn read_loadavg() -> Option<[f64; 3]> {
-    let content = std::fs::read_to_string("/proc/loadavg").ok()?;
+async fn read_loadavg() -> Option<[f64; 3]> {
+    let content = tokio::fs::read_to_string("/proc/loadavg").await.ok()?;
     parse_loadavg(&content)
 }
 
@@ -368,8 +381,8 @@ fn parse_loadavg(content: &str) -> Option<[f64; 3]> {
 /// Read this process's cumulative CPU time from `/proc/self/stat`.
 ///
 /// Returns `(utime, stime)` in clock ticks; `None` on parse failure.
-fn read_process_cpu_ticks() -> Option<u64> {
-    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+async fn read_process_cpu_ticks() -> Option<u64> {
+    let stat = tokio::fs::read_to_string("/proc/self/stat").await.ok()?;
     parse_process_cpu_ticks(&stat)
 }
 
@@ -465,9 +478,9 @@ mod tests {
         assert_eq!(parse_host_cpu_ticks(""), None);
     }
 
-    #[test]
-    fn test_parse_host_cpu_ticks_real_file() {
-        let (busy, total) = read_host_cpu_ticks().unwrap();
+    #[tokio::test]
+    async fn test_parse_host_cpu_ticks_real_file() {
+        let (busy, total) = read_host_cpu_ticks().await.unwrap();
         assert!(busy > 0);
         assert!(total >= busy);
     }
@@ -479,10 +492,10 @@ mod tests {
         assert_eq!(parse_uptime_seconds(""), None);
     }
 
-    #[test]
-    fn test_read_kernel_release_real_file() {
+    #[tokio::test]
+    async fn test_read_kernel_release_real_file() {
         // The current test host must expose its kernel release.
-        assert!(read_kernel_release().is_some());
+        assert!(read_kernel_release().await.is_some());
     }
 
     #[test]
@@ -493,10 +506,10 @@ mod tests {
         assert_eq!(parse_process_cpu_ticks(stat), Some(300));
     }
 
-    #[test]
-    fn test_parse_process_cpu_ticks_real_file() {
+    #[tokio::test]
+    async fn test_parse_process_cpu_ticks_real_file() {
         // The current test process must have a parseable /proc/self/stat.
-        let ticks = read_process_cpu_ticks();
+        let ticks = read_process_cpu_ticks().await;
         assert!(ticks.is_some(), "/proc/self/stat should parse");
     }
 

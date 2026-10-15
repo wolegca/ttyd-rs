@@ -228,8 +228,11 @@ async fn shutdown_signal() {
 ///
 /// Uses a dedicated [`RateLimiter`] (`AppState::file_rate_limiter`) so file
 /// browsing cannot exhaust the WebSocket auth budget (and vice versa). The
-/// client IP honors `trust_proxy` via [`extract_real_ip`], preventing limit
-/// bypass through spoofed headers.
+/// rate-limit key is built with the same `build_rate_limit_key` logic as the
+/// WebSocket auth path, so `trust_proxy` deployments mix in the unforgeable
+/// socket address — keeping the two paths consistent and stopping a
+/// directly-connected client from forging another client's bucket with a
+/// spoofed header.
 async fn file_rate_limit_middleware(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -237,13 +240,15 @@ async fn file_rate_limit_middleware(
     request: Request,
     next: Next,
 ) -> Result<Response, (StatusCode, axum::Json<super::api::ErrorResponse>)> {
-    let client_ip =
+    let remote_addr =
         super::websocket::extract_real_ip(&headers, addr.ip(), state.config.trust_proxy);
+    let client_key =
+        super::websocket::build_rate_limit_key(&remote_addr, addr.ip(), state.config.trust_proxy);
 
-    if let Err(retry_after) = state.file_rate_limiter.check(&client_ip).await {
+    if let Err(retry_after) = state.file_rate_limiter.check(&client_key).await {
         warn!(
             "Rate limit exceeded for {} on file transfer endpoint (retry after {}s)",
-            client_ip,
+            remote_addr,
             retry_after.as_secs()
         );
         return Err((
@@ -479,7 +484,7 @@ fn not_found_response() -> Response {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::audit::AuditLogger;

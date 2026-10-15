@@ -48,17 +48,40 @@ impl RateLimiter {
     /// * `Ok(())` if the request is allowed
     /// * `Err(Duration)` if rate limited, with time until unblocked
     pub async fn check(&self, client_id: &str) -> Result<(), Duration> {
-        let mut store = self.store.write().await;
         let now = Instant::now();
+        let mut store = self.store.write().await;
 
-        let entry = store
-            .entry(client_id.to_string())
-            .or_insert(RateLimitEntry {
-                count: 0,
-                window_start: now,
-                blocked_until: None,
-            });
+        // Fast path: the entry already exists for this client. Update it in
+        // place using the borrowed key, avoiding a `String` allocation on
+        // every request (the common case) — that per-call heap traffic was a
+        // hot-path cost under load.
+        if let Some(entry) = store.get_mut(client_id) {
+            return Self::record(entry, now, self.window, self.max_requests);
+        }
 
+        // Slow path: first request seen from this client. Allocate the key
+        // once, apply the request, then insert the recorded entry.
+        let mut entry = RateLimitEntry {
+            count: 0,
+            window_start: now,
+            blocked_until: None,
+        };
+        let result = Self::record(&mut entry, now, self.window, self.max_requests);
+        store.insert(client_id.to_string(), entry);
+        result
+    }
+
+    /// Apply one request against `entry`, advancing the sliding window and
+    /// tripping the block when the limit is exceeded.
+    ///
+    /// Factored out so the existing-entry fast path and the first-request
+    /// insert path share exactly one implementation.
+    fn record(
+        entry: &mut RateLimitEntry,
+        now: Instant,
+        window: Duration,
+        max_requests: u32,
+    ) -> Result<(), Duration> {
         // Check if currently blocked
         if let Some(blocked_until) = entry.blocked_until {
             if now < blocked_until {
@@ -73,7 +96,7 @@ impl RateLimiter {
 
         // Check if window has expired
         let elapsed_in_window = now.duration_since(entry.window_start);
-        if elapsed_in_window >= self.window {
+        if elapsed_in_window >= window {
             // Reset window
             entry.count = 0;
             entry.window_start = now;
@@ -83,13 +106,13 @@ impl RateLimiter {
         entry.count += 1;
 
         // Check if limit exceeded
-        if entry.count > self.max_requests {
+        if entry.count > max_requests {
             // Block for the remainder of the current window plus one full
             // additional window. Compute the remainder *before* mutating the
             // entry so the penalty reflects how much of the window was
             // actually consumed (an early burst gets a longer block).
-            let consumed = now.duration_since(entry.window_start).min(self.window);
-            let blocked_duration = self.window + (self.window - consumed);
+            let consumed = now.duration_since(entry.window_start).min(window);
+            let blocked_duration = window + (window - consumed);
             entry.blocked_until = Some(now + blocked_duration);
             return Err(blocked_duration);
         }

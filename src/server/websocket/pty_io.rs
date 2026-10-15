@@ -42,7 +42,9 @@ pub(crate) async fn create_pty_writer(
 /// each subscriber can send an ordered "shell exited" disconnect after its
 /// final output burst.
 ///
-/// Returns a `JoinHandle` that should be aborted when the session ends.
+/// Returns a `JoinHandle` owned by the session (see
+/// [`crate::session::Session::start_reader_once`]): it is spawned once per
+/// session and aborted by [`crate::session::Session::shutdown`] on teardown.
 pub(crate) fn spawn_pty_reader(
     pty_session: Arc<tokio::sync::Mutex<crate::pty::PtySession>>,
     session: Arc<Session>,

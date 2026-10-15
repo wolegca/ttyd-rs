@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-pub(crate) use utils::extract_real_ip;
+pub(crate) use utils::{build_rate_limit_key, extract_real_ip};
 
 /// Type alias for the shared WebSocket sender used across tasks.
 pub(crate) type WsSender = Arc<tokio::sync::Mutex<SplitSink<WebSocket, WsMessage>>>;
@@ -117,13 +117,10 @@ pub async fn websocket_handler(
 
     // Rate-limit key: combine the (possibly header-derived) client IP with
     // the real socket address. When `trust_proxy` is enabled a direct client
-    // could otherwise rotate spoofed X-Real-IP values to evade the limiter;
-    // the socket address cannot be forged.
-    let rate_limit_key = if state.config.trust_proxy {
-        format!("{}|{}", remote_addr, addr.ip())
-    } else {
-        remote_addr.clone()
-    };
+    // could otherwise rotate spoofed X-Real-IP values to forge or evade its
+    // bucket; the socket address cannot be forged. Built via the shared helper
+    // so the file-transfer endpoints use the exact same key policy.
+    let rate_limit_key = build_rate_limit_key(&remote_addr, addr.ip(), state.config.trust_proxy);
 
     // Check max connections limit and increment the counter atomically
     if !state.try_acquire_connection() {
@@ -358,8 +355,13 @@ async fn run_session(
         .await
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
 
-    // Spawn PTY reader task
-    let pty_to_ws = pty_io::spawn_pty_reader(pty_session_arc.clone(), session.clone());
+    // Start the session's PTY reader exactly once. The reader is a
+    // session-level task: in shared modes several clients attach to the same
+    // PTY, and spawning one reader per connection would split the byte stream
+    // across concurrent reads and deliver out-of-order output. Clients joining
+    // an already-running session reuse its single reader.
+    session
+        .start_reader_once(|| pty_io::spawn_pty_reader(pty_session_arc.clone(), session.clone()));
 
     // Spawn output subscriber task. If the PTY already exited, notify this
     // client directly and use a dummy handle so cleanup can abort it
@@ -407,12 +409,12 @@ async fn run_session(
         client_id,
         session_id,
         remote_addr,
+        rate_limit_key,
     };
     let reason = message_loop::run(&mut ctx).await;
 
     // ── Cleanup ─────────────────────────────────────────────────────
     heartbeat_task.abort();
-    pty_to_ws.abort();
     subscriber_task.abort();
 
     session_lifecycle::cleanup_client(state, session, session_id, client_id).await;

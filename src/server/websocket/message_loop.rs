@@ -27,6 +27,11 @@ pub(crate) struct MessageLoopContext<'a> {
     pub client_id: &'a str,
     pub session_id: &'a str,
     pub remote_addr: &'a str,
+    /// Rate-limit key for this connection, built once by the WebSocket
+    /// upgrade handler via `build_rate_limit_key` (proxy-aware, socket-mixed
+    /// under `trust_proxy`). Used by `handle_file_list` so file listing shares
+    /// the exact key policy of the HTTP file endpoints and the auth path.
+    pub rate_limit_key: &'a str,
 }
 
 /// Run the main WebSocket message loop.
@@ -242,7 +247,7 @@ async fn handle_file_list(ctx: &MessageLoopContext<'_>, data: &FileListData) {
     // file endpoints use. Without this, an authenticated client could hammer
     // `file_list` messages (each triggering read_dir + canonicalize) without
     // ever touching the HTTP rate limit.
-    if let Err(retry_after) = ctx.state.file_rate_limiter.check(ctx.remote_addr).await {
+    if let Err(retry_after) = ctx.state.file_rate_limiter.check(ctx.rate_limit_key).await {
         let _ = send_ws_error(
             ctx.ws_sender,
             "RATE_LIMITED",

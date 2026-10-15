@@ -94,11 +94,23 @@ pub struct Session {
     /// after its final output burst.
     output_tx: std::sync::Mutex<Option<broadcast::Sender<Vec<u8>>>>,
     /// Cancellation token signalled when the session is force-removed
-    /// (stale cleanup or API delete). WebSocket handlers and the PTY
-    /// reader task observe this and run their normal cleanup paths, which
-    /// guarantees the PTY child is killed and clients are disconnected
-    /// even though other Arc<Session> holders keep the session alive.
+    /// (stale cleanup or API delete). WebSocket handlers observe this and
+    /// run their normal cleanup paths, which guarantees the PTY child is
+    /// killed and clients are disconnected even though other Arc<Session>
+    /// holders keep the session alive.
     cancel_token: CancellationToken,
+    /// JoinHandle of the session's single PTY reader task.
+    ///
+    /// The reader is a *session-level* resource: exactly one task must read
+    /// from the PTY master regardless of how many clients are attached. In
+    /// shared modes several clients subscribe to the same PTY, so spawning a
+    /// reader per connection would split the byte stream across concurrent
+    /// `read()` calls and deliver out-of-order output. Held in a `Mutex` so
+    /// [`Session::start_reader_once`] can guarantee single startup and
+    /// [`Session::shutdown`] can abort it at teardown (the reader holds an
+    /// `Arc<Session>`, so it must be aborted explicitly — otherwise the
+    /// session and its PTY child would never be released).
+    reader_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Session {
@@ -114,9 +126,16 @@ impl Session {
         let working_dir_path = working_dir.as_ref().map(std::path::PathBuf::from);
         let pty_session = PtySession::new(command, cols, rows, working_dir_path.as_deref())?;
 
-        // 1024 comfortably holds a coalesced output burst for several
-        // concurrently lagging clients without triggering Lagged drops.
-        let (output_tx, _) = broadcast::channel(1024);
+        // Ring-buffer capacity for session output (messages, not bytes).
+        // Each broadcast message is one coalesced burst, capped at
+        // `MAX_BURST` (256 KiB) by the PTY reader, so this capacity bounds
+        // the worst-case per-subscriber backlog at 256 * 256 KiB = 64 MiB
+        // for a client that has stopped reading entirely. 256 messages still
+        // comfortably covers a coalesced burst for several concurrently
+        // lagging clients without incurring frequent `Lagged` drops, while
+        // keeping the ceiling well below the previous 1024 (256 MiB).
+        const OUTPUT_CHANNEL_CAPACITY: usize = 256;
+        let (output_tx, _) = broadcast::channel(OUTPUT_CHANNEL_CAPACITY);
 
         Ok(Self {
             metadata: SessionMetadata {
@@ -131,6 +150,7 @@ impl Session {
             last_activity: Arc::new(Mutex::new(Instant::now())),
             output_tx: std::sync::Mutex::new(Some(output_tx)),
             cancel_token: CancellationToken::new(),
+            reader_task: std::sync::Mutex::new(None),
         })
     }
 
@@ -215,6 +235,39 @@ impl Session {
         let _ = self.output_tx.lock().ok().map(|mut g| g.take());
     }
 
+    /// Start the session's PTY reader exactly once.
+    ///
+    /// `spawn` is invoked only when no reader has been started yet and must
+    /// return the reader task's [`tokio::task::JoinHandle`]. Routing the
+    /// spawn through a closure keeps this core module independent of the
+    /// websocket layer that actually constructs the reader task. Concurrent
+    /// callers (e.g. several clients joining a shared session at the same
+    /// time) are serialised by the mutex, so only the first call spawns; the
+    /// rest are no-ops.
+    pub fn start_reader_once<F>(&self, spawn: F)
+    where
+        F: FnOnce() -> tokio::task::JoinHandle<()>,
+    {
+        let mut guard = match self.reader_task.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if guard.is_none() {
+            *guard = Some(spawn());
+        }
+    }
+
+    /// Abort the session's PTY reader task, if one was started.
+    fn abort_reader(&self) {
+        let mut guard = match self.reader_task.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(handle) = guard.take() {
+            handle.abort();
+        }
+    }
+
     /// Get the session cancellation token.
     ///
     /// Handlers select on `token.cancelled()` to abort promptly when the
@@ -231,6 +284,7 @@ impl Session {
     pub fn shutdown(&self) {
         self.cancel_token.cancel();
         self.mark_pty_exited();
+        self.abort_reader();
     }
 
     /// Get last activity time
@@ -373,6 +427,12 @@ impl SessionManager {
         if clients.is_empty() {
             sessions.remove(session_id);
             // clients guard is dropped here, after removal is complete
+            drop(clients);
+            // Tear the session down so its PTY reader task is aborted and the
+            // PTY child released. Merely dropping the map entry is not enough:
+            // the reader task holds an `Arc<Session>`, so without the abort the
+            // session (and its child) would leak.
+            session.shutdown();
             debug!("Removed empty session {}", session_id);
             return true;
         }
@@ -456,6 +516,13 @@ impl SessionManager {
     pub async fn shutdown(&self) {
         let mut sessions = self.sessions.write().await;
         let count = sessions.len();
+        // Shut each session down before clearing the map so its PTY reader
+        // task is aborted and the PTY child released. Clearing the map alone
+        // would leave the reader (which holds an `Arc<Session>`) running and
+        // leak the child.
+        for session in sessions.values() {
+            session.shutdown();
+        }
         sessions.clear();
         if count > 0 {
             info!("Shutdown: removed {} active sessions", count);
@@ -1045,5 +1112,174 @@ mod tests {
 
         assert!(token.is_cancelled());
         assert!(session.subscribe_output().is_none());
+    }
+
+    // ── PTY reader lifecycle (session-level single spawn) ───────────
+
+    /// A guard whose `Drop` flips a flag. Used to observe that an aborted
+    /// task's future (and everything it captured) was actually dropped.
+    struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// Spawn a reader task that parks forever, returning a flag that is set
+    /// when the task is aborted (its future dropped).
+    fn pending_reader_flag() -> (
+        Arc<std::sync::atomic::AtomicBool>,
+        impl FnOnce() -> tokio::task::JoinHandle<()>,
+    ) {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let moved = flag.clone();
+        let spawn = move || {
+            let guard = DropFlag(moved);
+            tokio::spawn(async move {
+                let _guard = guard;
+                std::future::pending::<()>().await;
+            })
+        };
+        (flag, spawn)
+    }
+
+    /// Poll `flag` until it is set or a short deadline elapses, so we do not
+    /// depend on `abort()` being applied synchronously.
+    async fn wait_for_flag(flag: &std::sync::atomic::AtomicBool) -> bool {
+        for _ in 0..200 {
+            if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                return true;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The core regression: repeated starts must spawn the reader only once.
+    /// The old per-connection model spawned one reader per client, which in
+    /// shared modes split the PTY byte stream across concurrent reads (and
+    /// corrupted output ordering).
+    #[tokio::test]
+    async fn test_start_reader_once_spawns_only_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let session = new_test_session(SessionMode::SharedReadWrite);
+        let spawns = Arc::new(AtomicUsize::new(0));
+
+        for _ in 0..5 {
+            let spawns = spawns.clone();
+            session.start_reader_once(move || {
+                spawns.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async {})
+            });
+        }
+
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+    }
+
+    /// Even when many clients race to start the reader, the mutex guarantees
+    /// exactly one spawn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_start_reader_once_is_atomic_under_concurrency() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let session = Arc::new(new_test_session(SessionMode::SharedReadWrite));
+        let spawns = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..64)
+            .map(|_| {
+                let session = session.clone();
+                let spawns = spawns.clone();
+                tokio::spawn(async move {
+                    session.start_reader_once(move || {
+                        spawns.fetch_add(1, Ordering::SeqCst);
+                        tokio::spawn(async {})
+                    });
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+    }
+
+    /// `shutdown` must abort the reader task; otherwise the reader keeps its
+    /// `Arc<Session>` (and the PTY child) alive forever.
+    #[tokio::test]
+    async fn test_shutdown_aborts_reader_task() {
+        let session = new_test_session(SessionMode::Isolated);
+        let (flag, spawn) = pending_reader_flag();
+        session.start_reader_once(spawn);
+
+        // Give the spawned task a chance to start running.
+        tokio::task::yield_now().await;
+        assert!(!flag.load(std::sync::atomic::Ordering::SeqCst));
+
+        session.shutdown();
+
+        assert!(
+            wait_for_flag(&flag).await,
+            "shutdown must abort the PTY reader task"
+        );
+    }
+
+    /// Removing an empty session must also abort its reader, so the PTY child
+    /// is released rather than leaked.
+    #[tokio::test]
+    async fn test_remove_if_empty_aborts_reader() {
+        let manager = SessionManager::new(Duration::from_secs(3600), SessionMode::Isolated);
+        let session = manager
+            .create_session(
+                "reader-cleanup".to_string(),
+                &["bash".to_string()],
+                None,
+                80,
+                24,
+                Some(SessionMode::Isolated),
+            )
+            .await
+            .unwrap();
+
+        let (flag, spawn) = pending_reader_flag();
+        session.start_reader_once(spawn);
+        tokio::task::yield_now().await;
+
+        assert!(manager.remove_if_empty("reader-cleanup").await);
+        assert!(
+            wait_for_flag(&flag).await,
+            "remove_if_empty must abort the session's PTY reader"
+        );
+    }
+
+    /// Wholesale manager shutdown must abort every session's reader.
+    #[tokio::test]
+    async fn test_session_manager_shutdown_aborts_reader() {
+        let manager = SessionManager::new(Duration::from_secs(3600), SessionMode::Isolated);
+        let session = manager
+            .create_session(
+                "shutdown-reader".to_string(),
+                &["bash".to_string()],
+                None,
+                80,
+                24,
+                Some(SessionMode::Isolated),
+            )
+            .await
+            .unwrap();
+
+        let (flag, spawn) = pending_reader_flag();
+        session.start_reader_once(spawn);
+        tokio::task::yield_now().await;
+
+        manager.shutdown().await;
+
+        assert!(
+            wait_for_flag(&flag).await,
+            "manager shutdown must abort the session's PTY reader"
+        );
+        assert_eq!(manager.session_count().await, 0);
     }
 }

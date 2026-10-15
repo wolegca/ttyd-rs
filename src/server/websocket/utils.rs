@@ -49,6 +49,32 @@ pub(crate) fn extract_real_ip(
     connect_addr.to_string()
 }
 
+/// Build the per-client rate-limit key shared by the WebSocket auth path and
+/// the HTTP file-transfer endpoints.
+///
+/// `remote_addr` is the client IP as seen by the application — proxy-aware
+/// when `trust_proxy` is enabled (see [`extract_real_ip`]).
+///
+/// When `trust_proxy` is enabled the header-derived `remote_addr` alone is
+/// insufficient: a client that can reach the server directly (a misconfigured
+/// proxy, or one that does not overwrite an inbound header) could forge
+/// `X-Real-IP` to impersonate another client's bucket. Mixing in the
+/// unforgeable socket address closes that gap while keeping distinct real
+/// clients behind a proxy on distinct keys (their `X-Real-IP` differs). The
+/// WebSocket auth path and the file endpoints must use this same key so their
+/// policies cannot diverge.
+pub(crate) fn build_rate_limit_key(
+    remote_addr: &str,
+    connect_addr: std::net::IpAddr,
+    trust_proxy: bool,
+) -> String {
+    if trust_proxy {
+        format!("{}|{}", remote_addr, connect_addr)
+    } else {
+        remote_addr.to_string()
+    }
+}
+
 /// Send a structured error message to the client via the WebSocket sender.
 ///
 /// Returns `Ok(())` on success, or the serialization/send error on failure.
@@ -297,6 +323,53 @@ mod tests {
         let headers = make_headers(&[("x-forwarded-for", "2001:db8::1, 10.0.0.2")]);
         let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
         assert_eq!(extract_real_ip(&headers, addr, true), "2001:db8::1");
+    }
+
+    // ── build_rate_limit_key ───────────────────────────────────────
+
+    #[test]
+    fn test_build_rate_limit_key_trust_disabled_ignores_socket() {
+        // With trust_proxy off the remote_addr already equals the socket
+        // address, so the key is just the client IP.
+        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        assert_eq!(
+            build_rate_limit_key("192.168.1.100", addr, false),
+            "192.168.1.100"
+        );
+    }
+
+    #[test]
+    fn test_build_rate_limit_key_trust_enabled_combines_socket() {
+        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        assert_eq!(
+            build_rate_limit_key("10.0.0.1", addr, true),
+            "10.0.0.1|192.168.1.100"
+        );
+    }
+
+    #[test]
+    fn test_build_rate_limit_key_forgery_cannot_reuse_victim_bucket() {
+        // A direct client spoofing a victim's X-Real-IP connects from a
+        // different socket than the legitimate proxy, so its key differs and
+        // it cannot consume the victim's rate-limit budget.
+        let proxy = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let attacker = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
+        assert_ne!(
+            build_rate_limit_key("198.51.100.7", proxy, true),
+            build_rate_limit_key("198.51.100.7", attacker, true)
+        );
+    }
+
+    #[test]
+    fn test_build_rate_limit_key_rotated_header_same_socket_still_differs() {
+        // Documents the boundary: combining the socket does not make a
+        // directly-connected attacker's rotated headers collapse to one
+        // bucket — that requires not trusting headers from untrusted peers.
+        let addr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
+        assert_ne!(
+            build_rate_limit_key("10.0.0.1", addr, true),
+            build_rate_limit_key("10.0.0.2", addr, true)
+        );
     }
 
     // ── message_type_name: 14 个变体全覆盖 ─────────────────────────

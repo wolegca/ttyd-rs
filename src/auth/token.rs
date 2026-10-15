@@ -15,13 +15,21 @@ impl TokenAuth {
 
     /// Compute SHA-256 hex digest of a token
     fn hash_token(token: &str) -> String {
+        use std::fmt::Write as _;
+
         let mut hasher = Sha256::new();
         hasher.update(token.as_bytes());
-        hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
+        let digest = hasher.finalize();
+
+        // Pre-allocate the exact hex length and write in place, avoiding the
+        // 32 small `String` allocations the previous `map(format!)` approach
+        // produced on every validation (this runs on the auth hot path).
+        let mut hex = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            // Writing to a `String` is infallible.
+            let _ = write!(hex, "{byte:02x}");
+        }
+        hex
     }
 
     /// Validate the provided token against the configured token.

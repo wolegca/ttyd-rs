@@ -57,6 +57,13 @@ pub struct UploadResponse {
 /// This ensures that no matter which error path is taken (read failure,
 /// write failure, size exceeded, connection abort, etc.), the partially
 /// written file is cleaned up.
+///
+/// The removal is intentionally synchronous (`std::fs::remove_file`):
+/// `Drop` cannot `await`, and offloading to the blocking pool would make
+/// cleanup non-deterministic (it could land *after* the error response is
+/// sent), which callers rely on to observe "no leftover `*.tmp`" once the
+/// request completes. A single `unlink(2)` of a small temp file on this
+/// rare error path is negligible, so doing it inline is the safer trade-off.
 struct UploadFileGuard(PathBuf);
 
 impl UploadFileGuard {
