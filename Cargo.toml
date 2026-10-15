@@ -19,23 +19,23 @@ base64 = "0.23.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 futures = "0.3.34"
-libc = "0.2.189"
+libc = "0.2.190"
 mime_guess = "2.0.5"
 nix = { version = "0.31.3", features = ["process", "signal", "term", "ioctl", "fs"] }
-rust-embed = { version = "8.12.0", features = ["axum"] }
+rust-embed = { version = "8.13.0", features = ["axum"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
-sha2 = "0.11.0"
+serde_json = "1.0.154"
+sha2 = "0.11.1"
 subtle = "2.6.1"
-thiserror = "2.0.20"
-tokio = { version = "1.53.1", features = ["fs", "full", "io-util"] }
-tokio-util = { version = "0.7.19", features = ["io", "rt"] }
-toml = "1.1.6"
+thiserror = "2.0.21"
+tokio = { version = "1.53.3", features = ["fs", "full", "io-util"] }
+tokio-util = { version = "0.7.20", features = ["io", "rt"] }
+toml = "1.1.8"
 tower = "0.5.3"
 tower-http = { version = "0.7.1", features = ["compression-gzip"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
-uuid = { version = "1.26.1", features = ["v4"] }
+uuid = { version = "1.28.0", features = ["v4"] }
 rand = "0.10.3"
 shlex = "2.0.1"
 
