@@ -7,7 +7,7 @@ use tracing::{debug, warn};
 
 use crate::protocol::Message;
 
-use super::utils::send_ws_error;
+use super::utils::report_rejection;
 use super::{AppState, WsSender};
 
 /// Mutable state accumulated while reading the handshake.
@@ -36,17 +36,11 @@ async fn validate_size(
     rows: u16,
 ) -> Result<(u16, u16), ()> {
     if let Err(e) = state.validation.validate_terminal_size(cols, rows) {
-        warn!("Invalid terminal size: {}", e);
-        state
-            .audit_logger
-            .log_error(
-                remote_addr,
-                client_id,
-                &format!("Invalid terminal size: {}", e),
-            )
-            .await;
-        let _ = send_ws_error(
+        report_rejection(
+            state,
             ws_sender,
+            remote_addr,
+            client_id,
             "INVALID_SIZE",
             format!("Invalid terminal size: {}", e),
             true,

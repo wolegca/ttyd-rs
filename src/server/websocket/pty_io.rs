@@ -6,10 +6,10 @@ use futures::{Sink, SinkExt};
 use tokio::sync::broadcast;
 use tracing::{debug, error, warn};
 
-use crate::protocol::{DisconnectData, Message};
+use crate::protocol::Message;
 use crate::session::Session;
 
-use super::utils::send_ws_error;
+use super::utils::{send_disconnect, send_ws_error};
 
 /// Interval between server-initiated WebSocket protocol ping frames.
 pub(crate) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -229,17 +229,7 @@ where
                     // queued output was delivered. Send the disconnect here,
                     // in this task, so it is ordered after this client's
                     // final output burst.
-                    let disconnect = Message::Disconnect(DisconnectData {
-                        reason: "Shell exited".to_string(),
-                        code: 0,
-                    });
-                    if let Ok(json) = disconnect.to_json() {
-                        let _ = ws_sender
-                            .lock()
-                            .await
-                            .send(axum::extract::ws::Message::Text(json.into()))
-                            .await;
-                    }
+                    send_disconnect(&ws_sender, "Shell exited", 0).await;
                     break;
                 }
             }
@@ -315,7 +305,7 @@ where
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::protocol::OutputData;
+    use crate::protocol::{DisconnectData, OutputData};
     use crate::session::SessionMode;
     use axum::extract::ws::Message as WsMessage;
     use futures::StreamExt;

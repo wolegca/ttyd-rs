@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-pub(crate) use utils::{build_rate_limit_key, extract_real_ip};
+pub(crate) use utils::client_rate_limit_key;
 
 /// Type alias for the shared WebSocket sender used across tasks.
 pub(crate) type WsSender = Arc<tokio::sync::Mutex<SplitSink<WebSocket, WsMessage>>>;
@@ -113,14 +113,8 @@ pub async fn websocket_handler(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let remote_addr = extract_real_ip(&headers, addr.ip(), state.config.trust_proxy);
-
-    // Rate-limit key: combine the (possibly header-derived) client IP with
-    // the real socket address. When `trust_proxy` is enabled a direct client
-    // could otherwise rotate spoofed X-Real-IP values to forge or evade its
-    // bucket; the socket address cannot be forged. Built via the shared helper
-    // so the file-transfer endpoints use the exact same key policy.
-    let rate_limit_key = build_rate_limit_key(&remote_addr, addr.ip(), state.config.trust_proxy);
+    let (remote_addr, rate_limit_key) =
+        client_rate_limit_key(&headers, addr.ip(), state.config.trust_proxy);
 
     // Check max connections limit and increment the counter atomically
     if !state.try_acquire_connection() {
@@ -369,18 +363,7 @@ async fn run_session(
     let subscriber_task = match session.subscribe_output() {
         Some(output_rx) => pty_io::spawn_output_subscriber(ws_sender.clone(), output_rx),
         None => {
-            let disconnect =
-                crate::protocol::Message::Disconnect(crate::protocol::DisconnectData {
-                    reason: "Shell exited".to_string(),
-                    code: 0,
-                });
-            if let Ok(json) = disconnect.to_json() {
-                let _ = ws_sender
-                    .lock()
-                    .await
-                    .send(axum::extract::ws::Message::Text(json.into()))
-                    .await;
-            }
+            utils::send_disconnect(ws_sender, "Shell exited", 0).await;
             tokio::task::spawn(async {})
         }
     };
@@ -425,11 +408,7 @@ async fn run_session(
         .await;
 
     // Send disconnect message
-    let disconnect = crate::protocol::Message::Disconnect(crate::protocol::DisconnectData {
-        reason: "Session ended".to_string(),
-        code: 0,
-    });
-    utils::send_message(ws_sender, &disconnect).await;
+    utils::send_disconnect(ws_sender, "Session ended", 0).await;
 
     let _ = ws_sender.lock().await.close().await;
 

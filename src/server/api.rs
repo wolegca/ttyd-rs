@@ -71,6 +71,30 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
+/// Build the API representation of a session from its live state.
+///
+/// Shared by [`list_sessions`] and [`get_session`] so the two can never drift
+/// on field selection or the order the underlying locks are taken.
+async fn build_session_info(session: &crate::session::Session) -> SessionInfo {
+    let metadata = session.metadata();
+    let client_count = session.client_count().await;
+    let last_activity = session.last_activity().await;
+
+    // Get terminal info
+    let pty_session = session.pty_session();
+    let pty = pty_session.lock().await;
+    let (cols, rows) = pty.dimensions();
+
+    SessionInfo {
+        session_id: metadata.session_id.clone(),
+        mode: metadata.mode.to_string(),
+        clients: client_count,
+        created_at: system_time_to_unix(metadata.created_at),
+        last_activity: instant_to_unix(last_activity),
+        terminal: TerminalInfo { cols, rows },
+    }
+}
+
 /// List all active sessions
 pub async fn list_sessions(
     State(state): State<ApiState>,
@@ -79,23 +103,7 @@ pub async fn list_sessions(
     let mut session_infos = Vec::new();
 
     for session in sessions {
-        let metadata = session.metadata();
-        let client_count = session.client_count().await;
-        let last_activity = session.last_activity().await;
-
-        // Get terminal info
-        let pty_session = session.pty_session();
-        let pty = pty_session.lock().await;
-        let (cols, rows) = pty.dimensions();
-
-        session_infos.push(SessionInfo {
-            session_id: metadata.session_id.clone(),
-            mode: metadata.mode.to_string(),
-            clients: client_count,
-            created_at: system_time_to_unix(metadata.created_at),
-            last_activity: instant_to_unix(last_activity),
-            terminal: TerminalInfo { cols, rows },
-        });
+        session_infos.push(build_session_info(&session).await);
     }
 
     let total = session_infos.len();
@@ -119,28 +127,12 @@ pub async fn get_session(
             (
                 StatusCode::NOT_FOUND,
                 Json(ErrorResponse {
-                    error: format!("Session not found: {}", session_id),
+                    error: crate::session::session_not_found_message(&session_id),
                 }),
             )
         })?;
 
-    let metadata = session.metadata();
-    let client_count = session.client_count().await;
-    let last_activity = session.last_activity().await;
-
-    // Get terminal info
-    let pty_session = session.pty_session();
-    let pty = pty_session.lock().await;
-    let (cols, rows) = pty.dimensions();
-
-    Ok(Json(SessionInfo {
-        session_id: metadata.session_id.clone(),
-        mode: metadata.mode.to_string(),
-        clients: client_count,
-        created_at: system_time_to_unix(metadata.created_at),
-        last_activity: instant_to_unix(last_activity),
-        terminal: TerminalInfo { cols, rows },
-    }))
+    Ok(Json(build_session_info(&session).await))
 }
 
 /// Delete/terminate a session
@@ -156,7 +148,7 @@ pub async fn delete_session(
         Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
-                error: format!("Session not found: {}", session_id),
+                error: crate::session::session_not_found_message(&session_id),
             }),
         ))
     }

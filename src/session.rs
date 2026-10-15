@@ -8,6 +8,13 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+/// Build the canonical "session not found" message used by every handler that
+/// looks up a session by id (the REST API and file transfer), so the 404
+/// wording stays identical across modules.
+pub(crate) fn session_not_found_message(session_id: &str) -> String {
+    format!("Session not found: {}", session_id)
+}
+
 /// Errors that can occur during session operations
 #[derive(Debug, Error)]
 pub enum SessionError {

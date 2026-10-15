@@ -28,6 +28,15 @@ pub struct FileErrorResponse {
     pub error: String,
 }
 
+/// Build a `(StatusCode, Json<FileErrorResponse>)` error pair.
+///
+/// Centralises the mapping from the module's internal `(StatusCode, String)`
+/// errors (returned by `resolve_base_dir`, `safe_resolve`, `list_directory`)
+/// to the HTTP error body, so the response shape is defined in one place.
+fn json_err(status: StatusCode, msg: String) -> (StatusCode, Json<FileErrorResponse>) {
+    (status, Json(FileErrorResponse { error: msg }))
+}
+
 /// A single entry in a directory listing
 #[derive(Debug, Serialize)]
 pub struct FileEntry {
@@ -147,7 +156,10 @@ async fn resolve_base_dir(
         .await
         .ok_or_else(|| {
             // Session not found: reject to prevent cross-session access
-            (StatusCode::NOT_FOUND, format!("Session not found: {}", sid))
+            (
+                StatusCode::NOT_FOUND,
+                crate::session::session_not_found_message(sid),
+            )
         })?;
 
     let pty = session.pty_session();
@@ -427,7 +439,7 @@ pub async fn upload_file(
 ) -> Result<Json<UploadResponse>, (StatusCode, Json<FileErrorResponse>)> {
     let base = resolve_base_dir(&state, query.session_id.as_deref())
         .await
-        .map_err(|(status, msg)| (status, Json(FileErrorResponse { error: msg })))?;
+        .map_err(|(status, msg)| json_err(status, msg))?;
     let max_size = state.config.max_upload_size;
 
     // Fast-path rejection: if the client provided Content-Length and it
@@ -440,25 +452,21 @@ pub async fn upload_file(
         // Without this, the browser gets ERR_CONNECTION_ABORTED because
         // the server closes while the client is still sending data.
         drain_multipart(&mut multipart, std::time::Duration::from_secs(10)).await;
-        return Err((
+        return Err(json_err(
             StatusCode::PAYLOAD_TOO_LARGE,
-            Json(FileErrorResponse {
-                error: format!(
-                    "File too large: Content-Length {} exceeds max {} bytes",
-                    len, max_size
-                ),
-            }),
+            format!(
+                "File too large: Content-Length {} exceeds max {} bytes",
+                len, max_size
+            ),
         ));
     }
 
     // Ensure base directory exists
     if !base.exists() {
         tokio::fs::create_dir_all(&base).await.map_err(|e| {
-            (
+            json_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(FileErrorResponse {
-                    error: format!("Cannot create base directory: {}", e),
-                }),
+                format!("Cannot create base directory: {}", e),
             )
         })?;
     }
@@ -467,15 +475,13 @@ pub async fn upload_file(
     // upload data. Failing here gives the client a fast, clear 403 instead of
     // an opaque 500 after transferring (potentially large) file bytes.
     if let Err(e) = check_dir_writable(&base) {
-        return Err((
+        return Err(json_err(
             StatusCode::FORBIDDEN,
-            Json(FileErrorResponse {
-                error: format!(
-                    "Target directory is not writable: {}: {}",
-                    base.display(),
-                    e
-                ),
-            }),
+            format!(
+                "Target directory is not writable: {}: {}",
+                base.display(),
+                e
+            ),
         ));
     }
 
@@ -483,11 +489,9 @@ pub async fn upload_file(
     let mut uploaded_size: usize = 0;
 
     while let Some(mut field) = multipart.next_field().await.map_err(|e| {
-        (
+        json_err(
             StatusCode::BAD_REQUEST,
-            Json(FileErrorResponse {
-                error: format!("Invalid multipart data: {}", e),
-            }),
+            format!("Invalid multipart data: {}", e),
         )
     })? {
         // Get filename from the field
@@ -507,17 +511,15 @@ pub async fn upload_file(
             .unwrap_or_default();
 
         if sanitized.is_empty() {
-            return Err((
+            return Err(json_err(
                 StatusCode::BAD_REQUEST,
-                Json(FileErrorResponse {
-                    error: "Invalid filename".to_string(),
-                }),
+                "Invalid filename".to_string(),
             ));
         }
 
         // Validate target path
-        let target = safe_resolve(&base, &sanitized)
-            .map_err(|(status, msg)| (status, Json(FileErrorResponse { error: msg })))?;
+        let target =
+            safe_resolve(&base, &sanitized).map_err(|(status, msg)| json_err(status, msg))?;
 
         // Overwrite protection: reject if file exists and overwrite not requested.
         // IMPORTANT: We must drain the remaining body before returning the error
@@ -530,14 +532,12 @@ pub async fn upload_file(
             drain_field(&mut field, std::time::Duration::from_secs(10)).await;
             drop(field);
             drain_multipart(&mut multipart, std::time::Duration::from_secs(10)).await;
-            return Err((
+            return Err(json_err(
                 StatusCode::CONFLICT,
-                Json(FileErrorResponse {
-                    error: format!(
-                        "File already exists: {}. Use overwrite=true to replace.",
-                        sanitized
-                    ),
-                }),
+                format!(
+                    "File already exists: {}. Use overwrite=true to replace.",
+                    sanitized
+                ),
             ));
         }
 
@@ -557,11 +557,9 @@ pub async fn upload_file(
             uuid::Uuid::new_v4()
         ));
         let mut file = tokio::fs::File::create(&tmp_target).await.map_err(|e| {
-            (
+            json_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(FileErrorResponse {
-                    error: format!("Cannot create file: {}", e),
-                }),
+                format!("Cannot create file: {}", e),
             )
         })?;
 
@@ -573,11 +571,9 @@ pub async fn upload_file(
 
         let mut total_size: usize = 0;
         while let Some(chunk) = field.chunk().await.map_err(|e| {
-            (
+            json_err(
                 StatusCode::BAD_REQUEST,
-                Json(FileErrorResponse {
-                    error: format!("Failed to read upload data: {}", e),
-                }),
+                format!("Failed to read upload data: {}", e),
             )
         })? {
             total_size += chunk.len();
@@ -590,29 +586,23 @@ pub async fn upload_file(
                 drain_field(&mut field, DRAIN_TIMEOUT).await;
                 drop(field);
                 drain_multipart(&mut multipart, DRAIN_TIMEOUT).await;
-                return Err((
+                return Err(json_err(
                     StatusCode::PAYLOAD_TOO_LARGE,
-                    Json(FileErrorResponse {
-                        error: format!("File too large: exceeds max {} bytes", max_size),
-                    }),
+                    format!("File too large: exceeds max {} bytes", max_size),
                 ));
             }
             file.write_all(&chunk).await.map_err(|e| {
-                (
+                json_err(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(FileErrorResponse {
-                        error: format!("Failed to write file: {}", e),
-                    }),
+                    format!("Failed to write file: {}", e),
                 )
             })?;
         }
 
         file.flush().await.map_err(|e| {
-            (
+            json_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(FileErrorResponse {
-                    error: format!("Failed to flush file: {}", e),
-                }),
+                format!("Failed to flush file: {}", e),
             )
         })?;
         drop(file);
@@ -649,7 +639,7 @@ pub async fn upload_file(
                     format!("Failed to finalize upload: {}", e),
                 )
             };
-            return Err((status, Json(FileErrorResponse { error: message })));
+            return Err(json_err(status, message));
         }
 
         // Upload completed successfully — disarm the guard (the temp file no
@@ -661,11 +651,9 @@ pub async fn upload_file(
     }
 
     if uploaded_filename.is_empty() {
-        return Err((
+        return Err(json_err(
             StatusCode::BAD_REQUEST,
-            Json(FileErrorResponse {
-                error: "No file provided in upload".to_string(),
-            }),
+            "No file provided in upload".to_string(),
         ));
     }
 
@@ -704,41 +692,35 @@ pub async fn download_file(
     let relative = query.path.as_deref().unwrap_or("");
 
     if relative.is_empty() {
-        return Err((
+        return Err(json_err(
             StatusCode::BAD_REQUEST,
-            Json(FileErrorResponse {
-                error: "Missing 'path' query parameter".to_string(),
-            }),
+            "Missing 'path' query parameter".to_string(),
         ));
     }
 
     let base = resolve_base_dir(&state, query.session_id.as_deref())
         .await
-        .map_err(|(status, msg)| (status, Json(FileErrorResponse { error: msg })))?;
+        .map_err(|(status, msg)| json_err(status, msg))?;
 
     // Resolve and open in a single kernel walk rooted at the base directory.
     // Unlike safe_resolve() + open(), this cannot be raced with a symlink
     // swapped into a *middle* path component (see open_nofollow_recursive).
     let (std_file, target) =
         open_nofollow_recursive(&base, relative).map_err(|(status, msg)| {
-            (
+            json_err(
                 status,
-                Json(FileErrorResponse {
-                    error: if msg == "Path not found" {
-                        format!("File not found: {}", relative)
-                    } else {
-                        msg
-                    },
-                }),
+                if msg == "Path not found" {
+                    format!("File not found: {}", relative)
+                } else {
+                    msg
+                },
             )
         })?;
 
     let metadata = std_file.metadata().map_err(|e| {
-        (
+        json_err(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(FileErrorResponse {
-                error: format!("Cannot read file metadata: {}", e),
-            }),
+            format!("Cannot read file metadata: {}", e),
         )
     })?;
 
@@ -773,11 +755,9 @@ pub async fn download_file(
         .header(header::CONTENT_DISPOSITION, disposition)
         .body(body)
         .map_err(|_| {
-            (
+            json_err(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(FileErrorResponse {
-                    error: "Failed to build response".to_string(),
-                }),
+                "Failed to build response".to_string(),
             )
         })?;
 
@@ -869,7 +849,7 @@ pub async fn list_files(
         query.show_hidden,
     )
     .await
-    .map_err(|(status, msg)| (status, Json(FileErrorResponse { error: msg })))?;
+    .map_err(|(status, msg)| json_err(status, msg))?;
 
     Ok(Json(ListResponse { path, entries }))
 }

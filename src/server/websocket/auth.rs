@@ -7,10 +7,11 @@ use crate::auth::{BasicAuth, TokenAuth};
 use crate::protocol::*;
 use crate::validation::ValidationError;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
+use futures::StreamExt;
 use futures::stream::SplitStream;
-use futures::{SinkExt, StreamExt};
 use tracing::{error, warn};
 
+use super::utils::send_message_result;
 use super::{AppState, CloseReason, WsSender};
 
 /// Outcome of the authentication process.
@@ -133,12 +134,7 @@ async fn send_auth_fail(
     let msg = Message::AuthFail(AuthFailData {
         reason: reason.to_string(),
     });
-    ws_sender
-        .lock()
-        .await
-        .send(WsMessage::Text(msg.to_json()?.into()))
-        .await?;
-    Ok(())
+    send_message_result(ws_sender, &msg).await
 }
 
 /// Send an `AuthOk` message to the client.
@@ -160,12 +156,7 @@ async fn send_auth_ok(
         readonly: false,
         capabilities,
     });
-    ws_sender
-        .lock()
-        .await
-        .send(WsMessage::Text(msg.to_json()?.into()))
-        .await?;
-    Ok(())
+    send_message_result(ws_sender, &msg).await
 }
 
 /// Handle authentication for a WebSocket connection.

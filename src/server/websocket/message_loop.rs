@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 use crate::protocol::*;
 use crate::session::Session;
 
-use super::utils::{message_type_name, send_message, send_ws_error};
+use super::utils::{message_type_name, report_rejection, send_message, send_ws_error};
 use super::{AppState, CloseReason, WsSender};
 
 /// Context shared across all message handlers in the main loop.
@@ -137,18 +137,11 @@ async fn handle_input(
 
     // Validate input payload
     if let Err(e) = ctx.state.validation.validate_input_payload(&data.payload) {
-        warn!("Invalid input payload: {}", e);
-        ctx.state
-            .audit_logger
-            .log_error(
-                ctx.remote_addr,
-                ctx.session_id,
-                &format!("Invalid input: {}", e),
-            )
-            .await;
-
-        let _ = send_ws_error(
+        report_rejection(
+            ctx.state,
             ctx.ws_sender,
+            ctx.remote_addr,
+            ctx.session_id,
             "INVALID_INPUT",
             format!("Invalid input: {}", e),
             false,
@@ -181,18 +174,11 @@ async fn handle_resize(ctx: &MessageLoopContext<'_>, data: &ResizeData) {
         .validation
         .validate_terminal_size(data.cols, data.rows)
     {
-        warn!("Invalid resize request: {}", e);
-        ctx.state
-            .audit_logger
-            .log_error(
-                ctx.remote_addr,
-                ctx.session_id,
-                &format!("Invalid resize: {}", e),
-            )
-            .await;
-
-        let _ = send_ws_error(
+        report_rejection(
+            ctx.state,
             ctx.ws_sender,
+            ctx.remote_addr,
+            ctx.session_id,
             "INVALID_SIZE",
             format!("Invalid terminal size: {}", e),
             false,

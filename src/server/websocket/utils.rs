@@ -1,9 +1,12 @@
 /// Utility functions for WebSocket handler: IP extraction, error sending, and message helpers.
-use crate::protocol::{ErrorData, Message};
+use crate::protocol::{DisconnectData, ErrorData, Message};
 use axum::extract::ws::Message as WsMessage;
 use futures::{Sink, SinkExt};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::warn;
+
+use super::AppState;
 
 /// Extract the real client IP from proxy headers.
 ///
@@ -73,6 +76,23 @@ pub(crate) fn build_rate_limit_key(
     } else {
         remote_addr.to_string()
     }
+}
+
+/// Extract the (proxy-aware) client IP together with the rate-limit key
+/// derived from it, in one call.
+///
+/// Combines [`extract_real_ip`] and [`build_rate_limit_key`] so the WebSocket
+/// upgrade path and the file-endpoint middleware cannot drift apart: both must
+/// use the same key policy, and routing them through this helper makes that
+/// structural rather than a convention. Returns `(remote_addr, key)`.
+pub(crate) fn client_rate_limit_key(
+    headers: &axum::http::HeaderMap,
+    connect_addr: std::net::IpAddr,
+    trust_proxy: bool,
+) -> (String, String) {
+    let remote_addr = extract_real_ip(headers, connect_addr, trust_proxy);
+    let key = build_rate_limit_key(&remote_addr, connect_addr, trust_proxy);
+    (remote_addr, key)
 }
 
 /// Send a structured error message to the client via the WebSocket sender.
@@ -148,6 +168,72 @@ where
             tracing::warn!("Failed to serialize outbound message: {}", e);
         }
     }
+}
+
+/// Serialize and send a protocol message, surfacing serialization/send errors.
+///
+/// Generic over the sink type (see [`send_ws_error`]). Use this when the caller
+/// must react to a failure (e.g. aborting the auth flow with `?`); use
+/// [`send_message`] when a failure can be ignored.
+pub(crate) async fn send_message_result<S>(
+    sender: &Arc<Mutex<S>>,
+    msg: &Message,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    S: Sink<WsMessage> + Unpin,
+    S::Error: std::error::Error + Send + Sync + 'static,
+{
+    sender
+        .lock()
+        .await
+        .send(WsMessage::Text(msg.to_json()?.into()))
+        .await?;
+    Ok(())
+}
+
+/// Send a `Disconnect` message with the given reason and exit code.
+///
+/// A send failure is ignored: the connection is already ending, so the caller
+/// cannot act on it (mirrors [`send_message`]).
+pub(crate) async fn send_disconnect<S>(sender: &Arc<Mutex<S>>, reason: &str, code: i32)
+where
+    S: Sink<WsMessage> + Unpin,
+    S::Error: std::error::Error + 'static,
+{
+    let msg = Message::Disconnect(DisconnectData {
+        reason: reason.to_string(),
+        code,
+    });
+    send_message(sender, &msg).await;
+}
+
+/// Report a rejected inbound message to the logs, the audit trail and the
+/// client in one place.
+///
+/// Every validation failure follows the same sequence — a `warn!`, an audit
+/// `log_error`, then a protocol `error` frame — so centralising it keeps the
+/// three in sync. `fatal` is supplied by the caller because it is
+/// phase-dependent: a handshake failure terminates the connection (fatal),
+/// whereas a rejected `input`/`resize` after `ready` does not.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn report_rejection<S>(
+    state: &AppState,
+    ws_sender: &Arc<Mutex<S>>,
+    remote_addr: &str,
+    session_id: &str,
+    code: &str,
+    message: String,
+    fatal: bool,
+) where
+    S: Sink<WsMessage> + Unpin,
+    S::Error: std::error::Error + 'static,
+{
+    warn!("{}", message);
+    state
+        .audit_logger
+        .log_error(remote_addr, session_id, &message)
+        .await;
+    let _ = send_ws_error(ws_sender, code, message, fatal).await;
 }
 
 #[cfg(test)]
@@ -536,5 +622,66 @@ mod tests {
             }
             _ => panic!("expected Text message"),
         }
+    }
+
+    // ── send_message_result / send_disconnect ───────────────────────
+
+    #[tokio::test]
+    async fn test_send_message_result_sends_and_reports_ok() {
+        let (tx, mut rx) = mpsc::unbounded::<WsMessage>();
+        let sender = Arc::new(Mutex::new(tx));
+
+        let msg = Message::AuthFail(AuthFailData {
+            reason: "nope".to_string(),
+        });
+        send_message_result(&sender, &msg).await.unwrap();
+
+        let received = rx.next().await.unwrap();
+        match received {
+            WsMessage::Text(text) => {
+                assert!(text.contains(r#""type":"auth_fail""#));
+                assert!(text.contains("nope"));
+            }
+            _ => panic!("expected Text message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_disconnect_sends_disconnect_message() {
+        let (tx, mut rx) = mpsc::unbounded::<WsMessage>();
+        let sender = Arc::new(Mutex::new(tx));
+
+        send_disconnect(&sender, "Shell exited", 0).await;
+
+        let received = rx.next().await.unwrap();
+        match received {
+            WsMessage::Text(text) => match Message::from_json(&text).unwrap() {
+                Message::Disconnect(data) => {
+                    assert_eq!(data.reason, "Shell exited");
+                    assert_eq!(data.code, 0);
+                }
+                _ => panic!("expected Disconnect message"),
+            },
+            _ => panic!("expected Text message"),
+        }
+    }
+
+    // ── client_rate_limit_key ───────────────────────────────────────
+
+    #[test]
+    fn test_client_rate_limit_key_matches_individual_helpers() {
+        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+
+        // trust_proxy disabled: the IP is the socket address, key is that IP.
+        let headers = HeaderMap::new();
+        let (ip, key) = client_rate_limit_key(&headers, addr, false);
+        assert_eq!(ip, "127.0.0.1");
+        assert_eq!(key, "127.0.0.1");
+
+        // trust_proxy enabled with a header: the key mixes IP and socket.
+        let headers = make_headers(&[("x-real-ip", "10.0.0.1")]);
+        let (ip, key) = client_rate_limit_key(&headers, addr, true);
+        assert_eq!(ip, "10.0.0.1");
+        assert_eq!(key, "10.0.0.1|127.0.0.1");
     }
 }

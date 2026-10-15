@@ -240,10 +240,8 @@ async fn file_rate_limit_middleware(
     request: Request,
     next: Next,
 ) -> Result<Response, (StatusCode, axum::Json<super::api::ErrorResponse>)> {
-    let remote_addr =
-        super::websocket::extract_real_ip(&headers, addr.ip(), state.config.trust_proxy);
-    let client_key =
-        super::websocket::build_rate_limit_key(&remote_addr, addr.ip(), state.config.trust_proxy);
+    let (remote_addr, client_key) =
+        super::websocket::client_rate_limit_key(&headers, addr.ip(), state.config.trust_proxy);
 
     if let Err(retry_after) = state.file_rate_limiter.check(&client_key).await {
         warn!(
@@ -1842,6 +1840,9 @@ mod tests {
         let err = read_ws_msg(&mut ws).await;
         assert_eq!(err["type"], "error");
         assert_eq!(err["data"]["code"], "INVALID_SIZE");
+        // A handshake-stage size failure terminates the connection, so it is
+        // reported as fatal (unlike a rejected resize after `ready`).
+        assert!(err["data"]["fatal"].as_bool().unwrap());
 
         // Let the audit write flush before reading the file
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
