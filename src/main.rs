@@ -216,16 +216,25 @@ fn run_hash_password() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut password = String::new();
     std::io::stdin().lock().read_line(&mut password)?;
-    // Trim the trailing newline (and an optional carriage return on CRLF).
-    let password = password.trim_end_matches(['\r', '\n']);
+    let hash = hash_password_line(&password)?;
+    let mut stdout = std::io::stdout().lock();
+    writeln!(stdout, "{}", hash)?;
+    Ok(())
+}
+
+/// Trim the trailing newline (and an optional carriage return on CRLF),
+/// reject an empty password, and return its Argon2id hash.
+///
+/// Split out from [`run_hash_password`] so the pure parsing/hashing logic can
+/// be unit-tested without touching stdin/stdout.
+fn hash_password_line(input: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let password = input.trim_end_matches(['\r', '\n']);
     if password.is_empty() {
         return Err("password must not be empty".into());
     }
     let hash =
         BasicAuth::hash_password(password).map_err(|e| format!("failed to hash password: {e}"))?;
-    let mut stdout = std::io::stdout().lock();
-    writeln!(stdout, "{}", hash)?;
-    Ok(())
+    Ok(hash)
 }
 
 /// Initialize the tracing subscriber for logging.
@@ -786,5 +795,31 @@ enabled = false
         assert!(err.to_string().contains("Invalid log_level"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hash_password_line_trims_trailing_newline() {
+        let hash = hash_password_line("secret\n").unwrap();
+        assert!(hash.starts_with("$argon2id$"));
+        assert!(ttyd_rs::auth::is_valid_argon2_hash(&hash));
+    }
+
+    #[test]
+    fn test_hash_password_line_trims_crlf() {
+        // A CRLF-terminated line hashes the same password as the bare form.
+        use base64::Engine as _;
+        let hash = hash_password_line("secret\r\n").unwrap();
+        let auth = BasicAuth::new("user".to_string(), hash).unwrap();
+        let ok = base64::engine::general_purpose::STANDARD.encode("user:secret");
+        let bad = base64::engine::general_purpose::STANDARD.encode("user:nope");
+        assert!(auth.validate(&ok));
+        assert!(!auth.validate(&bad));
+    }
+
+    #[test]
+    fn test_hash_password_line_rejects_empty() {
+        assert!(hash_password_line("").is_err());
+        assert!(hash_password_line("\n").is_err());
+        assert!(hash_password_line("\r\n").is_err());
     }
 }

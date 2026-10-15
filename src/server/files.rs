@@ -990,6 +990,158 @@ mod tests {
         let _ = fs::remove_file(&secret);
     }
 
+    // ── open_nofollow_recursive ─────────────────────────────────────
+
+    #[test]
+    fn test_open_nofollow_recursive_opens_nested_file() {
+        let dir = std::env::temp_dir().join("ttyd-rs-onr-nested");
+        let _ = fs::remove_dir_all(&dir);
+        let sub = dir.join("a").join("b");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("f.txt"), b"payload").unwrap();
+
+        let (file, path) = open_nofollow_recursive(&dir, "a/b/f.txt").unwrap();
+        assert!(path.starts_with(dir.canonicalize().unwrap()));
+        assert!(path.ends_with("f.txt"));
+        drop(file);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_open_nofollow_recursive_rejects_absolute_and_empty() {
+        let dir = std::env::temp_dir().join("ttyd-rs-onr-guards");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // Absolute paths are refused outright.
+        let (status, _) = open_nofollow_recursive(&dir, "/etc/passwd").unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // Empty and dot-only paths resolve to no components.
+        for p in ["", ".", "./", "a/.."] {
+            let (status, msg) = open_nofollow_recursive(&dir, p).unwrap_err();
+            assert!(
+                status == StatusCode::BAD_REQUEST || status == StatusCode::FORBIDDEN,
+                "path {p:?} produced {status:?} ({msg})"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_open_nofollow_recursive_rejects_traversal() {
+        let dir = std::env::temp_dir().join("ttyd-rs-onr-traversal");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let (status, msg) = open_nofollow_recursive(&dir, "../secret").unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(msg.contains("traversal"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_open_nofollow_recursive_rejects_symlinked_component() {
+        let dir = std::env::temp_dir().join("ttyd-rs-onr-symlink");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let outside = std::env::temp_dir().join("ttyd-rs-onr-symlink-outside");
+        fs::write(&outside, b"secret").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("link")).unwrap();
+
+        // Symlink as a *middle* component: O_NOFOLLOW stops at the link, so
+        // the walk never crosses into the target. Because O_DIRECTORY is also
+        // set the kernel reports ENOTDIR (→400) rather than ELOOP; either way
+        // the symlink is refused, never followed.
+        let (status, _) = open_nofollow_recursive(&dir, "link/child").unwrap_err();
+        assert!(
+            status == StatusCode::FORBIDDEN || status == StatusCode::BAD_REQUEST,
+            "a symlinked directory component must be refused, got {status:?}"
+        );
+
+        // Symlink as the *final* component: plain O_NOFOLLOW → ELOOP → 403.
+        let (status, _) = open_nofollow_recursive(&dir, "link").unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn test_open_nofollow_recursive_missing_and_not_dir() {
+        let dir = std::env::temp_dir().join("ttyd-rs-onr-missing");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("file.txt"), b"x").unwrap();
+
+        // Missing leaf → 404.
+        let (status, _) = open_nofollow_recursive(&dir, "nope.txt").unwrap_err();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // A regular file used as a directory component → 400.
+        let (status, _) = open_nofollow_recursive(&dir, "file.txt/child").unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_open_nofollow_recursive_base_unavailable() {
+        let dir = std::env::temp_dir().join("ttyd-rs-onr-nobase");
+        let _ = fs::remove_dir_all(&dir);
+        let (status, _) = open_nofollow_recursive(&dir, "x").unwrap_err();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ── rename_noreplace ────────────────────────────────────────────
+
+    #[test]
+    fn test_rename_noreplace_success_then_conflict() {
+        let dir = std::env::temp_dir().join("ttyd-rs-rename-noreplace");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let src = dir.join("src");
+        let dst = dir.join("dst");
+        fs::write(&src, b"data").unwrap();
+
+        // No existing target → the rename succeeds and moves the bytes.
+        rename_noreplace(&src, &dst).unwrap();
+        assert!(!src.exists());
+        assert_eq!(fs::read(&dst).unwrap(), b"data");
+
+        // Existing target → AlreadyExists, and neither side is disturbed.
+        let src2 = dir.join("src2");
+        fs::write(&src2, b"new").unwrap();
+        let err = rename_noreplace(&src2, &dst).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&dst).unwrap(), b"data");
+        assert!(src2.exists(), "source must survive a failed rename");
+
+        // Missing source → error.
+        assert!(rename_noreplace(&dir.join("ghost"), &dir.join("x")).is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── check_dir_writable ──────────────────────────────────────────
+
+    #[test]
+    fn test_check_dir_writable_ok_and_missing() {
+        let dir = std::env::temp_dir().join("ttyd-rs-check-writable");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        assert!(check_dir_writable(&dir).is_ok());
+        // A nonexistent directory surfaces as an error (ENOENT).
+        assert!(check_dir_writable(&dir.join("missing")).is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn test_base_dir_uses_config() {
         let state = test_state(PathBuf::from("/tmp/custom"));

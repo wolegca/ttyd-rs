@@ -2,15 +2,20 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures::SinkExt;
+use futures::{Sink, SinkExt};
 use tokio::sync::broadcast;
 use tracing::{debug, error, warn};
 
 use crate::protocol::{DisconnectData, Message};
 use crate::session::Session;
 
-use super::WsSender;
 use super::utils::send_ws_error;
+
+/// Interval between server-initiated WebSocket protocol ping frames.
+pub(crate) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Silence budget before a client is considered dead (three missed pings).
+pub(crate) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Duplicate the PTY master fd for writing.
 ///
@@ -166,10 +171,14 @@ pub(crate) fn spawn_pty_reader(
 /// Spawn a task to receive broadcast output and forward to this client's WebSocket.
 ///
 /// Returns a `JoinHandle` that should be aborted when the session ends.
-pub(crate) fn spawn_output_subscriber(
-    ws_sender: WsSender,
+pub(crate) fn spawn_output_subscriber<S>(
+    ws_sender: Arc<tokio::sync::Mutex<S>>,
     mut output_rx: broadcast::Receiver<Vec<u8>>,
-) -> tokio::task::JoinHandle<()> {
+) -> tokio::task::JoinHandle<()>
+where
+    S: Sink<axum::extract::ws::Message> + Unpin + Send + 'static,
+    S::Error: std::error::Error + 'static,
+{
     tokio::spawn(async move {
         let mut last_lag_notify: Option<Instant> = None;
         const LAG_NOTIFY_COOLDOWN: Duration = Duration::from_secs(1);
@@ -253,15 +262,20 @@ pub(crate) fn spawn_output_subscriber(
 ///
 /// Returns a `JoinHandle` that resolves to `false` on timeout, or is aborted
 /// by the caller.
-pub(crate) fn spawn_heartbeat_monitor(
-    ws_sender: WsSender,
+pub(crate) fn spawn_heartbeat_monitor<S>(
+    ws_sender: Arc<tokio::sync::Mutex<S>>,
     last_ping_time: Arc<tokio::sync::Mutex<Instant>>,
-) -> tokio::task::JoinHandle<bool> {
+    interval: Duration,
+    heartbeat_timeout: Duration,
+) -> tokio::task::JoinHandle<bool>
+where
+    S: Sink<axum::extract::ws::Message> + Unpin + Send + 'static,
+    S::Error: std::error::Error + 'static,
+{
     tokio::spawn(async move {
-        // Send a protocol ping every 30s; allow up to 90s of silence (3 missed
-        // pongs) before declaring the connection dead.
-        let mut interval = tokio::time::interval(Duration::from_secs(30));
-        let heartbeat_timeout = Duration::from_secs(90);
+        // `interval`/`heartbeat_timeout` are parameters (rather than hardcoded)
+        // so tests can drive the monitor with short durations.
+        let mut interval = tokio::time::interval(interval);
         // The first tick of a tokio interval fires immediately. Consume it so
         // the first ping is actually delayed by a full interval — sending a
         // ping at t=0 would race the client's initial reads (e.g. the
@@ -293,4 +307,222 @@ pub(crate) fn spawn_heartbeat_monitor(
             }
         }
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::protocol::OutputData;
+    use crate::session::SessionMode;
+    use axum::extract::ws::Message as WsMessage;
+    use futures::StreamExt;
+    use futures::channel::mpsc;
+    use tokio::time::timeout;
+
+    type MockSender = Arc<tokio::sync::Mutex<mpsc::UnboundedSender<WsMessage>>>;
+
+    /// A mock WebSocket sink backed by an unbounded channel, so the spawned
+    /// tasks can be driven and observed deterministically.
+    fn mock_sender() -> (MockSender, mpsc::UnboundedReceiver<WsMessage>) {
+        let (tx, rx) = mpsc::unbounded();
+        (Arc::new(tokio::sync::Mutex::new(tx)), rx)
+    }
+
+    /// Parse an outbound text frame back into a protocol message.
+    fn as_message(msg: WsMessage) -> Message {
+        match msg {
+            WsMessage::Text(t) => Message::from_json(&t).expect("outbound frame is valid JSON"),
+            other => panic!("expected a Text frame, got {other:?}"),
+        }
+    }
+
+    // ── spawn_output_subscriber ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_output_subscriber_forwards_output() {
+        let (data_tx, _) = broadcast::channel::<Vec<u8>>(16);
+        let (sender, mut sink_rx) = mock_sender();
+        let handle = spawn_output_subscriber(sender, data_tx.subscribe());
+
+        data_tx.send(b"hello".to_vec()).unwrap();
+
+        let msg = timeout(Duration::from_secs(2), sink_rx.next())
+            .await
+            .unwrap()
+            .unwrap();
+        match as_message(msg) {
+            Message::Output(OutputData { payload }) => assert_eq!(payload, "hello"),
+            other => panic!("expected Output, got {other:?}"),
+        }
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_output_subscriber_reports_lag_once() {
+        // Capacity 2, but five messages are queued before the subscriber reads
+        // any, so its first observation must be a Lagged notification, which
+        // it surfaces as a single OUTPUT_LAGGED error.
+        let (data_tx, _) = broadcast::channel::<Vec<u8>>(2);
+        let rx = data_tx.subscribe();
+        for i in 0..5u8 {
+            data_tx.send(vec![i]).unwrap();
+        }
+
+        let (sender, mut sink_rx) = mock_sender();
+        let handle = spawn_output_subscriber(sender, rx);
+
+        let msg = timeout(Duration::from_secs(2), sink_rx.next())
+            .await
+            .unwrap()
+            .unwrap();
+        match as_message(msg) {
+            Message::Error(data) => {
+                assert_eq!(data.code, "OUTPUT_LAGGED");
+                assert!(!data.fatal);
+            }
+            other => panic!("expected OUTPUT_LAGGED error, got {other:?}"),
+        }
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_output_subscriber_sends_disconnect_after_final_output() {
+        let (data_tx, _) = broadcast::channel::<Vec<u8>>(16);
+        let (sender, mut sink_rx) = mock_sender();
+        let handle = spawn_output_subscriber(sender, data_tx.subscribe());
+
+        data_tx.send(b"final".to_vec()).unwrap();
+        // Dropping the last sender closes the channel after queued data drains.
+        drop(data_tx);
+
+        // The final output arrives first...
+        let first = timeout(Duration::from_secs(2), sink_rx.next())
+            .await
+            .unwrap()
+            .unwrap();
+        match as_message(first) {
+            Message::Output(OutputData { payload }) => assert_eq!(payload, "final"),
+            other => panic!("expected Output first, got {other:?}"),
+        }
+
+        // ...and only then the "shell exited" disconnect, preserving order.
+        let second = timeout(Duration::from_secs(2), sink_rx.next())
+            .await
+            .unwrap()
+            .unwrap();
+        match as_message(second) {
+            Message::Disconnect(DisconnectData { reason, .. }) => {
+                assert_eq!(reason, "Shell exited");
+            }
+            other => panic!("expected Disconnect second, got {other:?}"),
+        }
+        handle.abort();
+    }
+
+    // ── spawn_heartbeat_monitor ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_heartbeat_monitor_sends_protocol_ping() {
+        let (sender, mut sink_rx) = mock_sender();
+        let last = Arc::new(tokio::sync::Mutex::new(Instant::now()));
+        let handle = spawn_heartbeat_monitor(
+            sender,
+            last,
+            Duration::from_millis(20),
+            Duration::from_secs(30),
+        );
+
+        let msg = timeout(Duration::from_secs(2), sink_rx.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(msg, WsMessage::Ping(_)),
+            "expected a protocol ping"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_monitor_returns_false_on_timeout() {
+        // Keep the receiver alive so the periodic ping send succeeds; the
+        // timestamp is never refreshed, so the monitor times out quickly.
+        let (sender, _rx) = mock_sender();
+        let last = Arc::new(tokio::sync::Mutex::new(Instant::now()));
+        let handle = spawn_heartbeat_monitor(
+            sender,
+            last,
+            Duration::from_millis(20),
+            Duration::from_millis(5),
+        );
+
+        let result = timeout(Duration::from_secs(2), handle)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!result, "monitor must report a timeout");
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_monitor_returns_false_when_send_fails() {
+        let (sender, rx) = mock_sender();
+        // Dropping the receiver makes every ping send fail.
+        drop(rx);
+        let last = Arc::new(tokio::sync::Mutex::new(Instant::now()));
+        let handle = spawn_heartbeat_monitor(
+            sender,
+            last,
+            Duration::from_millis(20),
+            Duration::from_secs(30),
+        );
+
+        let result = timeout(Duration::from_secs(2), handle)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!result, "monitor must stop when the socket is gone");
+    }
+
+    // ── spawn_pty_reader ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_pty_reader_broadcasts_output_and_closes_on_exit() {
+        let session = Arc::new(
+            Session::new(
+                "pty-reader-test".to_string(),
+                SessionMode::Isolated,
+                &[
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "printf hello".to_string(),
+                ],
+                None,
+                80,
+                24,
+            )
+            .unwrap(),
+        );
+        let mut rx = session.subscribe_output().unwrap();
+        let handle = spawn_pty_reader(session.pty_session(), session.clone());
+
+        // Drain until the reader closes the channel after the shell exits.
+        let collected = timeout(Duration::from_secs(5), async {
+            let mut buf = String::new();
+            loop {
+                match rx.recv().await {
+                    Ok(bytes) => buf.push_str(&String::from_utf8_lossy(&bytes)),
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => return buf,
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(collected.contains("hello"), "collected: {collected:?}");
+        // After EOF the broadcast slot is gone, so no new subscriber is allowed.
+        assert!(session.subscribe_output().is_none());
+        handle.await.unwrap();
+    }
 }

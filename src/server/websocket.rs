@@ -387,8 +387,12 @@ async fn run_session(
     // ping frames (see pty_io::spawn_heartbeat_monitor) and treats a pong or
     // app-level ping as proof of life.
     let last_ping_time = Arc::new(tokio::sync::Mutex::new(std::time::Instant::now()));
-    let mut heartbeat_task =
-        pty_io::spawn_heartbeat_monitor(ws_sender.clone(), last_ping_time.clone());
+    let mut heartbeat_task = pty_io::spawn_heartbeat_monitor(
+        ws_sender.clone(),
+        last_ping_time.clone(),
+        pty_io::HEARTBEAT_INTERVAL,
+        pty_io::HEARTBEAT_TIMEOUT,
+    );
 
     // ── Main message loop ───────────────────────────────────────────
     let mut ctx = message_loop::MessageLoopContext {
@@ -532,5 +536,34 @@ mod tests {
         state.active_connections.fetch_sub(1, Ordering::Relaxed);
         assert!(state.try_acquire_connection());
         assert_eq!(state.active_connections.load(Ordering::Relaxed), 2);
+    }
+
+    /// Every `CloseReason` variant must map to a distinct, non-empty audit
+    /// string. A missing arm or two variants sharing a message would make
+    /// the `ConnectionClosed` audit event ambiguous.
+    #[test]
+    fn test_close_reason_as_str_all_variants() {
+        let cases = [
+            (CloseReason::ClientClosed, "client closed the connection"),
+            (CloseReason::AuthFailed, "authentication failed"),
+            (CloseReason::HandshakeFailed, "handshake failed"),
+            (CloseReason::SessionSetupFailed, "session setup failed"),
+            (CloseReason::HeartbeatTimeout, "heartbeat timeout"),
+            (CloseReason::Shutdown, "server shutdown"),
+            (CloseReason::SessionClosed, "session force-removed"),
+            (CloseReason::IoError, "I/O error"),
+        ];
+
+        let mut seen = std::collections::HashSet::new();
+        for (reason, expected) in cases {
+            assert_eq!(reason.as_str(), expected);
+            assert!(!reason.as_str().is_empty());
+            assert!(
+                seen.insert(reason.as_str()),
+                "duplicate close reason string: {}",
+                reason.as_str()
+            );
+        }
+        assert_eq!(seen.len(), cases.len());
     }
 }

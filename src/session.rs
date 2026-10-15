@@ -965,4 +965,85 @@ mod tests {
         assert_eq!(SessionMode::SharedReadOnly.to_string(), "shared_readonly");
         assert_eq!(SessionMode::SharedReadWrite.to_string(), "shared_readwrite");
     }
+
+    fn new_test_session(mode: SessionMode) -> Session {
+        Session::new(
+            "lifecycle-test".to_string(),
+            mode,
+            &["bash".to_string()],
+            None,
+            80,
+            24,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_output_none_after_pty_exit() {
+        let session = new_test_session(SessionMode::Isolated);
+        assert!(session.subscribe_output().is_some());
+
+        session.mark_pty_exited();
+
+        // After the PTY exits a new subscriber must be refused so the caller
+        // sends the "shell exited" disconnect instead of hanging silently.
+        assert!(session.subscribe_output().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_mark_pty_exited_closes_subscribers_after_drain() {
+        let session = new_test_session(SessionMode::Isolated);
+        let mut rx = session.subscribe_output().unwrap();
+
+        session.broadcast_output(b"final".to_vec());
+        session.mark_pty_exited();
+
+        // The already-queued output is delivered first...
+        assert_eq!(rx.recv().await.unwrap(), b"final");
+        // ...then the channel reports Closed, which each subscriber turns into
+        // its ordered "shell exited" disconnect.
+        assert!(matches!(
+            rx.recv().await,
+            Err(broadcast::error::RecvError::Closed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_output_after_exit_is_noop() {
+        let session = new_test_session(SessionMode::Isolated);
+        let mut rx = session.subscribe_output().unwrap();
+
+        session.mark_pty_exited();
+        // Broadcasting after exit must not panic or resurrect the sender.
+        session.broadcast_output(b"dropped".to_vec());
+
+        assert!(matches!(
+            rx.recv().await,
+            Err(broadcast::error::RecvError::Closed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_touch_refreshes_last_activity() {
+        let session = new_test_session(SessionMode::Isolated);
+        let before = session.last_activity().await;
+
+        sleep(Duration::from_millis(20)).await;
+        session.touch().await;
+
+        assert!(session.last_activity().await > before);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_cancels_token_and_drops_output() {
+        let session = new_test_session(SessionMode::Isolated);
+        let token = session.cancel_token().clone();
+        assert!(!token.is_cancelled());
+        assert!(session.subscribe_output().is_some());
+
+        session.shutdown();
+
+        assert!(token.is_cancelled());
+        assert!(session.subscribe_output().is_none());
+    }
 }

@@ -36,7 +36,6 @@ async fn start_test_server() -> (tokio::task::JoinHandle<()>, u16) {
 }
 
 #[tokio::test]
-#[ignore] // Run with `cargo test -- --ignored`
 async fn test_heartbeat_ping_pong() {
     let (_server, port) = start_test_server().await;
     let url = format!("ws://127.0.0.1:{}/ws", port);
@@ -80,7 +79,6 @@ async fn test_heartbeat_ping_pong() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_multiple_pings() {
     let (_server, port) = start_test_server().await;
     let url = format!("ws://127.0.0.1:{}/ws", port);
@@ -119,7 +117,7 @@ async fn test_multiple_pings() {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore] // Slow: exercises the full 90s timeout window; run via `just test-ignored`
 async fn test_heartbeat_timeout_not_triggered_with_regular_pings() {
     let (_server, port) = start_test_server().await;
     let url = format!("ws://127.0.0.1:{}/ws", port);
@@ -161,7 +159,6 @@ async fn test_heartbeat_timeout_not_triggered_with_regular_pings() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_session_cleanup_after_reconnect_window() {
     use std::sync::Arc;
     use ttyd_rs::session::{SessionManager, SessionMode};
@@ -216,7 +213,6 @@ async fn test_session_cleanup_after_reconnect_window() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_reconnect_within_window_reuses_session() {
     use std::sync::Arc;
     use ttyd_rs::session::{Client, SessionManager, SessionMode};

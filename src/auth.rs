@@ -34,3 +34,50 @@ impl Authenticator for TokenAuth {
             .is_some_and(|token| self.validate(token))
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use base64::Engine as _;
+    use base64::engine::general_purpose;
+
+    #[test]
+    fn test_basic_validate_header_accepts_only_basic_prefix() {
+        let auth = BasicAuth::new("admin".to_string(), "secret".to_string()).unwrap();
+        let creds = general_purpose::STANDARD.encode("admin:secret");
+
+        assert!(auth.validate_header(&format!("Basic {creds}")));
+        // Wrong scheme, missing scheme, and empty header must all fail.
+        assert!(!auth.validate_header(&format!("Bearer {creds}")));
+        assert!(!auth.validate_header(&creds));
+        assert!(!auth.validate_header(""));
+        assert!(!auth.validate_header("Basic "));
+    }
+
+    #[test]
+    fn test_basic_validate_header_rejects_wrong_password() {
+        let auth = BasicAuth::new("admin".to_string(), "secret".to_string()).unwrap();
+        let wrong = general_purpose::STANDARD.encode("admin:wrong");
+        assert!(!auth.validate_header(&format!("Basic {wrong}")));
+    }
+
+    #[test]
+    fn test_token_validate_header_accepts_only_bearer_prefix() {
+        let auth = TokenAuth::new("tok-123".to_string());
+
+        assert!(auth.validate_header("Bearer tok-123"));
+        assert!(!auth.validate_header("Basic tok-123"));
+        assert!(!auth.validate_header("tok-123"));
+        assert!(!auth.validate_header("Bearer wrong"));
+        assert!(!auth.validate_header(""));
+        assert!(!auth.validate_header("Bearer "));
+    }
+
+    #[test]
+    fn test_validate_header_scheme_is_case_sensitive() {
+        // The scheme prefix must match exactly ("Bearer ", not "bearer ").
+        let auth = TokenAuth::new("tok".to_string());
+        assert!(!auth.validate_header("bearer tok"));
+    }
+}

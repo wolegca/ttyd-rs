@@ -1848,4 +1848,432 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ── Handshake / session-lifecycle / message-loop integration ────────
+
+    type TestWs = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    /// Read messages until a non-`output` frame arrives.
+    ///
+    /// After `ready` the shell emits its prompt/echo asynchronously as
+    /// `output` frames, which would otherwise race the message under test.
+    async fn read_ws_msg_skip_output(ws: &mut TestWs) -> serde_json::Value {
+        use futures::StreamExt;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let msg = ws.next().await.unwrap().unwrap();
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&msg.into_text().unwrap()).unwrap();
+                if parsed["type"] != "output" {
+                    return parsed;
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for a non-output message")
+    }
+
+    /// A non-handshake frame as the very first message must not stall the
+    /// handshake: the server falls back to the default 80x24 and proceeds.
+    #[tokio::test]
+    async fn test_websocket_handshake_defaults_without_resize() {
+        let addr = start_test_server(Config::default()).await;
+        let url = format!("ws://{}/ws", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // A ping as the first frame is ignored by the handshake reader.
+        let ping = serde_json::json!({
+            "type": "ping",
+            "data": { "timestamp": 1 }
+        });
+        send_ws_msg(&mut ws, &ping).await;
+
+        let ready = read_ws_msg(&mut ws).await;
+        assert_eq!(ready["type"], "ready");
+        assert_eq!(ready["data"]["cols"], 80);
+        assert_eq!(ready["data"]["rows"], 24);
+
+        ws.close(None).await.unwrap();
+    }
+
+    /// Joining a session id that does not exist must be rejected with
+    /// SESSION_NOT_FOUND instead of silently forking a new PTY.
+    #[tokio::test]
+    async fn test_websocket_join_nonexistent_session_rejected() {
+        let addr = start_test_server(Config::default()).await;
+        let url = format!("ws://{}/ws", addr);
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        let join = serde_json::json!({
+            "type": "join",
+            "data": { "session_id": "does-not-exist" }
+        });
+        send_ws_msg(&mut ws, &join).await;
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 80, "rows": 24 }
+        });
+        send_ws_msg(&mut ws, &resize).await;
+
+        let err = read_ws_msg(&mut ws).await;
+        assert_eq!(err["type"], "error");
+        assert_eq!(err["data"]["code"], "SESSION_NOT_FOUND");
+        assert!(err["data"]["fatal"].as_bool().unwrap());
+    }
+
+    /// An isolated session cannot be joined by a second client.
+    #[tokio::test]
+    async fn test_websocket_join_isolated_session_rejected() {
+        // Default session mode is "isolated".
+        let addr = start_test_server(Config::default()).await;
+        let url = format!("ws://{}/ws", addr);
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 80, "rows": 24 }
+        });
+
+        // First client creates the isolated session and stays connected.
+        let (mut ws1, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        send_ws_msg(&mut ws1, &resize).await;
+        let ready = read_ws_msg(&mut ws1).await;
+        assert_eq!(ready["type"], "ready");
+        let session_id = ready["data"]["session_id"].as_str().unwrap().to_string();
+
+        // Second client tries to join it.
+        let (mut ws2, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let join = serde_json::json!({
+            "type": "join",
+            "data": { "session_id": session_id }
+        });
+        send_ws_msg(&mut ws2, &join).await;
+        send_ws_msg(&mut ws2, &resize).await;
+
+        let err = read_ws_msg(&mut ws2).await;
+        assert_eq!(err["type"], "error");
+        assert_eq!(err["data"]["code"], "CANNOT_JOIN");
+
+        ws1.close(None).await.unwrap();
+    }
+
+    /// A second client can join a shared session and receives the same id.
+    #[tokio::test]
+    async fn test_websocket_join_shared_session_succeeds() {
+        let mut config = Config::default();
+        config.session.mode = "shared_readwrite".to_string();
+        let addr = start_test_server(config).await;
+        let url = format!("ws://{}/ws", addr);
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 80, "rows": 24 }
+        });
+
+        let (mut ws1, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        send_ws_msg(&mut ws1, &resize).await;
+        let ready1 = read_ws_msg(&mut ws1).await;
+        assert_eq!(ready1["type"], "ready");
+        let session_id = ready1["data"]["session_id"].as_str().unwrap().to_string();
+
+        let (mut ws2, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let join = serde_json::json!({
+            "type": "join",
+            "data": { "session_id": session_id }
+        });
+        send_ws_msg(&mut ws2, &join).await;
+        send_ws_msg(&mut ws2, &resize).await;
+
+        let ready2 = read_ws_msg_skip_output(&mut ws2).await;
+        assert_eq!(ready2["type"], "ready");
+        assert_eq!(ready2["data"]["session_id"], session_id);
+
+        ws1.close(None).await.unwrap();
+        ws2.close(None).await.unwrap();
+    }
+
+    /// A read-only shared session rejects input with a non-fatal READONLY error.
+    #[tokio::test]
+    async fn test_websocket_readonly_session_rejects_input() {
+        let mut config = Config::default();
+        config.session.mode = "shared_readonly".to_string();
+        let addr = start_test_server(config).await;
+        let url = format!("ws://{}/ws", addr);
+
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 80, "rows": 24 }
+        });
+        send_ws_msg(&mut ws, &resize).await;
+        assert_eq!(read_ws_msg(&mut ws).await["type"], "ready");
+
+        let input = serde_json::json!({
+            "type": "input",
+            "data": { "payload": "echo nope\n" }
+        });
+        send_ws_msg(&mut ws, &input).await;
+
+        let err = read_ws_msg_skip_output(&mut ws).await;
+        assert_eq!(err["type"], "error");
+        assert_eq!(err["data"]["code"], "READONLY");
+        assert!(!err["data"]["fatal"].as_bool().unwrap());
+
+        ws.close(None).await.unwrap();
+    }
+
+    /// An invalid resize after `ready` is reported as a non-fatal error and
+    /// must not tear the connection down.
+    #[tokio::test]
+    async fn test_websocket_resize_invalid_after_ready_is_non_fatal() {
+        let addr = start_test_server(Config::default()).await;
+        let url = format!("ws://{}/ws", addr);
+
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 80, "rows": 24 }
+        });
+        send_ws_msg(&mut ws, &resize).await;
+        assert_eq!(read_ws_msg(&mut ws).await["type"], "ready");
+
+        // Below min_cols (10).
+        let bad_resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 5, "rows": 24 }
+        });
+        send_ws_msg(&mut ws, &bad_resize).await;
+        let err = read_ws_msg_skip_output(&mut ws).await;
+        assert_eq!(err["type"], "error");
+        assert_eq!(err["data"]["code"], "INVALID_SIZE");
+        assert!(!err["data"]["fatal"].as_bool().unwrap());
+
+        // The connection is still alive: a ping still gets a pong.
+        let ping = serde_json::json!({
+            "type": "ping",
+            "data": { "timestamp": 7 }
+        });
+        send_ws_msg(&mut ws, &ping).await;
+        let pong = read_ws_msg_skip_output(&mut ws).await;
+        assert_eq!(pong["type"], "pong");
+        assert_eq!(pong["data"]["timestamp"], 7);
+
+        ws.close(None).await.unwrap();
+    }
+
+    /// When file transfer is disabled, `file_list` is refused with
+    /// FILE_TRANSFER_DISABLED.
+    #[tokio::test]
+    async fn test_websocket_file_list_disabled() {
+        let mut config = Config::default();
+        config.file_transfer.enabled = false;
+        let addr = start_test_server(config).await;
+        let url = format!("ws://{}/ws", addr);
+
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 80, "rows": 24 }
+        });
+        send_ws_msg(&mut ws, &resize).await;
+        assert_eq!(read_ws_msg(&mut ws).await["type"], "ready");
+
+        let file_list = serde_json::json!({
+            "type": "file_list",
+            "data": { "path": "." }
+        });
+        send_ws_msg(&mut ws, &file_list).await;
+
+        let err = read_ws_msg_skip_output(&mut ws).await;
+        assert_eq!(err["type"], "error");
+        assert_eq!(err["data"]["code"], "FILE_TRANSFER_DISABLED");
+
+        ws.close(None).await.unwrap();
+    }
+
+    /// With file transfer enabled and a configured directory, `file_list`
+    /// returns the directory entries as a `file_list_result`.
+    #[tokio::test]
+    async fn test_websocket_file_list_returns_entries() {
+        let dir = std::env::temp_dir().join("ttyd-rs-ws-file-list");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("alpha.txt"), b"data").unwrap();
+
+        let mut config = Config::default();
+        config.file_transfer.enabled = true;
+        config.file_transfer.dir = Some(dir.clone());
+        let addr = start_test_server(config).await;
+        let url = format!("ws://{}/ws", addr);
+
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 80, "rows": 24 }
+        });
+        send_ws_msg(&mut ws, &resize).await;
+        assert_eq!(read_ws_msg(&mut ws).await["type"], "ready");
+
+        let file_list = serde_json::json!({
+            "type": "file_list",
+            "data": { "path": "." }
+        });
+        send_ws_msg(&mut ws, &file_list).await;
+
+        let result = read_ws_msg_skip_output(&mut ws).await;
+        assert_eq!(result["type"], "file_list_result");
+        let entries = result["data"]["entries"].as_array().unwrap();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"alpha.txt"), "entries: {names:?}");
+
+        ws.close(None).await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// If auth is configured but the validator fails to build at startup, the
+    /// WebSocket handler must fail closed — reject the connection instead of
+    /// letting it through unauthenticated.
+    #[tokio::test]
+    async fn test_websocket_auth_misconfigured_fails_closed() {
+        // Declares basic auth but omits the password, so `AuthMethod::build`
+        // fails and `AppState::auth_method` stays `None` while `config.auth`
+        // is `Some` — exactly the misconfiguration `authenticate` guards.
+        let mut config = Config::default();
+        config.auth = Some(crate::config::AuthConfig {
+            method: "basic".to_string(),
+            username: Some("admin".to_string()),
+            password: None,
+            token: None,
+        });
+        let addr = start_test_server(config).await;
+        let url = format!("ws://{}/ws", addr);
+
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // No client auth message is needed: the server rejects immediately.
+        let msg = read_ws_msg(&mut ws).await;
+        assert_eq!(msg["type"], "auth_fail");
+    }
+
+    /// A reconnect that sends `resize` *before* `join` must still have the join
+    /// consumed by the handshake (read within its short timeout), so the client
+    /// lands in the existing session instead of a fresh one.
+    #[tokio::test]
+    async fn test_websocket_join_after_resize_reuses_session() {
+        let mut config = Config::default();
+        config.session.mode = "shared_readwrite".to_string();
+        let addr = start_test_server(config).await;
+        let url = format!("ws://{}/ws", addr);
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 80, "rows": 24 }
+        });
+
+        let (mut ws1, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        send_ws_msg(&mut ws1, &resize).await;
+        let ready1 = read_ws_msg(&mut ws1).await;
+        assert_eq!(ready1["type"], "ready");
+        let session_id = ready1["data"]["session_id"].as_str().unwrap().to_string();
+
+        // Reconnecting client: resize FIRST, then join.
+        let (mut ws2, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        send_ws_msg(&mut ws2, &resize).await;
+        let join = serde_json::json!({
+            "type": "join",
+            "data": { "session_id": session_id }
+        });
+        send_ws_msg(&mut ws2, &join).await;
+
+        let ready2 = read_ws_msg_skip_output(&mut ws2).await;
+        assert_eq!(ready2["type"], "ready");
+        // If the join had leaked into the main loop, a brand-new session would
+        // have been created and this id would differ.
+        assert_eq!(ready2["data"]["session_id"], session_id);
+
+        ws1.close(None).await.unwrap();
+        ws2.close(None).await.unwrap();
+    }
+
+    /// The dedicated file-endpoint limiter (10 req / 60s) must reject the 11th
+    /// `file_list` while leaving the terminal usable; the error is non-fatal.
+    #[tokio::test]
+    async fn test_websocket_file_list_rate_limited() {
+        let dir = std::env::temp_dir().join("ttyd-rs-ws-file-rate");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut config = Config::default();
+        config.file_transfer.enabled = true;
+        config.file_transfer.dir = Some(dir.clone());
+        let addr = start_test_server(config).await;
+        let url = format!("ws://{}/ws", addr);
+
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 80, "rows": 24 }
+        });
+        send_ws_msg(&mut ws, &resize).await;
+        assert_eq!(read_ws_msg(&mut ws).await["type"], "ready");
+
+        let file_list = serde_json::json!({
+            "type": "file_list",
+            "data": { "path": "." }
+        });
+        for _ in 0..11 {
+            send_ws_msg(&mut ws, &file_list).await;
+        }
+
+        let mut results = 0;
+        let mut rate_limited = false;
+        for _ in 0..11 {
+            let msg = read_ws_msg_skip_output(&mut ws).await;
+            let ty = msg["type"].as_str().unwrap();
+            if ty == "file_list_result" {
+                results += 1;
+            } else {
+                assert_eq!(ty, "error");
+                assert_eq!(msg["data"]["code"], "RATE_LIMITED");
+                assert!(!msg["data"]["fatal"].as_bool().unwrap());
+                rate_limited = true;
+            }
+        }
+        assert_eq!(results, 10, "the first ten requests are allowed");
+        assert!(rate_limited, "the eleventh request must be rate limited");
+
+        ws.close(None).await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A non-text frame arriving before any handshake message must be ignored
+    /// rather than treated as a failure: the server falls back to 80x24.
+    #[tokio::test]
+    async fn test_websocket_handshake_tolerates_non_text_frame() {
+        let addr = start_test_server(Config::default()).await;
+        let url = format!("ws://{}/ws", addr);
+
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        // A raw binary frame is not a protocol JSON message.
+        use futures::SinkExt;
+        ws.send(tokio_tungstenite::tungstenite::Message::Binary(
+            vec![0u8, 1, 2, 3].into(),
+        ))
+        .await
+        .unwrap();
+
+        let resize = serde_json::json!({
+            "type": "resize",
+            "data": { "cols": 80, "rows": 24 }
+        });
+        send_ws_msg(&mut ws, &resize).await;
+
+        let ready = read_ws_msg_skip_output(&mut ws).await;
+        assert_eq!(ready["type"], "ready");
+        assert_eq!(ready["data"]["cols"], 80);
+        assert_eq!(ready["data"]["rows"], 24);
+
+        ws.close(None).await.unwrap();
+    }
 }

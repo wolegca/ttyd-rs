@@ -307,3 +307,115 @@ async fn perform_auth(
 
     Ok(AuthResult::Success(auth_method.success_username()))
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::config::{AuthConfig, ValidationConfig};
+    use base64::Engine as _;
+    use base64::engine::general_purpose;
+
+    fn basic_config(username: Option<&str>, password: Option<&str>) -> AuthConfig {
+        AuthConfig {
+            method: "basic".to_string(),
+            username: username.map(str::to_string),
+            password: password.map(str::to_string),
+            token: None,
+        }
+    }
+
+    fn token_config(token: Option<&str>) -> AuthConfig {
+        AuthConfig {
+            method: "token".to_string(),
+            username: None,
+            password: None,
+            token: token.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn test_build_basic_exposes_expected_metadata() {
+        let method = AuthMethod::build(&basic_config(Some("admin"), Some("secret"))).unwrap();
+        assert_eq!(method.method_name(), "basic");
+        assert_eq!(method.audit_name(), "admin");
+        assert_eq!(method.success_username(), Some("admin".to_string()));
+        assert_eq!(method.invalid_message(), "Invalid credentials");
+    }
+
+    #[test]
+    fn test_build_token_exposes_expected_metadata() {
+        let method = AuthMethod::build(&token_config(Some("tok-123"))).unwrap();
+        assert_eq!(method.method_name(), "token");
+        assert_eq!(method.audit_name(), "token-user");
+        assert_eq!(method.success_username(), None);
+        assert_eq!(method.invalid_message(), "Invalid token");
+    }
+
+    #[test]
+    fn test_build_basic_requires_username_and_password() {
+        assert!(AuthMethod::build(&basic_config(None, Some("secret"))).is_err());
+        assert!(AuthMethod::build(&basic_config(Some("admin"), None)).is_err());
+        assert!(AuthMethod::build(&basic_config(None, None)).is_err());
+    }
+
+    #[test]
+    fn test_build_token_requires_token() {
+        assert!(AuthMethod::build(&token_config(None)).is_err());
+    }
+
+    #[test]
+    fn test_build_rejects_unknown_method() {
+        let config = AuthConfig {
+            method: "oauth".to_string(),
+            username: None,
+            password: None,
+            token: None,
+        };
+        // `build` returns the reason string; the message must name the method
+        // so a misconfiguration is diagnosable from the startup log.
+        let err = AuthMethod::build(&config).err().unwrap();
+        assert!(
+            err.contains("unknown auth method"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_basic_accepts_correct_and_rejects_wrong() {
+        let method = AuthMethod::build(&basic_config(Some("admin"), Some("secret"))).unwrap();
+        let good = general_purpose::STANDARD.encode("admin:secret");
+        let bad = general_purpose::STANDARD.encode("admin:wrong");
+        assert!(method.validate(&good));
+        assert!(!method.validate(&bad));
+    }
+
+    #[test]
+    fn test_validate_token_accepts_correct_and_rejects_wrong() {
+        let method = AuthMethod::build(&token_config(Some("tok-123"))).unwrap();
+        assert!(method.validate("tok-123"));
+        assert!(!method.validate("tok-456"));
+    }
+
+    #[test]
+    fn test_validate_format_is_method_specific() {
+        let basic = AuthMethod::build(&basic_config(Some("admin"), Some("secret"))).unwrap();
+        let token = AuthMethod::build(&token_config(Some("my-secret-token"))).unwrap();
+        let config = ValidationConfig::default();
+
+        // '-' is outside the Basic base64 charset but a valid token character,
+        // so the two methods must disagree on the same input.
+        assert!(basic.validate_format(&config, "my-secret-token").is_err());
+        assert!(token.validate_format(&config, "my-secret-token").is_ok());
+
+        let base64_creds = general_purpose::STANDARD.encode("admin:secret");
+        assert!(basic.validate_format(&config, &base64_creds).is_ok());
+    }
+
+    #[test]
+    fn test_validate_format_token_rejects_empty() {
+        let token = AuthMethod::build(&token_config(Some("tok"))).unwrap();
+        let config = ValidationConfig::default();
+        assert!(token.validate_format(&config, "").is_err());
+    }
+}

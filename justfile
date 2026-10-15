@@ -29,6 +29,10 @@ test:
 test-one TEST:
     cargo test {{TEST}}
 
+# Run ignored (slow integration) tests
+test-ignored:
+    cargo test -- --ignored
+
 # Check code without building
 check:
     cargo check
