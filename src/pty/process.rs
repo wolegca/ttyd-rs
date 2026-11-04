@@ -259,9 +259,9 @@ impl PtyProcess {
         let args = args.map_err(|e| PtyError::ExecFailed(format!("Invalid arguments: {}", e)))?;
 
         // Execute the command — never returns on success
-        execvp(&program, &args).map_err(|e| PtyError::ExecFailed(e.to_string()))?;
-
-        Ok(())
+        execvp(&program, &args)
+            .map(|_| ())
+            .map_err(|e| PtyError::ExecFailed(e.to_string()))
     }
 
     /// Set `FD_CLOEXEC` on a file descriptor so it is closed on `exec`.
