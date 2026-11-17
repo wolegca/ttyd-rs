@@ -11,6 +11,7 @@ const REFRESH_INTERVAL = 5000;
 
 const panel = document.getElementById('status-panel');
 const btnStatus = document.getElementById('btn-status');
+const btnStatusClose = document.getElementById('btn-status-close');
 const statusWrapper = document.getElementById('status-wrapper');
 const versionEl = document.getElementById('status-version');
 const uptimeEl = document.getElementById('status-uptime');
@@ -35,7 +36,9 @@ function showError(text) {
     if (!err) {
         err = document.createElement('div');
         err.className = 'status-error';
-        panel.prepend(err);
+        // Prepend inside the body so the mobile drawer keeps its
+        // title row on top.
+        panel.querySelector('.status-panel-body')?.prepend(err);
     }
     err.textContent = text;
 }
@@ -166,4 +169,13 @@ export function initStatusPanel(closeOtherMenus) {
         if (willOpen) openStatusPanel();
         else closeStatusPanel();
     });
+    // Mobile drawer: explicit close button + tap-on-backdrop dismissal.
+    // The backdrop is a sibling of the panel, so the document-level
+    // outside-click handler in main.js never fires for it.
+    btnStatusClose.addEventListener('click', () => {
+        closeStatusPanel();
+    });
+    document
+        .getElementById('status-panel-backdrop')
+        ?.addEventListener('click', () => closeStatusPanel());
 }

@@ -102,7 +102,7 @@ Milestone history (M1–M6) is maintained in [docs/ROADMAP.md](ROADMAP.md#develo
 - `GET /api/status` (auth-protected like the rest of the API group): version, uptime, session/connection counters, with metrics split into `application` (the ttyd-rs process) and `server` (the host) groups
 - Application metrics: `VmRSS` from `/proc/self/status`; process CPU usage sampled by a background task every 5s (`utime`+`stime` delta from `/proc/self/stat`, aborted on shutdown) and served as fixed-point milli-percent; can exceed 100% on multi-core
 - Server (host) metrics, read directly from `/proc` (no extra dependency): total/used/available memory from `/proc/meminfo` (`used = total − available`), host CPU usage from the aggregate `cpu` line of `/proc/stat` (same 5s sampler), 1/5/15-minute load from `/proc/loadavg`, uptime from `/proc/uptime`, kernel release from `/proc/sys/kernel/osrelease`
-- Header dropdown panel (button appears after authentication) split into Application / Sessions / Server groups, refreshed every 5s while open; closes on outside click / Escape like the other menus
+- Header dropdown panel (button appears after authentication) split into Application / Sessions / Server groups, refreshed every 5s while open; closes on outside click / Escape like the other menus. On small screens (≤768px) it renders as a centered drawer with a blurred backdrop, scrollable content, a title row with an explicit close button, and backdrop-tap dismissal, so the panel never overflows the viewport
 - Application metrics reflect the ttyd-rs process only, not PTY children
 
 ---

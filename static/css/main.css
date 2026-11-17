@@ -493,6 +493,101 @@ button {
   color: var(--danger);
 }
 
+/* Mobile drawer mode: on small screens the anchored dropdown would
+   overflow the viewport horizontally (button sits mid-header) and
+   vertically (13 rows > most phone viewports). Recenter it as a
+   card over a backdrop, mirroring the file panel / shortcuts modal
+   patterns. Hidden on desktop where the dropdown shape fits. */
+.status-backdrop {
+  display: none;
+}
+.status-panel-head {
+  display: none;
+}
+.status-panel-body {
+  padding: 0;
+}
+@media (max-width: 768px) {
+  .status-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: var(--bg-overlay);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    z-index: var(--z-overlay);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity var(--t-fast) var(--ease), visibility var(--t-fast);
+  }
+  #status-panel {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    right: auto;
+    /* Stays above the backdrop, which shares --z-overlay and
+       follows the panel in the DOM. */
+    z-index: calc(var(--z-overlay) + 1);
+    transform: translate(-50%, -48%) scale(0.97);
+    transform-origin: center;
+    width: min(340px, calc(100vw - 32px));
+    max-height: calc(100dvh - 40px);
+    padding: 0;
+    overflow: hidden;
+  }
+  #status-panel.open {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  #status-panel.open ~ .status-backdrop {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+  .status-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 12px 14px 8px;
+  }
+  .status-panel-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .status-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--text-muted);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    transition:
+      background var(--t-fast) var(--ease),
+      color var(--t-fast) var(--ease);
+  }
+  .status-close:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+  .status-panel-body {
+    padding: 2px 6px 6px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .status-error {
+    padding: 8px 12px 0;
+  }
+}
+
 /* Toggle switch */
 .switch {
   position: relative;
