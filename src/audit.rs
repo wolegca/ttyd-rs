@@ -1,5 +1,4 @@
-/// Audit logging module
-use chrono::{DateTime, Utc};
+use jiff::ZonedDateTime;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,7 +18,7 @@ pub struct AuditLogger {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuditEvent {
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: ZonedDateTime,
     pub event_type: AuditEventType,
     pub remote_addr: String,
     pub username: Option<String>,
@@ -84,7 +83,7 @@ impl AuditLogger {
     /// Log a connection event
     pub async fn log_connection(&self, remote_addr: &str, client_id: &str) {
         self.log_event(AuditEvent {
-            timestamp: Utc::now(),
+            timestamp: ZonedDateTime::now(),
             event_type: AuditEventType::ConnectionOpened,
             remote_addr: remote_addr.to_string(),
             username: None,
@@ -109,7 +108,7 @@ impl AuditLogger {
         };
 
         self.log_event(AuditEvent {
-            timestamp: Utc::now(),
+            timestamp: ZonedDateTime::now(),
             event_type,
             remote_addr: remote_addr.to_string(),
             username: Some(username.to_string()),
@@ -125,7 +124,7 @@ impl AuditLogger {
     /// Log a disconnection event
     pub async fn log_disconnect(&self, remote_addr: &str, session_id: &str, reason: &str) {
         self.log_event(AuditEvent {
-            timestamp: Utc::now(),
+            timestamp: ZonedDateTime::now(),
             event_type: AuditEventType::ConnectionClosed,
             remote_addr: remote_addr.to_string(),
             username: None,
@@ -143,7 +142,7 @@ impl AuditLogger {
         session_id: &str,
     ) {
         self.log_event(AuditEvent {
-            timestamp: Utc::now(),
+            timestamp: ZonedDateTime::now(),
             event_type: AuditEventType::SessionStarted,
             remote_addr: remote_addr.to_string(),
             username: username.map(|s| s.to_string()),
@@ -156,7 +155,7 @@ impl AuditLogger {
     /// Log a session ended event
     pub async fn log_session_ended(&self, remote_addr: &str, session_id: &str) {
         self.log_event(AuditEvent {
-            timestamp: Utc::now(),
+            timestamp: ZonedDateTime::now(),
             event_type: AuditEventType::SessionEnded,
             remote_addr: remote_addr.to_string(),
             username: None,
@@ -169,7 +168,7 @@ impl AuditLogger {
     /// Log an error event
     pub async fn log_error(&self, remote_addr: &str, session_id: &str, error: &str) {
         self.log_event(AuditEvent {
-            timestamp: Utc::now(),
+            timestamp: ZonedDateTime::now(),
             event_type: AuditEventType::ErrorOccurred,
             remote_addr: remote_addr.to_string(),
             username: None,
@@ -279,7 +278,7 @@ mod tests {
     #[tokio::test]
     async fn test_audit_event_serialization() {
         let event = AuditEvent {
-            timestamp: Utc::now(),
+            timestamp: ZonedDateTime::now(),
             event_type: AuditEventType::AuthSuccess,
             remote_addr: "127.0.0.1".to_string(),
             username: Some("test".to_string()),
@@ -455,7 +454,7 @@ mod tests {
 
         for (event_type, expected) in types {
             let event = AuditEvent {
-                timestamp: Utc::now(),
+                timestamp: ZonedDateTime::now(),
                 event_type,
                 remote_addr: "127.0.0.1".to_string(),
                 username: None,
