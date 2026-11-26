@@ -2,7 +2,7 @@
 name = "ttyd-rs"
 version = "1.6.0"
 edition = "2024"
-rust-version = "1.98.0"
+rust-version = "1.100.0"
 authors = ["wcx"]
 description = "A Rust rewrite of ttyd - Share your terminal over the web"
 license = "AGPL-3.0-only"
@@ -35,7 +35,6 @@ tower-http = { version = "0.7.1", features = ["compression-gzip"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 uuid = { version = "1.29.3", features = ["v4"] }
-rand = "0.10.4"
 shlex = "2.0.1"
 jiff = { version = "1.0.3", features = ["serde"] }
 
