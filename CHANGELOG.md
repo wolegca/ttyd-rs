@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.6.0 — 2026-11-26
+
+### Added
+
+- Mobile status panel: on viewports up to 768px wide the header status view
+  renders as a centered drawer with a blurred backdrop, a title row with an
+  explicit close button, scrollable content, and backdrop-tap dismissal, so the
+  panel no longer overflows the screen.
+
+### Changed
+
+- Session output buffering is capped at 256 coalesced messages per subscriber
+  (worst case 64 MiB for a client that stopped reading, down from 256 MiB);
+  this still covers a full burst for several concurrently lagging clients.
+- Audit timestamps are produced with `jiff` instead of `chrono`.
+- Duplicated WebSocket/file helpers were consolidated into shared functions
+  (`client_rate_limit_key`, `send_message_result`, `send_disconnect`,
+  `report_rejection`, `json_err`, `session_not_found_message`,
+  `build_session_info`) with unit tests; externally visible behavior is
+  unchanged.
+- Expanded test coverage for WebSocket close reasons, auth validators, session
+  subscribe/exit ordering, PTY I/O heartbeat and output-lag paths, handshake
+  resize/join ordering, file open/rename helpers, and CLI password hashing.
+  Four fast heartbeat integration tests that were previously ignored now run in
+  CI.
+- Updated `clap`, `nix` (0.32), `rust-embed`, `toml` (1.2), `uuid`, `rand`,
+  `sha2`, and the lockfile.
+
+### Fixed
+
+- Shared sessions could interleave duplicate output when concurrent clients
+  each spawned their own PTY reader; the reader is now a session-level
+  singleton (`start_reader_once`) that every shutdown path aborts, so the PTY
+  child and its `Arc<Session>` are released reliably.
+- The rate-limit key is now built by a single helper shared by the WebSocket
+  upgrade, the file HTTP middleware, and the WebSocket `file_list` handler.
+  Under `trust_proxy` the socket address is mixed in, so rotating `X-Real-IP`
+  can no longer reuse another client's bucket.
+- `/proc` metrics are read asynchronously and concurrently, so status requests
+  no longer park the reactor thread on filesystem I/O; the rate limiter hot
+  path no longer allocates a key per call, and token hashing pre-allocates the
+  SHA-256 hex digest.
+
 ## 1.5.0 — 2026-10-15
 
 ### Added

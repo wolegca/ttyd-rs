@@ -144,7 +144,7 @@ gitignored and usually absent.
 
 - **Error handling**: All errors typed via `thiserror`, propagated with `?`. Never silenced.
 - **Concurrent I/O**: PTY output coalesced to reduce syscall frequency.
-- **Memory**: `broadcast::channel(1024)` bounds per-session memory. `Arc` for shared state.
+- **Memory**: `broadcast::channel(256)` caps per-session output at 256 coalesced bursts (worst case 64 MiB per stalled client). `Arc` for shared state.
 - **PTY cleanup**: close master fd + SIGHUP + non-blocking reap, with a global SIGCHLD handler reaping terminated children asynchronously.
 - **Upload safety**: `UploadFileGuard` (RAII) ensures partial files are removed on all error paths. The target directory's write permission is checked *before* the multipart body is read, so an unwritable target fails fast with 403 instead of a mid-stream 500.
 - **Auth validators built once**: `AuthMethod` is constructed at router startup, not per request — Argon2 verification costs ~100ms and must not sit on the hot path.

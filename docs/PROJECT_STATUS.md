@@ -40,7 +40,7 @@
 
 - **PTY cleanup**: close master fd + SIGHUP + non-blocking reap, with a global SIGCHLD handler reaping terminated children asynchronously
 - **FD management**: `FD_CLOEXEC` set on PTY FDs, child calls `close_fds_above()`, parent uses `dup()` for independent FDs per task
-- **Memory safety**: `Arc` for reference counting, `broadcast::channel(1024)` bounds memory per session
+- **Memory safety**: `Arc` for reference counting, `broadcast::channel(256)` caps per-session output at 256 coalesced bursts (worst case 64 MiB per stalled client)
 
 ### 4. Concurrency Safety — Good
 
@@ -68,7 +68,7 @@ Milestone history (M1–M6) is maintained in [docs/ROADMAP.md](ROADMAP.md#develo
 ### Frontend Integration (M6) — details
 - Three-dot kebab menu (upload/browse files, visible only when authenticated)
 - Connection status indicator (green=connected, yellow=login required, red=disconnected)
-- Server status quick-view panel in the header (version, uptime, connections, sessions, RSS/CPU/load), auto-refreshing while open
+- Server status quick-view panel in the header (version, uptime, connections, sessions, RSS/CPU/load), auto-refreshing while open; renders as a centered drawer with a close button and backdrop on screens ≤768px
 
 ### File Transfer ✅
 - HTTP multipart upload with streaming size limit enforcement

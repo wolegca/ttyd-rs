@@ -336,8 +336,9 @@ A `fatal` error closes the connection; non-fatal ones leave the terminal usable.
   chunks and must not assume a one-to-one mapping between messages and PTY reads
 
 ### Flow Control
-- Each client consumes the session's bounded broadcast channel (capacity 1024
-  messages), so a slow client never blocks the PTY reader or the other clients
+- Each client consumes the session's bounded broadcast channel (capacity 256
+  coalesced messages, worst case 64 MiB per stalled client), so a slow client
+  never blocks the PTY reader or the other clients
 - When a client's buffer overflows it receives a non-fatal `OUTPUT_LAGGED`
   error and the missed output is dropped — there is no backpressure to the PTY
   and no replay
